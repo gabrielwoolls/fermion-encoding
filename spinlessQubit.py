@@ -24,6 +24,9 @@ class SpinlessQubitLattice():
         Lattice site dims: [2 for i in (0, 1, ... N-1)]
         '''
 
+        if (Lx-1)*(Ly-1)%2==1:
+            raise ValueError('Odd # faces!')
+
         self._Lx = Lx
         self._Ly = Ly
         self._shape = (Lx, Ly)
@@ -76,6 +79,7 @@ class SpinlessQubitLattice():
                         dims=self._dims,
                         inds=[i,j])
 
+
     def H_hop(self, i, j, f, dir):
         '''
         Edge i->j qbits
@@ -89,8 +93,8 @@ class SpinlessQubitLattice():
         
         where Of is Xf, Yf or Identity depending on edge
         '''
-        
-        X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+        print('{}--->{},  face {}'.format(i,j,f))
+        X, Y = (qu.pauli(mu) for mu in ['x','y'])
         Of = {'vertical': X, 'horizontal':Y} [dir]
         
         #if no face qbit, Of = Identity
@@ -107,7 +111,7 @@ class SpinlessQubitLattice():
 
     def number_op(self):
         '''
-        Fermionic number operator, is
+        Fermionic number operator is
         mapped to qubit spin-down
         projector acting on 2-dim qbit space.
 
@@ -218,7 +222,6 @@ class SpinlessQubitLattice():
         #     H = np.einsum('ijklmnoIJKLMNO->ijklmnIJKLMN',H)
         #     return H.reshape((2**6,2**6))
 
-    #COMMENT CHANGE site<-vertex
     def siteNumberOps(self, sites, fermi=False):
         '''
         Returns: np.array (1D, shape = len(sites))
@@ -226,9 +229,10 @@ class SpinlessQubitLattice():
         on specified sites.
 
         `fermi`: bool, indicates whether we are acting
-        in the qubit codespace (False) or in the fermionic
-        target Fock space (True) which is the subspace
-        obtained by tracing out the auxiliary face-qubits.
+        in the " simulator"qubit codespace (False) or in
+        the fermionic "target" Fock space (True) which is
+        the subspace obtained by tracing out the auxiliary
+        face-qubits (up to isometry)
         '''
         ds = {False : self._dims,
               True : self._fermi_dims} [fermi]
@@ -239,7 +243,9 @@ class SpinlessQubitLattice():
 #changeeeed
     def stateLocalOccs(self, k=0, state=None):
         '''
-        TODO: fix shapes
+        TODO: fix shapes. Also, number operators 
+        as qubit spin-down projectors need not be 
+        meaningful in the face qubits!
 
         Returns: nocc_v, nocc_f
 
@@ -268,12 +274,6 @@ class SpinlessQubitLattice():
 
         
         return np.real(nocc_v), np.real(nocc_f)
-
-
-
-    def allSiteOccs(self, k=0):
-        nocc_vertex = self.stateVertexOccs()
-
 
 
     def vertexInds(self):
@@ -431,7 +431,7 @@ TODO: COMMENT
 '''
 def get_D_edges(V_ind, F_ind):
     '''
-    aaaah
+    
     '''
     Lx, Ly = V_ind.shape
     assert F_ind.shape == (Lx-1,Ly-1)
