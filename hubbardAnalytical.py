@@ -4,6 +4,8 @@ import functools
 import itertools
 import operator
 import spinlessQubit as sqb
+import numpy as np
+
 
 class FermiHubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
@@ -69,6 +71,16 @@ class FermiHubbardSpinless():
 
         self._Ham = H
 
+    
+    def stateOccs(self, state):
+        Nk = [qu.ikron(number_op(), self._dims, [site]) 
+            for site in self._V_ind.flatten()]
+
+        n_ij = np.real(np.array([qu.expec(Nk[k], state)
+                for k in range(self._N)])).reshape(self._shape)
+        
+        return n_ij
+
 
 def creation_op():
     return qu.qu([[0,0],[1,0]])
@@ -78,3 +90,4 @@ def annihil_op():
 
 def number_op():
     return qu.qu([[0,0],[0,1]])
+

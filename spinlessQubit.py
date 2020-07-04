@@ -55,12 +55,13 @@ class SpinlessQubitLattice():
         #  (i, j, r) 
         #corresponds to edge i-->j and face qbit r
         self._edgesR = get_R_edges(V_ind, F_ind)
+        self._edgesL = get_L_edges(V_ind, F_ind)
         # self._edgesL = [(5,4,None), (4,3,6)]
         # self._edgesU = [(3,0,6), (5,2,None)]
         # self._edgesD = [(1,4,6)]
         self._edgesU = get_U_edges(V_ind, F_ind)
         self._edgesD = get_D_edges(V_ind, F_ind)
-        self._edgesL = get_L_edges(V_ind, F_ind)
+        
 
         #Qubit Hamiltonian    
         self._HamSim = None
@@ -198,6 +199,10 @@ class SpinlessQubitLattice():
         
         return np.copy(self._eigens), np.copy(self._eigstates)
 
+    def proj_eigspectrum(self):
+        P = self._stab_proj
+        U = self._eigstates
+        return U.H@P@U
 
     def retrieve_tgt(self, debug=1):
         '''
@@ -217,10 +222,6 @@ class SpinlessQubitLattice():
         #     H = H.reshape((2**6,2**6))
         #     return {False:H, True:H.real}[qu.isreal(H)]
         
-        # elif debug==3:
-        #     H = np.reshape(self._HamSim, self._dims*2)
-        #     H = np.einsum('ijklmnoIJKLMNO->ijklmnIJKLMN',H)
-        #     return H.reshape((2**6,2**6))
 
     def siteNumberOps(self, sites, fermi=False):
         '''
@@ -240,7 +241,7 @@ class SpinlessQubitLattice():
         return np.array([qu.ikron(self.number_op(), ds, [site]) 
                         for site in sites],dtype=object)#.reshape(self._shape)
 
-#changeeeed
+#changed
     def stateLocalOccs(self, k=0, state=None):
         '''
         TODO: fix shapes. Also, number operators 
@@ -298,6 +299,51 @@ class SpinlessQubitLattice():
                               self.faceInds()])
 
 
+    def make_stabilizer(self):
+        '''
+        TODO: generalize
+
+        Build stabilizer operator 
+        --> self._stab_op
+
+        Diagonalize, store eigenvectors
+        --> self._stab_evecs
+
+        Define the projector P+ onto the stabilizer's
+        +1 eigenspace.
+        --> self._stab_proj
+        '''
+        
+        X, Z = (qu.pauli(mu) for mu in ['x','z'])
+        
+        ## FIX
+        # for adj_faces: ops.append()
+        ops = [Z,Z,Z,Z,X]
+        inds = [1,2,4,5,6]
+        ##
+
+        #stabilizer operator
+        stab_op = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        
+        if qu.isreal(stab_op): stab_op=stab_op.real
+        
+        evals, evecs = qu.eigh(stab_op)
+        
+        if not np.array_equal(evals,np.array([-1.0]*64 + [1.0]*64)):
+            raise ValueError('Bad stabilizer')
+
+        V = evecs
+        if qu.isreal(V): V=V.real
+        Vdag = V.H
+        snip = np.diag( [0]*64 + [1]*64 )
+        proj = V@snip@Vdag #projector onto +1 eigenspace
+        
+
+        self._stab_op = stab_op #stabilizer loop operator
+        self._stab_evecs = evecs #stabilizer eigvectors
+        self._stab_proj = proj
+
+
 def VF_inds(Lx,Ly):
 
     '''
@@ -305,13 +351,13 @@ def VF_inds(Lx,Ly):
 
     Orders the vertex qbits like
 
-    0-->-1-->-2-->-3
+    0--<-1--<-2--<-3
     ^ 16 v    ^ 17 v
-    4-<--5-<--6-<--7
+    4->--5->--6->--7
     ^    | 18 |    v
-    8-->-9-->-10->-11
+    8--<-9--<-10-<-11
     ^ 19 |    | 20 v
-    12-<-13-<-14-<-15
+    12->-13->-14->-15
 
     V_ind contains the vertex indices,
     (0, 1, ..., Lx*Ly -1)
@@ -335,10 +381,11 @@ def VF_inds(Lx,Ly):
     | 19 |    | 20 |
      ---- ---- ----
 
-    where N is the total qbits per "lattice".
+    where N is the total qbits.
 
-    **Note that F_ind only contains indices for faces
-    that contain a qbit, i.e. skips the even faces!
+    **Note that F_ind only has indices for faces
+    that contain a qbit, i.e. odd faces. 
+    For even faces F_ind stores `None`.
     '''
     V_ind = np.arange(Lx*Ly).reshape(Lx,Ly)
     
@@ -380,7 +427,8 @@ def get_R_edges(V_ind, F_ind):
 
     edgesR=[] #rightward edges, (a, b, f(a,b))
 
-    for row in range(0,Lx,2): #only even rows
+    # for row in range(0,Lx,2):
+    for row in range(1,Lx,2): 
         for col in range(Ly-1):
                 i, j = V_ind[row,col], V_ind[row,col+1]
                 f = findFaceUD(row=row, cols=(col,col+1), Vs=V_ind, Fs=F_ind)
@@ -403,7 +451,8 @@ def get_L_edges(V_ind, F_ind):
 
     edgesL=[]
 
-    for row in range(1,Lx,2):
+    # for row in range(1,Lx,2):
+    for row in range(0,Lx,2):
         for col in range(Ly-1,0,-1):
             i,j = V_ind[row, col], V_ind[row, col-1]
             f = findFaceUD(row=row, cols=(col-1,col), Vs=V_ind, Fs=F_ind)
@@ -536,6 +585,19 @@ def findFaceLR(rows, col, Vs, Fs):
     else: 
         return R
     
+
+
+# def face_loop(fi, fj, V_ind, F_ind):
+    
+#     Fshape = F_ind.shape
+
+#     for fi in range(Fshape[0]):
+#         for fj in range(Fshape[1]):
+#             if F_ind[fi,fj]==None:
+
+
+#     #must be even face i.e. no qubit
+#     assert F_ind[fi, fj] == None
 
 
 
