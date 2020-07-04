@@ -189,6 +189,7 @@ class SpinlessQubitLattice():
         self._eigens, self._eigstates = qu.eigh(self._HamSim)
 
     
+
     def eigspectrum(self):
         '''
         Returns energy eigenvalues and eigenstates of
@@ -199,10 +200,12 @@ class SpinlessQubitLattice():
         
         return np.copy(self._eigens), np.copy(self._eigstates)
 
+    #TODO: comment
     def proj_eigspectrum(self):
         P = self._stab_proj
         U = self._eigstates
-        return U.H@P@U
+        return U.H @ P @ U
+
 
     def retrieve_tgt(self, debug=1):
         '''
@@ -342,6 +345,80 @@ class SpinlessQubitLattice():
         self._stab_op = stab_op #stabilizer loop operator
         self._stab_evecs = evecs #stabilizer eigvectors
         self._stab_proj = proj
+
+    #COMMENT
+    def t_make_stabilizers(self):
+        
+        self._stabilizers = {}
+        
+        for (i,j) in np.argwhere(self._F_ind==None):
+
+            loop_op_ij = self.face_loop_operator(i,j)
+            
+            self._stabilizers[(i,j)] = loop_op_ij
+
+    
+
+    def face_loop_operator(self, i, j):
+        '''
+        Returns loop operator corresponding to face
+        at location (i,j) in face array (self._F_ind)
+
+        TODO: 
+        *check signs, edge directions
+        *consider ZZZZ case?
+        *
+        '''
+        X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+        
+        Vs, Fs = self._V_ind, self._F_ind
+        
+        if Fs[i,j] != None: 
+            raise ValueError('Face at ({},{}) has a qubit!'.format(i,j))
+
+        #corner vertex sites
+        #start upper-left --> clockwise
+        v1 = Vs[i, j]
+        v2 = Vs[i, j+1]
+        v3 = Vs[i+1, j+1]
+        v4 = Vs[i+1, j]
+
+        print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
+
+        u_face = findFaceUD(row=i, cols=(j,j+1), Vs=Vs, Fs=Fs)
+        d_face = findFaceUD(row=i+1, cols=(j,j+1), Vs=Vs, Fs=Fs)
+        l_face = findFaceLR(rows=(i,i+1), col=j, Vs=Vs, Fs=Fs)
+        r_face = findFaceLR(rows=(i,i+1), col=j+1, Vs=Vs, Fs=Fs)
+
+        print(u_face, d_face, l_face, r_face)
+
+        ops = [Z, Z, Z, Z]
+        inds = [v1, v2, v3, v4]
+
+        if u_face != None:
+            inds.append(u_face)
+            ops.append(Y)
+        
+        if d_face != None:
+            inds.append(d_face)
+            ops.append(Y)
+
+        if r_face != None:
+            inds.append(r_face)
+            ops.append(X)
+        
+        if l_face != None:
+            inds.append(l_face)
+            ops.append(X)
+        
+        loop_op = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        
+        if qu.isreal(loop_op): 
+            loop_op = loop_op.real
+
+        return loop_op
+
+
 
 
 def VF_inds(Lx,Ly):
@@ -585,19 +662,3 @@ def findFaceLR(rows, col, Vs, Fs):
     else: 
         return R
     
-
-
-# def face_loop(fi, fj, V_ind, F_ind):
-    
-#     Fshape = F_ind.shape
-
-#     for fi in range(Fshape[0]):
-#         for fj in range(Fshape[1]):
-#             if F_ind[fi,fj]==None:
-
-
-#     #must be even face i.e. no qubit
-#     assert F_ind[fi, fj] == None
-
-
-
