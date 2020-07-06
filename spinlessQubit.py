@@ -32,7 +32,7 @@ class SpinlessQubitLattice():
         self._shape = (Lx, Ly)
 
         #generate indices for qbit lattice
-        V_ind, F_ind = VF_inds(Lx,Ly)
+        V_ind, F_ind = gen_lattice_sites(Lx,Ly)
 
         #vertex/face indices in np.ndarrays
         self._V_ind = V_ind
@@ -228,6 +228,8 @@ class SpinlessQubitLattice():
 
     def siteNumberOps(self, sites, fermi=False):
         '''
+        TODO: remove fermi?
+        
         Returns: np.array (1D, shape = len(sites))
         containing local number operators acting 
         on specified sites.
@@ -421,12 +423,15 @@ class SpinlessQubitLattice():
 
 
 
-def VF_inds(Lx,Ly):
+def gen_lattice_sites(Lx,Ly):
 
     '''
-    V_ind.shape = (Lx,Ly)
+    Generate sites for lattice of shape (Lx,Ly)
 
-    Orders the vertex qbits like
+    Returns (Vs, Fs) tuple of arrays
+    (Vertex indices, face indices)
+
+    Qubit sites ordered thus:
 
     0--<-1--<-2--<-3
     ^ 16 v    ^ 17 v
@@ -436,8 +441,10 @@ def VF_inds(Lx,Ly):
     ^ 19 |    | 20 v
     12->-13->-14->-15
 
-    V_ind contains the vertex indices,
+    Vs contains the vertex indices,
     (0, 1, ..., Lx*Ly -1)
+
+    Vs.shape = (Lx,Ly)
 
     0----1----2----3
     |    |    |    |
@@ -447,7 +454,7 @@ def VF_inds(Lx,Ly):
     |    |    |    |
     12---13---14---15
 
-    and F_ind contains face sites
+    and Fs contains face sites
     (Lx*Ly, Lx*Ly+1, ..., N-1)
 
      ---- ---- ----
@@ -460,28 +467,26 @@ def VF_inds(Lx,Ly):
 
     where N is the total qbits.
 
-    **Note that F_ind only has indices for faces
+    **Note that Fs only has indices for faces
     that contain a qbit, i.e. odd faces. 
-    For even faces F_ind stores `None`.
+    For even faces Fs stores `None`.
     '''
-    V_ind = np.arange(Lx*Ly).reshape(Lx,Ly)
+    Vs = np.arange(Lx*Ly).reshape(Lx,Ly)
     
-    F_ind = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
+    Fs = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
     
     N_vert = Lx*Ly
 
     f, k = 0, 0
     for i in range(Lx-1):
         for j in range(Ly-1):
-            
             if f%2==0: 
-                F_ind[i,j] = k + N_vert
+                Fs[i,j] = k + N_vert
                 k+=1
             else: pass
-            
             f+=1
     
-    return V_ind, F_ind
+    return Vs, Fs
 
 
 def get_R_edges(V_ind, F_ind):
@@ -531,6 +536,7 @@ def get_L_edges(V_ind, F_ind):
     # for row in range(1,Lx,2):
     for row in range(0,Lx,2):
         for col in range(Ly-1,0,-1):
+
             i,j = V_ind[row, col], V_ind[row, col-1]
             f = findFaceUD(row=row, cols=(col-1,col), Vs=V_ind, Fs=F_ind)
             edgesL.append((i, j, f))
@@ -634,8 +640,8 @@ def findFaceLR(rows, col, Vs, Fs):
 
     Returns L or R if valid qubit site (not None)
 
-    Throws error if both L, R are valid sites
-    (are not None)
+    Throws error if both L, R aren't None,
+    since they shouldn't both should have qbits.
     '''    
 
     assert rows[1]==rows[0]+1
@@ -652,7 +658,7 @@ def findFaceLR(rows, col, Vs, Fs):
     if col > 0: #there is a face site on left
         L = Fs[rows[0], col-1]
 
-    #at MOST one face should have a valid index
+    #at MOST one face should have a qubit
     assert L==None or R==None 
 
     #if one of L/R is not None, return it.
