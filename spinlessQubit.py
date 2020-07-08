@@ -305,7 +305,9 @@ class SpinlessQubitLattice():
 
     def make_stabilizer(self):
         '''
-        TODO: generalize
+        TODO: change method. implement projection_3
+        
+        generalize
 
         Build stabilizer operator 
         --> self._stab_op
@@ -491,23 +493,28 @@ class SpinlessQubitLattice():
     def projected_ham_3(self):
         '''
         TODO: 
-        * generalize indices and rotation 
+        * generalize indices, rotation, reshape, etc
         * always need to round? check always real
-        * strange bug: if remove the "copy()" from Ur
+        * strange fix: if remove the "copy()" from Ur
         in ikron, quimb raises ownership error
 
 
         Best method. "Manually" rotate
         basis to pre-known stabilizer eigenbasis.
         '''
-        _, Ur = qu.eigh(qu.pauli('x'))
+        _, Ur = qu.eigh(qu.pauli('x')) 
+        #X because stabilizer acts with X on 7th qubit
         U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
         Stilde = (U.H @ self.stabilizer() @ U).real.round()
+        #Stilde should be diagonal!
         posinds = np.where(np.diag(Stilde)==1.0)
 
         Upos = U[:, posinds].reshape(128,64)
         rotHam = Upos.H @ self.ham_sim() @ Upos
-        return rotHam #rotated Hamiltonian
+        
+        self._Uplus = Upos #+1 stable eigenstates, (128x64)
+        
+        return rotHam #rotated Ham, i.e. in +1 stabilizer eigenbasis
         #64x64 matrix
 
 
