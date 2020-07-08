@@ -9,7 +9,7 @@ import numpy as np
 
 class FermiHubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
-        V_ind, F_ind = sqb.VF_inds(Lx,Ly)
+        V_ind, F_ind = sqb.gen_lattice_sites(Lx,Ly)
 
         self._V_ind = V_ind
         self._edgesR = [(i,j) for (i,j,f) in 

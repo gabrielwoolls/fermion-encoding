@@ -56,13 +56,9 @@ class SpinlessQubitLattice():
         #corresponds to edge i-->j and face qbit r
         self._edgesR = get_R_edges(V_ind, F_ind)
         self._edgesL = get_L_edges(V_ind, F_ind)
-        # self._edgesL = [(5,4,None), (4,3,6)]
-        # self._edgesU = [(3,0,6), (5,2,None)]
-        # self._edgesD = [(1,4,6)]
         self._edgesU = get_U_edges(V_ind, F_ind)
         self._edgesD = get_D_edges(V_ind, F_ind)
         
-
         #Qubit Hamiltonian    
         self._HamSim = None
         self._eigens, self._eigstates = None, None
@@ -109,6 +105,7 @@ class SpinlessQubitLattice():
             YYO=qu.ikron(ops=[Y,Y,Of], dims=self._dims, inds=[i,j,f])
 
         return 0.5*(XXO+YYO) 
+
 
     def number_op(self):
         '''
@@ -179,7 +176,7 @@ class SpinlessQubitLattice():
         
     
 
-    def solveED(self):
+    def solve_ED(self):
         '''
         Solves full spectrum of simulator Hamiltonian, 
         stores eigensystem. 
@@ -187,24 +184,27 @@ class SpinlessQubitLattice():
         Assumes self._HamSim exists.
         '''
         self._eigens, self._eigstates = qu.eigh(self._HamSim)
-
     
 
     def eigspectrum(self):
         '''
+        TODO: FIX! Currently gets spectrum from full Hamiltonian
+        rather than stabilized/projected Hamiltonian
+
         Returns energy eigenvalues and eigenstates of
         self._HamSim, obtained through ED
-        '''
-        if None in [self._eigens, self._eigstates]:
-            self.solveED()
-        
-        return np.copy(self._eigens), np.copy(self._eigstates)
+        '''        
+        if (self._eigens is None) or (self._eigstates is None):
+            self.solve_ED() 
 
-    #TODO: comment
-    def proj_eigspectrum(self):
-        P = self._stab_proj
-        U = self._eigstates
-        return U.H @ P @ U
+        return self._eigens.copy(), self._eigstates.copy()
+
+
+    # Forgot if this is even meaningful
+    # def proj_eigspectrum(self):
+    #     P = self._stab_proj
+    #     U = self._eigstates
+    #     return U.H @ P @ U
 
 
     def retrieve_tgt(self, debug=1):
@@ -226,28 +226,27 @@ class SpinlessQubitLattice():
         #     return {False:H, True:H.real}[qu.isreal(H)]
         
 
-    def siteNumberOps(self, sites, fermi=False):
+    def site_number_ops(self, sites, fermi=False):
         '''
         TODO: remove fermi?
-        
-        Returns: np.array (1D, shape = len(sites))
-        containing local number operators acting 
-        on specified sites.
 
-        `fermi`: bool, indicates whether we are acting
-        in the " simulator"qubit codespace (False) or in
-        the fermionic "target" Fock space (True) which is
-        the subspace obtained by tracing out the auxiliary
-        face-qubits (up to isometry)
+        Returns: list of qarrays, local number 
+        operators acting on specified sites.
+        
+        param `sites`: list of ints, indices of sites
+        
+        param `fermi`: bool, indicates whether we are acting
+        in the "simulator" qubit codespace (False) or in
+        the fermionic "target" Fock space (True)
         '''
         ds = {False : self._dims,
               True : self._fermi_dims} [fermi]
 
-        return np.array([qu.ikron(self.number_op(), ds, [site]) 
-                        for site in sites],dtype=object)#.reshape(self._shape)
+        return [qu.ikron(self.number_op(), ds, [site]) 
+                        for site in sites]#.reshape(self._shape)
 
 #changed
-    def stateLocalOccs(self, k=0, state=None):
+    def state_local_occs(self, k=0, state=None):
         '''
         TODO: fix shapes. Also, number operators 
         as qubit spin-down projectors need not be 
@@ -265,11 +264,11 @@ class SpinlessQubitLattice():
         Defaults to ground state, k=0
         '''
         #kth excited state unless given full state
-        if state==None:
+        if state is None:
             state = self._eigstates[:,k] 
         
         #local number ops acting on each site j
-        Nj = self.siteNumberOps(sites=self.allSiteInds() , fermi=False)
+        Nj = self.site_number_ops(sites=self.allSiteInds() , fermi=False)
         
         #expectation <N> for each vertex
         nocc_v = np.array([qu.expec(Nj[v], state)
@@ -348,8 +347,57 @@ class SpinlessQubitLattice():
         self._stab_evecs = evecs #stabilizer eigvectors
         self._stab_proj = proj
 
+        Vp = V[:, np.where(evals==1.0)].reshape(128,64)
+        self._pVecs = Vp #+1 stabilizer eigenvectors
+        #shape=(128,64)
+
+
+        #'projected' Hamiltonian in +1 stabilizer eigenbasis
+        #
+        # pHam_jk = <s_j | H | s_k> 
+        #
+        # for +1 stabilizer eigenvectors s_i
+        self._pHam = Vp.H @ self._HamSim @ Vp 
+        
+        assert self._pHam.shape == (64,64)
+        
+        self._peigens = qu.eigh(self._pHam)[0]
+        
+    def operator_to_codespace(self, operator):
+        '''
+        Returns reduced-dimensionality operator
+        O_ij = <vi|O|vj> where v's are +1 stabilizer
+        eigenstates.
+
+        Given operator acting on full (dim 128) qubit 
+        Hilbert space, return its restriction to the +1 
+        stabilizer eigenspace, expressed IN BASIS of 
+        +1 eigenstates.
+        '''
+        V = self._pVecs #(128,64)
+        return V.H @ operator @ V #(64,64)
+
+
+    def stabilizer(self):
+        return self._stab_op.copy()
+
+    def ham_sim(self):
+        '''
+        Returns simulator Hamiltonian H_sim, i.e.
+        Hamiltonian acting on *full* qubit space 
+        including non-stabilized subspace
+        '''
+        return self._HamSim.copy()
+
+
     #COMMENT
     def t_make_stabilizers(self):
+        '''
+        TODO: test! Could be completely wrong
+
+        To be used in general case when lattice has 
+        multiple stabilizer operators.
+        '''
         
         self._stabilizers = {}
         
@@ -358,8 +406,6 @@ class SpinlessQubitLattice():
             loop_op_ij = self.face_loop_operator(i,j)
             
             self._stabilizers[(i,j)] = loop_op_ij
-
-    
 
     def face_loop_operator(self, i, j):
         '''
@@ -419,6 +465,53 @@ class SpinlessQubitLattice():
             loop_op = loop_op.real
 
         return loop_op
+
+
+    def projected_ham_1(self):
+        '''
+        Issue: low rank, but still 128x128 matrix.
+        Hard to find the zero eigvals among the "true"
+        zero energies.
+        '''
+        H = self.ham_sim()
+        proj = self._stab_proj.copy()
+        return proj@H #128x128 matrix, but rank 64
+        #qu.eigh(proj@H) should give same eigenergies
+
+    def projected_ham_2(self):
+        '''
+        Equivalent to 
+        self.operator_to_codespace(self.ham_sim())
+
+        '''
+        Vp = self._pVecs #(128,64)
+        pHam = Vp.H @ self._HamSim @ Vp
+        return pHam #64x64
+    
+    def projected_ham_3(self):
+        '''
+        TODO: 
+        * generalize indices and rotation 
+        * always need to round? check always real
+        * strange bug: if remove the "copy()" from Ur
+        in ikron, quimb raises ownership error
+
+
+        Best method. "Manually" rotate
+        basis to pre-known stabilizer eigenbasis.
+        '''
+        _, Ur = qu.eigh(qu.pauli('x'))
+        U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
+        Stilde = (U.H @ self.stabilizer() @ U).real.round()
+        posinds = np.where(np.diag(Stilde)==1.0)
+
+        Upos = U[:, posinds].reshape(128,64)
+        rotHam = Upos.H @ self.ham_sim() @ Upos
+        return rotHam #rotated Hamiltonian
+        #64x64 matrix
+
+
+
 
 
 
