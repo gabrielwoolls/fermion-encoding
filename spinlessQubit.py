@@ -39,14 +39,15 @@ class SpinlessQubitLattice():
         self._F_ind = F_ind
 
         #number of qbits on lattice
-        #IGNORES faces w/out qubits!
+        #IGNORES faces w/out qubits
         self._Nsites = V_ind.size + F_ind[F_ind!=None].size
         self._dims = [2]*(self._Nsites)
 
-        #number of vertex sites only, corresponding
-        #to the physical fermionic sites.
+        #number of vertex qubits only, aka
+        #number of fermionic sites.
         self._Nfermi = V_ind.size
 
+        #TODO: this is fake
         #Obtained from qubit dims by tracing out
         #the auxiliary face qubit dimensions
         self._fermi_dims = [2]*(self._Nfermi)
@@ -59,10 +60,13 @@ class SpinlessQubitLattice():
         self._edgesU = get_U_edges(V_ind, F_ind)
         self._edgesD = get_D_edges(V_ind, F_ind)
         
-        #Qubit Hamiltonian    
+        #Simulator Hamiltonian in full qubit space
         self._HamSim = None
         self._eigens, self._eigstates = None, None
 
+        #qubit Hamiltonian projected on stabilizer +1
+        # eigenspace, written in +1 eigenbasis
+        self._pHam = None
 
     def H_nn_int(self, i, j):
         '''
@@ -79,30 +83,36 @@ class SpinlessQubitLattice():
 
     def H_hop(self, i, j, f, dir):
         '''
-        Edge i->j qbits
-        Face f qbit
+        TODO: pkron vs ikron seem to be equivalent here
 
-        ``dir`` : 'vertical' or 'horizontal'
+        param i, j: (directed) edge qubits indices
+        param f: face qubit index
+        param dir: 'vertical' or 'horizontal'
 
         Returns hopping term acting on qbits ijf,
             
             (XiXjOf + YiYjOf)/2
         
-        where Of is Xf, Yf or Identity depending on edge
+        where Of is Xf, Yf or Identity depending on ijf
         '''
-        print('{}--->{},  face {}'.format(i,j,f))
         X, Y = (qu.pauli(mu) for mu in ['x','y'])
         Of = {'vertical': X, 'horizontal':Y} [dir]
         
-        #if no face qbit, Of = Identity
-        if f==None:         
-            XXO=qu.ikron(ops=[X,X], dims=self._dims, inds=[i,j])
-            YYO=qu.ikron(ops=[Y,Y], dims=self._dims, inds=[i,j])
+        #if no face qbit
+        if f==None:  
+            print('{}--{}-->{}   (None)'.format(i,dir[0],j))       
+            # XXO=qu.ikron(ops=[X,X], dims=self._dims, inds=[i,j])
+            # YYO=qu.ikron(ops=[Y,Y], dims=self._dims, inds=[i,j])
+            XXO=qu.pkron(op=X&X, dims=self._dims, inds=[i,j])
+            YYO=qu.pkron(op=Y&Y, dims=self._dims, inds=[i,j])
         
-        #otherwise, let Of act on index f
+        #if there's a face qubit, let Of act on index f
         else:
-            XXO=qu.ikron(ops=[X,X,Of], dims=self._dims, inds=[i,j,f])
-            YYO=qu.ikron(ops=[Y,Y,Of], dims=self._dims, inds=[i,j,f])
+            print('{}--{}-->{},  face {}'.format(i,dir[0],j,f))
+            # XXO=qu.ikron(ops=[X,X,Of], dims=self._dims, inds=[i,j,f])
+            # YYO=qu.ikron(ops=[Y,Y,Of], dims=self._dims, inds=[i,j,f])
+            XXO = qu.pkron(op=X&X&Of, dims=self._dims, inds=(i,j,f))
+            YYO = qu.pkron(op=Y&Y&Of, dims=self._dims, inds=(i,j,f))
 
         return 0.5*(XXO+YYO) 
 
@@ -120,7 +130,7 @@ class SpinlessQubitLattice():
         return qu.qu([[0, 0], [0, 1]])
     
 
-    def make_spinless_Hubbard(self, t=1.0, V=0.0, mu=0.0):
+    def make_simulator_ham(self, t=1.0, V=0.0, mu=0.0):
         '''
         Compute the qubit simulator Hamiltonian (H_sim)
         corresponding to the spinless Fermi-Hubbard Hamiltonian
@@ -135,8 +145,14 @@ class SpinlessQubitLattice():
         self._coupling_const = (t, V, mu)
 
         def hops(): #fermion hopping terms
-            #generate term for each graph edge
-            for (i,j,f) in self._edgesR + self._edgesL:
+            '''
+            Generate term for each graph edge
+            '''
+
+            # for (i,j,f) in self._edgesR:
+            #     yield t * self.H_hop(i, j, f, 'horizontal')
+            
+            for (i,j,f) in self._edgesL:
                 yield t * self.H_hop(i, j, f, 'horizontal')
 
             for (i,j,f) in self._edgesU:
@@ -200,32 +216,6 @@ class SpinlessQubitLattice():
         return self._eigens.copy(), self._eigstates.copy()
 
 
-    # Forgot if this is even meaningful
-    # def proj_eigspectrum(self):
-    #     P = self._stab_proj
-    #     U = self._eigstates
-    #     return U.H @ P @ U
-
-
-    def retrieve_tgt(self, debug=1):
-        '''
-        ! TODO: this is wrong
-
-        Traces out the face-qubit degrees of freedom, 
-        gets Hamiltonian restricted to the vertex
-        (fermionic) degrees of freedom.
-        '''
-
-        if debug==1:
-            return qu.partial_trace(self._HamSim, dims=self._dims,
-                                      keep=self.vertexInds().tolist())
-        # elif debug==2:
-        #     H = self._HamSim.reshape(self._dims*2)
-        #     H = qu.itrace(H, axes=(6,13))
-        #     H = H.reshape((2**6,2**6))
-        #     return {False:H, True:H.real}[qu.isreal(H)]
-        
-
     def site_number_ops(self, sites, fermi=False):
         '''
         TODO: remove fermi?
@@ -236,8 +226,8 @@ class SpinlessQubitLattice():
         param `sites`: list of ints, indices of sites
         
         param `fermi`: bool, indicates whether we are acting
-        in the "simulator" qubit codespace (False) or in
-        the fermionic "target" Fock space (True)
+        in the large qubit space basis (False) or in the restricted
+        stabilizer eigenbasis (True)
         '''
         ds = {False : self._dims,
               True : self._fermi_dims} [fermi]
@@ -245,12 +235,10 @@ class SpinlessQubitLattice():
         return [qu.ikron(self.number_op(), ds, [site]) 
                         for site in sites]#.reshape(self._shape)
 
-#changed
+
     def state_local_occs(self, k=0, state=None):
         '''
-        TODO: fix shapes. Also, number operators 
-        as qubit spin-down projectors need not be 
-        meaningful in the face qubits!
+        TODO: fix shapes. 
 
         Returns: nocc_v, nocc_f
 
@@ -340,10 +328,8 @@ class SpinlessQubitLattice():
 
         V = evecs
         if qu.isreal(V): V=V.real
-        Vdag = V.H
         snip = np.diag( [0]*64 + [1]*64 )
-        proj = V@snip@Vdag #projector onto +1 eigenspace
-        
+        proj = V @ snip @ V.H #projector onto +1 eigenspace
 
         self._stab_op = stab_op #stabilizer loop operator
         self._stab_evecs = evecs #stabilizer eigvectors
@@ -516,11 +502,6 @@ class SpinlessQubitLattice():
         
         return rotHam #rotated Ham, i.e. in +1 stabilizer eigenbasis
         #64x64 matrix
-
-
-
-
-
 
 
 def gen_lattice_sites(Lx,Ly):

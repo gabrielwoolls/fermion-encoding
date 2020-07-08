@@ -32,6 +32,9 @@ class FermiHubbardSpinless():
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
         cdc = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[j, i])
+        # ccd = qu.pkron(op=c&cdag, dims=self._dims, inds=[i, j])
+        # cdc = qu.pkron(op=cdag&c, dims=self._dims, inds=[i, j])
+        
         return ccd+cdc
 
 
@@ -47,7 +50,10 @@ class FermiHubbardSpinless():
 
     def build_spinless_ham(self, t=1.0, V=0.0, mu=0.0):
         def hops():
-            for (i,j) in self._allEdges:
+            # edges = self._allEdges
+            edges = self._edgesU + self._edgesD + self._edgesL
+            for (i,j) in edges:
+                print('Edge {},{}'.format(i,j))
                 yield t * self.H_hop(i,j)
 
         def interactions():
