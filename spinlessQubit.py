@@ -106,7 +106,7 @@ class SpinlessQubitLattice():
             XXO=qu.pkron(op=X&X, dims=self._dims, inds=[i,j])
             YYO=qu.pkron(op=Y&Y, dims=self._dims, inds=[i,j])
         
-        #if there's a face qubit, let Of act on index f
+        #if there's a face qubit: Of acts on index f
         else:
             print('{}--{}-->{},  face {}'.format(i,dir[0],j,f))
             # XXO=qu.ikron(ops=[X,X,Of], dims=self._dims, inds=[i,j,f])
@@ -145,9 +145,8 @@ class SpinlessQubitLattice():
         self._coupling_const = (t, V, mu)
 
         def hops(): #fermion hopping terms
-            '''
-            Generate term for each graph edge
-            '''
+            
+            #blocked out for debugging purposes
 
             # for (i,j,f) in self._edgesR:
             #     yield t * self.H_hop(i, j, f, 'horizontal')
@@ -190,7 +189,25 @@ class SpinlessQubitLattice():
 
         self._HamSim = H
         
-    
+    def faceX(self, state):
+        xx = qu.ikron(qu.pauli('x'), dims=self._dims, inds=[6])
+        return qu.expec(xx, state)
+
+
+    def lift_state(self, state):
+        '''
+        Lift from stabilizer eigenspace to full qubit space
+
+        Args:
+            state [qarray, dim 64]: vector in stabilizer eigenbasis
+
+        Returns:
+            dim-128 vector in standard qubit basis
+        '''
+        return self._Uplus @ state
+        
+        
+
 
     def solve_ED(self):
         '''
@@ -236,17 +253,24 @@ class SpinlessQubitLattice():
                         for site in sites]#.reshape(self._shape)
 
 
-    def state_local_occs(self, k=0, state=None):
+    def state_local_occs(self, state=None, k=0, faces=False):
         '''
         TODO: fix shapes. 
 
-        Returns: nocc_v, nocc_f
+        param state: vector in full qubit basis
+        
+        param k: if `state` isn't specified, will compute for
+        the kth excited energy eigenstate (defaults to ground state)
+
+        param faces: if True, return "occupation" at face qubits as well
+
+        Returns: nocc_v, (nocc_f)
 
         nocc_v (ndarray, shape (Lx,Ly))
         nocc_f (ndarray, shape (Lx-1,Ly-1))
 
         Expectation values <k|local fermi occupation|k>
-        in the kth excited eigenstate, at all vertex
+        in the kth excited eigenstate, at vertex
         sites v and faces f.
 
         Defaults to ground state, k=0
@@ -261,13 +285,15 @@ class SpinlessQubitLattice():
         #expectation <N> for each vertex
         nocc_v = np.array([qu.expec(Nj[v], state)
                         for v in self.vertexInds()]).reshape(self._shape)
-        #expectation <Nj> for each face
-        nocc_f = np.array([qu.expec(Nj[f], state)
-                        for f in self.faceInds()])
-
         
-        return np.real(nocc_v), np.real(nocc_f)
+        #expectation <Nj> for each face
+        if faces:
+            nocc_f = np.array([qu.expec(Nj[f], state)
+                            for f in self.faceInds()])
+            return np.real(nocc_v), np.real(nocc_f)
 
+        else:
+            return np.real(nocc_v)
 
     def vertexInds(self):
         '''
@@ -293,87 +319,67 @@ class SpinlessQubitLattice():
 
     def make_stabilizer(self):
         '''
-        TODO: change method. implement projection_3
-        
-        generalize
-
-        Build stabilizer operator 
-        --> self._stab_op
-
-        Diagonalize, store eigenvectors
-        --> self._stab_evecs
-
-        Define the projector P+ onto the stabilizer's
-        +1 eigenspace.
-        --> self._stab_proj
+        TODO: 
+        * generalize indices, rotation, reshape, etc
+        * always need to round? check always real
+        * strange fix: if remove the "copy()" from Ur
+        in ikron, quimb raises ownership error
         '''
         
         X, Z = (qu.pauli(mu) for mu in ['x','z'])
         
-        ## FIX
+        ## TODO: make general
         # for adj_faces: ops.append()
         ops = [Z,Z,Z,Z,X]
         inds = [1,2,4,5,6]
+        _, Ur = qu.eigh(qu.pauli('x')) 
         ##
 
-        #stabilizer operator
-        stab_op = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        #stabilizer loop operator
+        stabilizer = qu.ikron(ops=ops, dims=self._dims, inds=inds)
         
-        if qu.isreal(stab_op): stab_op=stab_op.real
+
+        #TODO: change to general: inds=6, Ur
+        U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
         
-        evals, evecs = qu.eigh(stab_op)
+        Stilde = (U.H @ stabilizer @ U).real.round()
+        #Stilde should be diagonal!
+        #TODO: can this be done without rounding()/real part?
+
+        U_plus = U[:, np.where(np.diag(Stilde)==1.0)].reshape(128,64)
         
-        if not np.array_equal(evals,np.array([-1.0]*64 + [1.0]*64)):
-            raise ValueError('Bad stabilizer')
+        HamProj = U_plus.H @ self.ham_sim() @ U_plus
+        #64x64
 
-        V = evecs
-        if qu.isreal(V): V=V.real
-        snip = np.diag( [0]*64 + [1]*64 )
-        proj = V @ snip @ V.H #projector onto +1 eigenspace
-
-        self._stab_op = stab_op #stabilizer loop operator
-        self._stab_evecs = evecs #stabilizer eigvectors
-        self._stab_proj = proj
-
-        Vp = V[:, np.where(evals==1.0)].reshape(128,64)
-        self._pVecs = Vp #+1 stabilizer eigenvectors
-        #shape=(128,64)
+        self._Uplus = U_plus #+1 eigenstates written in full qubit basis
+        self._stabilizer = stabilizer
+        self._HamProj = HamProj # in +1 stabilizer eigenbasis
 
 
-        #'projected' Hamiltonian in +1 stabilizer eigenbasis
-        #
-        # pHam_jk = <s_j | H | s_k> 
-        #
-        # for +1 stabilizer eigenvectors s_i
-        self._pHam = Vp.H @ self._HamSim @ Vp 
-        
-        assert self._pHam.shape == (64,64)
-        
-        self._peigens = qu.eigh(self._pHam)[0]
         
     def operator_to_codespace(self, operator):
         '''
-        Returns reduced-dimensionality operator
-        O_ij = <vi|O|vj> where v's are +1 stabilizer
-        eigenstates.
+        Return:
+            reduced-dimensionality operator
+            O_ij = <vi|O|vj> where v's are +1 stabilizer
+            eigenstates.
 
-        Given operator acting on full (dim 128) qubit 
-        Hilbert space, return its restriction to the +1 
-        stabilizer eigenspace, expressed IN BASIS of 
-        +1 eigenstates.
+        Given operator on full qubit Hilbert space, 
+        return its restriction to the stabilized 
+        subspace, expressed +1 eigenbasis.
         '''
-        V = self._pVecs #(128,64)
-        return V.H @ operator @ V #(64,64)
+        U_plus = self._Uplus#(128,64)
+        return U_plus.H @ op @ U_plus #(64,64)
 
 
     def stabilizer(self):
-        return self._stab_op.copy()
+        return self._stabilizer.copy()
 
     def ham_sim(self):
         '''
-        Returns simulator Hamiltonian H_sim, i.e.
-        Hamiltonian acting on *full* qubit space 
-        including non-stabilized subspace
+        Returns simulator Hamiltonian H_sim.
+        Hamiltonian acting on *full* qubit space, 
+        including "non-stabilized" subspace
         '''
         return self._HamSim.copy()
 
@@ -455,52 +461,55 @@ class SpinlessQubitLattice():
         return loop_op
 
 
-    def projected_ham_1(self):
-        '''
-        Issue: low rank, but still 128x128 matrix.
-        Hard to find the zero eigvals among the "true"
-        zero energies.
-        '''
-        H = self.ham_sim()
-        proj = self._stab_proj.copy()
-        return proj@H #128x128 matrix, but rank 64
-        #qu.eigh(proj@H) should give same eigenergies
-
     def projected_ham_2(self):
         '''
-        Equivalent to 
-        self.operator_to_codespace(self.ham_sim())
+        Alternative projected Hamiltonian.
 
+        Obtained by numerically diagonalizing stabilizer
+        rather than "manually", so pHam should be equivalent 
+        to regular HamProj under a basis rotation.
         '''
-        Vp = self._pVecs #(128,64)
-        pHam = Vp.H @ self._HamSim @ Vp
-        return pHam #64x64
+
+        evals, V = qu.eigh(self._stabilizer)
+        
+        assert np.array_equal(evals,np.array([-1.0]*64 + [1.0]*64))
+
+        if qu.isreal(V): V=V.real
+
+        projector = V @ np.diag( [0]*64 + [1]*64 ) @ V.H #projector onto +1 eigenspace
+
+        self._stab_projector = projector
+
+        Vp = V[:, np.where(evals==1.0)].reshape(128,64)
+        #shape=(128,64)
+
+        pHam = Vp.H @ self._HamSim @ Vp 
+        return pHam
+        #(64,64)
+        
     
     def projected_ham_3(self):
         '''
-        TODO: 
-        * generalize indices, rotation, reshape, etc
-        * always need to round? check always real
-        * strange fix: if remove the "copy()" from Ur
-        in ikron, quimb raises ownership error
-
-
+        
         Best method. "Manually" rotate
         basis to pre-known stabilizer eigenbasis.
         '''
-        _, Ur = qu.eigh(qu.pauli('x')) 
         #X because stabilizer acts with X on 7th qubit
+        _, Ur = qu.eigh(qu.pauli('x')) 
+        
         U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
+        
         Stilde = (U.H @ self.stabilizer() @ U).real.round()
         #Stilde should be diagonal!
-        posinds = np.where(np.diag(Stilde)==1.0)
 
-        Upos = U[:, posinds].reshape(128,64)
-        rotHam = Upos.H @ self.ham_sim() @ Upos
+        U_plus = U[:, np.where(np.diag(Stilde)==1.0)].reshape(128,64)
         
-        self._Uplus = Upos #+1 stable eigenstates, (128x64)
+        HamProj = U_plus.H @ self.ham_sim() @ U_plus
         
-        return rotHam #rotated Ham, i.e. in +1 stabilizer eigenbasis
+        self._Uplus = U_plus #+1 stable eigenstates, in full qubit basis
+        #(128x64)
+        
+        return HamProj #in +1 stabilizer eigenbasis
         #64x64 matrix
 
 

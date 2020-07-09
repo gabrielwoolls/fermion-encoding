@@ -6,6 +6,7 @@ import operator
 import spinlessQubit as sqb
 import numpy as np
 
+DEBUG=True
 
 class FermiHubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
@@ -28,6 +29,7 @@ class FermiHubbardSpinless():
         self._shape = (Lx,Ly)
 
 
+    
     def H_hop(self, i, j):
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
@@ -50,8 +52,11 @@ class FermiHubbardSpinless():
 
     def build_spinless_ham(self, t=1.0, V=0.0, mu=0.0):
         def hops():
-            # edges = self._allEdges
-            edges = self._edgesU + self._edgesD + self._edgesL
+            if DEBUG==0: 
+                edges = self._allEdges
+            else:
+                edges = self._edgesU + self._edgesD + self._edgesL
+            
             for (i,j) in edges:
                 print('Edge {},{}'.format(i,j))
                 yield t * self.H_hop(i,j)
