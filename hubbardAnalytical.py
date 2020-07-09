@@ -34,10 +34,13 @@ class FermiHubbardSpinless():
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
         cdc = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[j, i])
-        # ccd = qu.pkron(op=c&cdag, dims=self._dims, inds=[i, j])
-        # cdc = qu.pkron(op=cdag&c, dims=self._dims, inds=[i, j])
-        
         return ccd+cdc
+
+
+    def jw_H_hop(self, i, j):
+        ci, cj = self.jw_annihil_op(i), self.jw_annihil_op(j)
+        cidag, cjdag = self.jw_creation_op(i), self.jw_creation_op(j)
+        return cidag@cj + cjdag@ci
 
 
     def H_occ(self, i):
@@ -59,7 +62,7 @@ class FermiHubbardSpinless():
             
             for (i,j) in edges:
                 print('Edge {},{}'.format(i,j))
-                yield t * self.H_hop(i,j)
+                yield t * self.jw_H_hop(i,j)
 
         def interactions():
             for (i,j) in self._allEdges:
@@ -83,7 +86,7 @@ class FermiHubbardSpinless():
         self._Ham = H
 
     
-    def stateOccs(self, state):
+    def state_occs(self, state):
         Nk = [qu.ikron(number_op(), self._dims, [site]) 
             for site in self._V_ind.flatten()]
 
@@ -91,6 +94,73 @@ class FermiHubbardSpinless():
                 for k in range(self._N)])).reshape(self._shape)
         
         return n_ij
+
+    def parity(self, state):
+        '''
+        +1 if even, -1 if odd 
+        '''
+        if isinstance(state, int):
+            state = qu.basis_vec(i=state, dim=np.prod(self._dims))
+        
+        occ = self.state_occs(state)
+        assert np.logical_or(occ==0.0, occ==1.0).all()
+        par = np.sum(occ)%2
+        return {0.0: 1, 
+                1.0:-1}[par]
+
+    ###
+    # JORDAN WIGNER
+    ###
+    
+    def jw_annihil_op(self, k):
+        '''
+        Annihilation Jordan-Wigner qubit operator.
+
+        (Z_0)x(Z_1)x ...x(Z_k-1)x |0><1|_k
+        '''
+        Z = qu.pauli('z')
+        s_minus = qu.qu([[0,1],[0,0]]) #|0><1|
+
+        op_list, ind_list = [], []
+        for i in range(k):
+            op_list.append(Z)
+            ind_list.append(i)
+        op_list.append(s_minus)
+        ind_list.append(k)
+        
+        return qu.ikron(ops=op_list, dims=self._dims, 
+                        inds=ind_list)
+    
+    def jw_creation_op(self, k):
+        '''
+        Creation Jordan-Wigner qubit operator.
+
+        (Z_0)x(Z_1)x ...x(Z_k-1)x |1><0|_k
+        '''
+        Z = qu.pauli('z')
+        s_plus = qu.qu([[0,0],[1,0]]) #|1><0|
+
+        op_list, ind_list = [], []
+        for i in range(k):
+            op_list.append(Z)
+            ind_list.append(i)
+        op_list.append(s_plus)
+        ind_list.append(k)
+
+        return qu.ikron(ops=op_list, dims=self._dims, 
+                        inds=ind_list)
+    
+
+    ###
+    # End Jordan-Wigner methods
+    ###
+
+
+    def b_swap_gate(self):
+        # B = np.zeros(shape=(2,2,2,2))
+        B = np.einsum('il,jk->ijkl',np.eye(2),np.eye(2))
+        for i,j,k,l in itertools.product(range(2), repeat=4):
+            print((i,j,k,l),'->', B[i,j,k,l])
 
 
 def creation_op():
@@ -101,4 +171,3 @@ def annihil_op():
 
 def number_op():
     return qu.qu([[0,0],[0,1]])
-

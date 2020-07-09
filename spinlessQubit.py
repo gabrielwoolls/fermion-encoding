@@ -64,9 +64,12 @@ class SpinlessQubitLattice():
         self._HamSim = None
         self._eigens, self._eigstates = None, None
 
-        #qubit Hamiltonian projected on stabilizer +1
-        # eigenspace, written in +1 eigenbasis
-        self._pHam = None
+
+        #Codespace Hamiltonian, i.e. qubit Ham
+        #projected on stabilizer +1 eigenspace, 
+        # written in +1 eigenbasis
+        self._HamCode = None
+
 
     def H_nn_int(self, i, j):
         '''
@@ -206,8 +209,6 @@ class SpinlessQubitLattice():
         '''
         return self._Uplus @ state
         
-        
-
 
     def solve_ED(self):
         '''
@@ -255,7 +256,7 @@ class SpinlessQubitLattice():
 
     def state_local_occs(self, state=None, k=0, faces=False):
         '''
-        TODO: fix shapes. 
+        TODO: fix shapes, delete k arg? 
 
         param state: vector in full qubit basis
         
@@ -280,8 +281,10 @@ class SpinlessQubitLattice():
             state = self._eigstates[:,k] 
         
         #local number ops acting on each site j
-        Nj = self.site_number_ops(sites=self.allSiteInds() , fermi=False)
-        
+        # Nj = self.site_number_ops(sites=self.allSiteInds() , fermi=False)
+        Nj = [qu.ikron(self.number_op(), self._dims, [site]) 
+                        for site in self.allSiteInds()]
+
         #expectation <N> for each vertex
         nocc_v = np.array([qu.expec(Nj[v], state)
                         for v in self.vertexInds()]).reshape(self._shape)
@@ -339,7 +342,7 @@ class SpinlessQubitLattice():
         stabilizer = qu.ikron(ops=ops, dims=self._dims, inds=inds)
         
 
-        #TODO: change to general: inds=6, Ur
+        #TODO: change to general rather than inds=6, Ur
         U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
         
         Stilde = (U.H @ stabilizer @ U).real.round()
@@ -348,21 +351,20 @@ class SpinlessQubitLattice():
 
         U_plus = U[:, np.where(np.diag(Stilde)==1.0)].reshape(128,64)
         
-        HamProj = U_plus.H @ self.ham_sim() @ U_plus
+        HamCode = U_plus.H @ self.ham_sim() @ U_plus
         #64x64
 
-        self._Uplus = U_plus #+1 eigenstates written in full qubit basis
         self._stabilizer = stabilizer
-        self._HamProj = HamProj # in +1 stabilizer eigenbasis
+        self._Uplus = U_plus #+1 eigenstates written in full qubit basis
+        self._HamCode = HamCode # in +1 stabilizer eigenbasis
 
 
         
     def operator_to_codespace(self, operator):
         '''
-        Return:
-            reduced-dimensionality operator
-            O_ij = <vi|O|vj> where v's are +1 stabilizer
-            eigenstates.
+        Return reduced-dimensionality operator
+        O_ij = <vi|O|vj> where v's are +1 stabilizer
+        eigenstates.
 
         Given operator on full qubit Hilbert space, 
         return its restriction to the stabilized 
@@ -377,11 +379,17 @@ class SpinlessQubitLattice():
 
     def ham_sim(self):
         '''
-        Returns simulator Hamiltonian H_sim.
-        Hamiltonian acting on *full* qubit space, 
-        including "non-stabilized" subspace
+        Simulator Hamiltonian acting
+        on full qubit space.
         '''
         return self._HamSim.copy()
+
+    def ham_code(self):
+        '''
+        Projected Hamiltonian acting only on
+        +1 stabilizer eigenspace.
+        '''       
+        return self._HamCode.copy()
 
 
     #COMMENT
@@ -397,11 +405,11 @@ class SpinlessQubitLattice():
         
         for (i,j) in np.argwhere(self._F_ind==None):
 
-            loop_op_ij = self.face_loop_operator(i,j)
+            loop_op_ij = self.loop_stabilizer(i,j)
             
             self._stabilizers[(i,j)] = loop_op_ij
 
-    def face_loop_operator(self, i, j):
+    def loop_stabilizer(self, i, j):
         '''
         Returns loop operator corresponding to face
         at location (i,j) in face array (self._F_ind)
@@ -460,14 +468,14 @@ class SpinlessQubitLattice():
 
         return loop_op
 
-
+    # TODO: delete?
     def projected_ham_2(self):
         '''
         Alternative projected Hamiltonian.
 
         Obtained by numerically diagonalizing stabilizer
         rather than "manually", so pHam should be equivalent 
-        to regular HamProj under a basis rotation.
+        to regular HamCode under a basis rotation.
         '''
 
         evals, V = qu.eigh(self._stabilizer)
@@ -487,12 +495,10 @@ class SpinlessQubitLattice():
         return pHam
         #(64,64)
         
-    
+    #TODO: delete?
     def projected_ham_3(self):
         '''
-        
-        Best method. "Manually" rotate
-        basis to pre-known stabilizer eigenbasis.
+        Should be equivalent to self.ham_code()
         '''
         #X because stabilizer acts with X on 7th qubit
         _, Ur = qu.eigh(qu.pauli('x')) 
@@ -506,12 +512,8 @@ class SpinlessQubitLattice():
         
         HamProj = U_plus.H @ self.ham_sim() @ U_plus
         
-        self._Uplus = U_plus #+1 stable eigenstates, in full qubit basis
-        #(128x64)
-        
         return HamProj #in +1 stabilizer eigenbasis
-        #64x64 matrix
-
+        
 
 def gen_lattice_sites(Lx,Ly):
 
