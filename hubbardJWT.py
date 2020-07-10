@@ -8,11 +8,12 @@ import numpy as np
 
 DEBUG=0
 
-class FermiHubbardSpinless():
+class HubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
         V_ind, F_ind = sqb.gen_lattice_sites(Lx,Ly)
 
         self._V_ind = V_ind
+        
         self._edgesR = [(i,j) for (i,j,f) in 
                         sqb.get_R_edges(V_ind, F_ind)]
         self._edgesL = [(i,j) for (i,j,f) in 
@@ -166,3 +167,6 @@ def annihil_op():
 
 def number_op():
     return qu.qu([[0,0],[0,1]])
+
+
+# ***************************************** #

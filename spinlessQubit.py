@@ -47,10 +47,9 @@ class SpinlessQubitLattice():
         #number of fermionic sites.
         self._Nfermi = V_ind.size
 
-        #TODO: this is fake
-        #Obtained from qubit dims by tracing out
-        #the auxiliary face qubit dimensions
-        self._fermi_dims = [2]*(self._Nfermi)
+        #TODO: not true for odd num. faces
+        #codespace dimensions = dim(Fock)
+        self._dims_code = [2]*(self._Nfermi)
 
         #lists of edge tuples (i, j, f(i,j)) so that
         #  (i, j, r) 
@@ -190,7 +189,7 @@ class SpinlessQubitLattice():
         
 
 
-    def single_qubit_dm(self, qstate, i):
+    def one_qubit_dm(self, qstate, i):
         '''
         Returns subsystem density
         matrix for qubit i by tracing out
@@ -199,7 +198,7 @@ class SpinlessQubitLattice():
         `qstate` needs to be in *full* qubit space!
         '''
         assert qstate.size == qu.prod(self._dims)
-        return qu.ptr(state, dims=self._dims, keep=i)
+        return qu.ptr(qstate, dims=self._dims, keep=i)
 
 
     def lift_cstate(self, cstate):
@@ -385,6 +384,17 @@ class SpinlessQubitLattice():
         '''       
         return self._HamCode.copy()
 
+    def dims(self, code=False):
+        '''
+        List of dimensions for qubit space 
+        (or joint stabilizer eigenspace if 
+        code==True)
+        '''
+        #dimensions of full qubit space
+        if not code: return self._dims.copy()
+        
+        #dimensions of codespace
+        else:        return self._dims_code.copy()
 
     #COMMENT
     def t_make_stabilizers(self):
@@ -403,25 +413,35 @@ class SpinlessQubitLattice():
             
             self._stabilizers[(i,j)] = loop_op_ij
 
+
+
     def loop_stabilizer(self, i, j):
         '''
-        Returns loop operator corresponding to face
+        Returns loop operator S corresponding to face
         at location (i,j) in face array (self._F_ind)
+              u
+           1-----2
+         l |     | r
+           4-----3
+              d
 
-        TODO: 
-        *check signs, edge directions
-        *consider ZZZZ case?
-        *
+        Note (E12)(E23)(E34)(E41) = (E14)(E43)(E32)(E21),
+        i.e. clockwise = ccwise 
+
+        S = (Z1 Z2 Z3 Z4) (Yu) (Xr) (Yd) (Xl)
+
+        where urdl are face qubits up, right, etc.
+
+        TODO: test!
         '''
+
         X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
         
         Vs, Fs = self._V_ind, self._F_ind
         
-        if Fs[i,j] != None: 
-            raise ValueError('Face at ({},{}) has a qubit!'.format(i,j))
+        assert Fs[i,j] == None
 
-        #corner vertex sites
-        #start upper-left --> clockwise
+        #corner vertex sites, 1=upper-left --> clockwise
         v1 = Vs[i, j]
         v2 = Vs[i, j+1]
         v3 = Vs[i+1, j+1]
@@ -456,6 +476,8 @@ class SpinlessQubitLattice():
             inds.append(l_face)
             ops.append(X)
         
+        assert len(ops) > 4
+
         loop_op = qu.ikron(ops=ops, dims=self._dims, inds=inds)
         
         if qu.isreal(loop_op): 
@@ -634,6 +656,9 @@ def get_L_edges(V_ind, F_ind):
 TODO: COMMENT
 '''
 def get_U_edges(V_ind, F_ind):
+    '''
+    Return list of up-edges
+    '''
     Lx, Ly = V_ind.shape
     edgesU=[]
 
