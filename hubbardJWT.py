@@ -6,7 +6,7 @@ import operator
 import spinlessQubit as sqb
 import numpy as np
 
-DEBUG=True
+DEBUG=0
 
 class FermiHubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
@@ -30,39 +30,49 @@ class FermiHubbardSpinless():
 
 
     
-    def H_hop(self, i, j):
+    def H_hop_boson(self, i, j):
+        '''
+        Hopping term *without* anti-symmetrization
+        '''
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
         cdc = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[j, i])
         return ccd+cdc
 
 
-    def jw_H_hop(self, i, j):
+    def H_hop_fermion(self, i, j):
+        '''
+        Qubit operator for fermion-hopping 
+        on sites i, j
+        '''
         ci, cj = self.jw_annihil_op(i), self.jw_annihil_op(j)
         cidag, cjdag = self.jw_creation_op(i), self.jw_creation_op(j)
         return cidag@cj + cjdag@ci
 
 
     def H_occ(self, i):
+        '''
+        Occupation/number operator at site i
+        '''
         return qu.ikron(ops=number_op(), dims=self._dims, inds=[i])
 
 
     def H_nn(self, i, j):
+        '''
+        Nearest-neighbor repulsion
+        (n_i)x(n_j)
+        '''
         nop = number_op()
         return qu.ikron(ops=[number_op(),number_op()],
                         dims=self._dims, inds=[i,j])
 
 
     def build_spinless_ham(self, t=1.0, V=0.0, mu=0.0):
+
         def hops():
-            if DEBUG==0: 
-                edges = self._allEdges
-            else:
-                edges = self._edgesU + self._edgesD + self._edgesL
-            
-            for (i,j) in edges:
-                print('Edge {},{}'.format(i,j))
-                yield t * self.jw_H_hop(i,j)
+            for (i,j) in self._allEdges:
+                # print('Edge {},{}'.format(i,j))
+                yield t * self.H_hop_fermion(i,j)
 
         def interactions():
             for (i,j) in self._allEdges:
@@ -121,13 +131,9 @@ class FermiHubbardSpinless():
         Z = qu.pauli('z')
         s_minus = qu.qu([[0,1],[0,0]]) #|0><1|
 
-        op_list, ind_list = [], []
-        for i in range(k):
-            op_list.append(Z)
-            ind_list.append(i)
-        op_list.append(s_minus)
-        ind_list.append(k)
-        
+        ind_list = [i for i in range(k+1)]
+        op_list = [Z for i in range(k)] + [s_minus]
+
         return qu.ikron(ops=op_list, dims=self._dims, 
                         inds=ind_list)
     
@@ -140,12 +146,8 @@ class FermiHubbardSpinless():
         Z = qu.pauli('z')
         s_plus = qu.qu([[0,0],[1,0]]) #|1><0|
 
-        op_list, ind_list = [], []
-        for i in range(k):
-            op_list.append(Z)
-            ind_list.append(i)
-        op_list.append(s_plus)
-        ind_list.append(k)
+        ind_list = [i for i in range(k+1)]
+        op_list = [Z for i in range(k)] + [s_plus]
 
         return qu.ikron(ops=op_list, dims=self._dims, 
                         inds=ind_list)
@@ -154,13 +156,6 @@ class FermiHubbardSpinless():
     ###
     # End Jordan-Wigner methods
     ###
-
-
-    def b_swap_gate(self):
-        # B = np.zeros(shape=(2,2,2,2))
-        B = np.einsum('il,jk->ijkl',np.eye(2),np.eye(2))
-        for i,j,k,l in itertools.product(range(2), repeat=4):
-            print((i,j,k,l),'->', B[i,j,k,l])
 
 
 def creation_op():

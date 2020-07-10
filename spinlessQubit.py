@@ -62,13 +62,11 @@ class SpinlessQubitLattice():
         
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
-        self._eigens, self._eigstates = None, None
-
-
-        #Codespace Hamiltonian, i.e. qubit Ham
-        #projected on stabilizer +1 eigenspace, 
-        # written in +1 eigenbasis
+        
+        #Codespace Hamiltonian
+        #(written in stabilizer eigenbasis)
         self._HamCode = None
+        self._eigens, self._eigstates = None, None
 
 
     def H_nn_int(self, i, j):
@@ -86,11 +84,11 @@ class SpinlessQubitLattice():
 
     def H_hop(self, i, j, f, dir):
         '''
-        TODO: pkron vs ikron seem to be equivalent here
+        TODO: pkron vs ikron performance?
 
-        param i, j: (directed) edge qubits indices
-        param f: face qubit index
-        param dir: 'vertical' or 'horizontal'
+        i, j: (directed) edge qubits indices
+        f: face qubit index
+        dir: 'vertical' or 'horizontal'
 
         Returns hopping term acting on qbits ijf,
             
@@ -103,7 +101,7 @@ class SpinlessQubitLattice():
         
         #if no face qbit
         if f==None:  
-            print('{}--{}-->{}   (None)'.format(i,dir[0],j))       
+            # print('{}--{}-->{}   (None)'.format(i,dir[0],j))       
             # XXO=qu.ikron(ops=[X,X], dims=self._dims, inds=[i,j])
             # YYO=qu.ikron(ops=[Y,Y], dims=self._dims, inds=[i,j])
             XXO=qu.pkron(op=X&X, dims=self._dims, inds=[i,j])
@@ -111,7 +109,7 @@ class SpinlessQubitLattice():
         
         #if there's a face qubit: Of acts on index f
         else:
-            print('{}--{}-->{},  face {}'.format(i,dir[0],j,f))
+            # print('{}--{}-->{},  face {}'.format(i,dir[0],j,f))
             # XXO=qu.ikron(ops=[X,X,Of], dims=self._dims, inds=[i,j,f])
             # YYO=qu.ikron(ops=[Y,Y,Of], dims=self._dims, inds=[i,j,f])
             XXO = qu.pkron(op=X&X&Of, dims=self._dims, inds=(i,j,f))
@@ -149,10 +147,8 @@ class SpinlessQubitLattice():
 
         def hops(): #fermion hopping terms
             
-            #blocked out for debugging purposes
-
-            # for (i,j,f) in self._edgesR:
-            #     yield t * self.H_hop(i, j, f, 'horizontal')
+            for (i,j,f) in self._edgesR:
+                yield t * self.H_hop(i, j, f, 'horizontal')
             
             for (i,j,f) in self._edgesL:
                 yield t * self.H_hop(i, j, f, 'horizontal')
@@ -192,22 +188,32 @@ class SpinlessQubitLattice():
 
         self._HamSim = H
         
-    def faceX(self, state):
-        xx = qu.ikron(qu.pauli('x'), dims=self._dims, inds=[6])
-        return qu.expec(xx, state)
 
 
-    def lift_state(self, state):
+    def single_qubit_dm(self, qstate, i):
         '''
-        Lift from stabilizer eigenspace to full qubit space
+        Returns subsystem density
+        matrix for qubit i by tracing out
+        all other qubits in `qstate`.
+
+        `qstate` needs to be in *full* qubit space!
+        '''
+        assert qstate.size == qu.prod(self._dims)
+        return qu.ptr(state, dims=self._dims, keep=i)
+
+
+    def lift_cstate(self, cstate):
+        '''
+        Lift `cstate` from codespace to full qubit space
 
         Args:
-            state [qarray, dim 64]: vector in stabilizer eigenbasis
+            cstate [qarray, dim 64]: codespace state,
+            vector written in stabilizer eigenbasis
 
         Returns:
             dim-128 vector in standard qubit basis
         '''
-        return self._Uplus @ state
+        return self._Uplus @ cstate
         
 
     def solve_ED(self):
@@ -217,16 +223,13 @@ class SpinlessQubitLattice():
         
         Assumes self._HamSim exists.
         '''
-        self._eigens, self._eigstates = qu.eigh(self._HamSim)
+        self._eigens, self._eigstates = qu.eigh(self._HamCode)
     
 
     def eigspectrum(self):
         '''
-        TODO: FIX! Currently gets spectrum from full Hamiltonian
-        rather than stabilized/projected Hamiltonian
-
         Returns energy eigenvalues and eigenstates of
-        self._HamSim, obtained through ED
+        self._HamCode, obtained through ED
         '''        
         if (self._eigens is None) or (self._eigstates is None):
             self.solve_ED() 
@@ -254,31 +257,29 @@ class SpinlessQubitLattice():
                         for site in sites]#.reshape(self._shape)
 
 
-    def state_local_occs(self, state=None, k=0, faces=False):
+    def state_local_occs(self, qstate=None, k=0, faces=False):
         '''
-        TODO: fix shapes, delete k arg? 
+        TODO: fix face shapes?
 
-        param state: vector in full qubit basis
+        Expectation values <k|local fermi occupation|k>
+        in the kth excited eigenstate, at vertex
+        sites (and faces if specified).
+
+        param qstate: vector in full qubit basis
         
         param k: if `state` isn't specified, will compute for
         the kth excited energy eigenstate (defaults to ground state)
 
-        param faces: if True, return "occupation" at face qubits as well
+        param faces: if True, return occupations at face qubits as well
 
-        Returns: nocc_v, (nocc_f)
+        Returns: local occupations `nocc_v`, (`nocc_f`)
 
-        nocc_v (ndarray, shape (Lx,Ly))
-        nocc_f (ndarray, shape (Lx-1,Ly-1))
-
-        Expectation values <k|local fermi occupation|k>
-        in the kth excited eigenstate, at vertex
-        sites v and faces f.
-
-        Defaults to ground state, k=0
+            nocc_v (ndarray, shape (Lx,Ly))
+            nocc_f (ndarray, shape (Lx-1,Ly-1))
         '''
-        #kth excited state unless given full state
-        if state is None:
-            state = self._eigstates[:,k] 
+
+        if qstate is None:
+            qstate = self._eigstates[:,k] 
         
         #local number ops acting on each site j
         # Nj = self.site_number_ops(sites=self.allSiteInds() , fermi=False)
@@ -286,17 +287,17 @@ class SpinlessQubitLattice():
                         for site in self.allSiteInds()]
 
         #expectation <N> for each vertex
-        nocc_v = np.array([qu.expec(Nj[v], state)
+        nocc_v = np.array([qu.expec(Nj[v], qstate)
                         for v in self.vertexInds()]).reshape(self._shape)
-        
-        #expectation <Nj> for each face
-        if faces:
-            nocc_f = np.array([qu.expec(Nj[f], state)
-                            for f in self.faceInds()])
-            return np.real(nocc_v), np.real(nocc_f)
 
-        else:
-            return np.real(nocc_v)
+        if not faces:
+            return nocc_v
+
+        #expectation <Nj> for each face
+        nocc_f = np.array([qu.expec(Nj[f], qstate) for f in self.faceInds()])
+        
+        return nocc_v, nocc_f
+            
 
     def vertexInds(self):
         '''
@@ -325,34 +326,31 @@ class SpinlessQubitLattice():
         TODO: 
         * generalize indices, rotation, reshape, etc
         * always need to round? check always real
-        * strange fix: if remove the "copy()" from Ur
+        * strange fix: if remove the "copy()" from Ux
         in ikron, quimb raises ownership error
         '''
         
         X, Z = (qu.pauli(mu) for mu in ['x','z'])
         
         ## TODO: make general
-        # for adj_faces: ops.append()
-        ops = [Z,Z,Z,Z,X]
-        inds = [1,2,4,5,6]
-        _, Ur = qu.eigh(qu.pauli('x')) 
-        ##
-
-        #stabilizer loop operator
-        stabilizer = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        # ops = [Z,Z,Z,Z,X]
+        # inds = [1,2,4,5,6]
+        # stabilizer = qu.ikron(ops=ops, dims=self._dims, inds=inds)
         
-
-        #TODO: change to general rather than inds=6, Ur
-        U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
+        _, Ux = qu.eigh(qu.pauli('x')) 
         
-        Stilde = (U.H @ stabilizer @ U).real.round()
-        #Stilde should be diagonal!
+        stabilizer = self.loop_stabilizer(0,1)
+
+        #TODO: change to general rather than inds=6, Ux
+        U = qu.ikron(Ux.copy(), dims=self._dims, inds=[6])
+        
         #TODO: can this be done without rounding()/real part?
+        Stilde = (U.H @ stabilizer @ U).real.round()
+        assert is_diagonal(Stilde)
 
-        U_plus = U[:, np.where(np.diag(Stilde)==1.0)].reshape(128,64)
+        U_plus = U[:, np.where(np.diag(Stilde)==1.0)[0]]
         
         HamCode = U_plus.H @ self.ham_sim() @ U_plus
-        #64x64
 
         self._stabilizer = stabilizer
         self._Uplus = U_plus #+1 eigenstates written in full qubit basis
@@ -362,13 +360,9 @@ class SpinlessQubitLattice():
         
     def operator_to_codespace(self, operator):
         '''
-        Return reduced-dimensionality operator
-        O_ij = <vi|O|vj> where v's are +1 stabilizer
-        eigenstates.
-
-        Given operator on full qubit Hilbert space, 
-        return its restriction to the stabilized 
-        subspace, expressed +1 eigenbasis.
+        Return operator in codespace basis,
+        O_ij = <vi|O|vj>,
+        where v's are +1 stabilizer eigenstates.
         '''
         U_plus = self._Uplus#(128,64)
         return U_plus.H @ op @ U_plus #(64,64)
@@ -433,6 +427,7 @@ class SpinlessQubitLattice():
         v3 = Vs[i+1, j+1]
         v4 = Vs[i+1, j]
 
+        print('Stabilizer:')
         print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
 
         u_face = findFaceUD(row=i, cols=(j,j+1), Vs=Vs, Fs=Fs)
@@ -440,7 +435,7 @@ class SpinlessQubitLattice():
         l_face = findFaceLR(rows=(i,i+1), col=j, Vs=Vs, Fs=Fs)
         r_face = findFaceLR(rows=(i,i+1), col=j+1, Vs=Vs, Fs=Fs)
 
-        print(u_face, d_face, l_face, r_face)
+        print(u_face, d_face, l_face, r_face, end='\n\n')
 
         ops = [Z, Z, Z, Z]
         inds = [v1, v2, v3, v4]
@@ -501,14 +496,14 @@ class SpinlessQubitLattice():
         Should be equivalent to self.ham_code()
         '''
         #X because stabilizer acts with X on 7th qubit
-        _, Ur = qu.eigh(qu.pauli('x')) 
+        _, Ux = qu.eigh(qu.pauli('x')) 
         
-        U = qu.ikron(Ur.copy(), dims=self._dims, inds=[6])
+        U = qu.ikron(Ux.copy(), dims=self._dims, inds=[6])
         
         Stilde = (U.H @ self.stabilizer() @ U).real.round()
         #Stilde should be diagonal!
 
-        U_plus = U[:, np.where(np.diag(Stilde)==1.0)].reshape(128,64)
+        U_plus = U[:, np.where(np.diag(Stilde)==1.0)[0]]
         
         HamProj = U_plus.H @ self.ham_sim() @ U_plus
         
@@ -760,3 +755,6 @@ def findFaceLR(rows, col, Vs, Fs):
     else: 
         return R
     
+
+def is_diagonal(a):
+    return np.allclose(a, np.diag(np.diag(a)))
