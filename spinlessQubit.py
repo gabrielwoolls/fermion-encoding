@@ -345,6 +345,7 @@ class SpinlessQubitLattice():
         
         #TODO: can this be done without rounding()/real part?
         Stilde = (U.H @ stabilizer @ U).real.round()
+        
         assert is_diagonal(Stilde)
 
         U_plus = U[:, np.where(np.diag(Stilde)==1.0)[0]]
@@ -540,7 +541,7 @@ def gen_lattice_sites(Lx,Ly):
     Returns (Vs, Fs) tuple of arrays
     (Vertex indices, face indices)
 
-    Qubit sites ordered thus:
+    Qubit sites ordered thus (4x4 e.g.)
 
     0--<-1--<-2--<-3
     ^ 16 v    ^ 17 v
@@ -783,3 +784,44 @@ def findFaceLR(rows, col, Vs, Fs):
 
 def is_diagonal(a):
     return np.allclose(a, np.diag(np.diag(a)))
+
+
+def three_qubit_stabilizer():
+    X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
+    fDims = [2,2,2]
+    SA, SB, SC = X&Y&I, Y&X&Y, I&Y&X 
+
+    signSectors = {1.0: 0, -1.0: 1}
+
+    eigsectors = np.ndarray(shape=fDims, dtype=object)
+
+    for signA in signSectors:
+
+        eva, Ua = qu.eigh(SA)
+        UaSec = Ua[:,eva==signA] #8x4
+
+        Qb = UaSec.H @ SB @ UaSec
+        evb, Ub = qu.eigh(Qb)
+
+        for signB in signSectors:
+
+            UbP = Ub[:, np.isclose(evb,signB)] #4x2
+            Qc = UbP.H @ UaSec.H @ SC @ UaSec @ UbP #2x2
+            evc, Uc = qu.eigh(Qc)
+
+            for signC in signSectors:
+                
+                vec = Uc[:,np.isclose(evc,signC)]
+
+                full_vec = UaSec @ UbP @ vec
+
+                assert np.allclose(SA@full_vec, signA*full_vec)
+                assert np.allclose(SB@full_vec, signB*full_vec)
+                assert np.allclose(SC@full_vec, signC*full_vec)
+                
+                a,b,c = (signSectors[x] for x in [signA, signB, signC])
+
+                print(full_vec.shape)
+                eigsectors[a,b,c] = full_vec
+    
+    return eigsectors
