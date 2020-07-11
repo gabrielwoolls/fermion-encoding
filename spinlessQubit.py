@@ -323,6 +323,7 @@ class SpinlessQubitLattice():
     def make_stabilizer(self):
         '''
         TODO: 
+        * add a projector onto codespace (see method 2)
         * generalize indices, rotation, reshape, etc
         * always need to round? check always real
         * strange fix: if remove the "copy()" from Ux
@@ -587,14 +588,13 @@ def gen_lattice_sites(Lx,Ly):
     
     N_vert = Lx*Ly
 
-    f, k = 0, 0
+    k = 0
     for i in range(Lx-1):
         for j in range(Ly-1):
-            if f%2==0: 
+            if i%2==j%2: 
                 Fs[i,j] = k + N_vert
                 k+=1
             else: pass
-            f+=1
     
     return Vs, Fs
 
@@ -785,43 +785,3 @@ def findFaceLR(rows, col, Vs, Fs):
 def is_diagonal(a):
     return np.allclose(a, np.diag(np.diag(a)))
 
-
-def three_qubit_stabilizer():
-    X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
-    fDims = [2,2,2]
-    SA, SB, SC = X&Y&I, Y&X&Y, I&Y&X 
-
-    signSectors = {1.0: 0, -1.0: 1}
-
-    eigsectors = np.ndarray(shape=fDims, dtype=object)
-
-    for signA in signSectors:
-
-        eva, Ua = qu.eigh(SA)
-        UaSec = Ua[:,eva==signA] #8x4
-
-        Qb = UaSec.H @ SB @ UaSec
-        evb, Ub = qu.eigh(Qb)
-
-        for signB in signSectors:
-
-            UbP = Ub[:, np.isclose(evb,signB)] #4x2
-            Qc = UbP.H @ UaSec.H @ SC @ UaSec @ UbP #2x2
-            evc, Uc = qu.eigh(Qc)
-
-            for signC in signSectors:
-                
-                vec = Uc[:,np.isclose(evc,signC)]
-
-                full_vec = UaSec @ UbP @ vec
-
-                assert np.allclose(SA@full_vec, signA*full_vec)
-                assert np.allclose(SB@full_vec, signB*full_vec)
-                assert np.allclose(SC@full_vec, signC*full_vec)
-                
-                a,b,c = (signSectors[x] for x in [signA, signB, signC])
-
-                print(full_vec.shape)
-                eigsectors[a,b,c] = full_vec
-    
-    return eigsectors
