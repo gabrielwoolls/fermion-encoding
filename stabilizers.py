@@ -1,6 +1,35 @@
 import numpy as np
 import quimb as qu
 
+class qubitStabilizer():
+    def __init__(self, vert_inds, face_op, face_inds):
+        '''
+        Params:
+
+        vert_inds [list/tuple of ints]: vertex qubit indices
+        
+        vert_op [string]: 'ZZZZ'
+
+        face_inds: face qubit indices
+
+        face_op [string]: action on face qubits, e.g. 'YXIX'
+        '''
+        assert len(face_inds)==len(face_op)
+        assert len(vert_inds)==4
+
+        self.vert_inds = vert_inds 
+        self.vert_op = 'ZZZZ'
+        
+        self.face_op = face_op 
+        self.face_inds = face_inds 
+        
+        
+    def string_to_op(string_op):
+        opmap = {'X': X, 'Y':Y, 'Z':Z, 'I':I}
+        return qu.kron(*[opmap[Q] for Q in strng_op])
+
+
+
 def two_qubit_eigsectors(strA='XY', strB='YX'):
     '''
 
@@ -53,7 +82,7 @@ def two_qubit_eigsectors(strA='XY', strB='YX'):
             #pick evector in signB sector
             Ub_sgn = Ub[:,np.isclose(evb, signB)] #2x1
             
-            face_state =  Ua_sgn @ Ub_sgn
+            face_state =  Ua_sgn @ Ub_sgn #4x1
 
             assert np.allclose(SA@face_state, signA*face_state)
             assert np.allclose(SB@face_state, signB*face_state)
@@ -61,6 +90,7 @@ def two_qubit_eigsectors(strA='XY', strB='YX'):
             eigsectors[indA,indB] = face_state
 
     return eigsectors
+
 
 
 def two_qubit_codespace(qLattice):
@@ -81,8 +111,8 @@ def two_qubit_codespace(qLattice):
     sector = {1.0: 0,  -1.0: 1}
 
 
-    #ndarray of face-qubit stabilizers (XY, YX)
-    #joint eigenstates (in 2-qubit subspace)
+    #ndarray of joint stabilizer eigenstates 
+    #(in 2-face-qubit subspace)
     eigenfaces = two_qubit_eigsectors()
     
     #########################
@@ -130,7 +160,7 @@ def two_qubit_codespace(qLattice):
 
 ## ***************************************** ##
 
-def three_qubit_stabilizer():
+def three_qubit_stabilizer(qstabs=None):
     '''
     TODO: 
     *define SX_vert (vertices acted on by Z-stabilizer)
@@ -142,15 +172,25 @@ def three_qubit_stabilizer():
 
     face_dims = [2]*3 #dimensions of face-qubit subspace
 
-    # ###
-    # strA = 'XYI'
-    # strB = 'YXY'
-    # strC = 'IYX'
-    # ###
 
-    SA = qu.kron(*[opmap[Q] for Q in strA])
-    SB = qu.kron(*[opmap[Q] for Q in strB])
-    SC = qu.kron(*[opmap[Q] for Q in strC])
+    if qstabs==None:
+
+        qstab_A = qubitStabilizer(vert_inds=[....],
+                                        face_op='XYI',
+                                        face_inds=[...])  
+
+        qstab_B = qubitStabilizer(vert_inds=[....],
+                                        face_op='YXY',
+                                        face_inds=[...])  
+        
+        qstab_C = qubitStabilizer(vert_inds=[....],
+                                        face_op='IYX',
+                                        face_inds=[...])                                                                 
+    
+
+    SA = qu.kron(*[opmap[Q] for Q in qstab_A.face_op])
+    SB = qu.kron(*[opmap[Q] for Q in qstab_B.face_op])
+    SC = qu.kron(*[opmap[Q] for Q in qstab_C.face_op])
     # SA, SB, SC = X&Y&I, Y&X&Y, I&Y&X 
 
     eigfaces = np.ndarray(shape=face_dims, dtype=object)
@@ -169,6 +209,8 @@ def three_qubit_stabilizer():
         for signB, indB in sectors.items():
 
             Ub_sector = Ub[:, np.isclose(evb,signB)] #4x2
+
+            #SC on b-eigenspace
             Qc = Ub_sector.H @ Ua_sector.H @ SC @ Ua_sector @ Ub_sector #2x2
             
             evc, Uc = qu.eigh(Qc)
@@ -185,13 +227,19 @@ def three_qubit_stabilizer():
                 assert np.allclose(SB@face_vec, signB*face_vec)
                 assert np.allclose(SC@face_vec, signC*face_vec)
                 
-
                 eigfaces[indA,indB,indC] = face_vec
     
     
     Nfermion, Nqubit = qLattice._Nfermi, qLattice._Nsites
     code_dims = [2]*Nfermion #vertices 
     qub_dims = [2]*Nqubit #vertices&faces
+
+
+    #######
+    qindices_A = qstab_A.face_inds
+    qindices_B = qstab_B.face_inds
+    qindices_C = qstab_C.face_inds
+    #######
 
     #parts of stabilizers acting only on vertex qubits
     SA_vert = qu.ikron(ops=[Z,Z,Z,Z], inds=qindices_A,
@@ -222,9 +270,9 @@ def three_qubit_stabilizer():
         Uplus[:,k] = full_state.flatten()
 
         #full_state should be +1 eigenstate of all stabilizers
-        assert np.allclose(SA_full@full_state, full_state)
-        assert np.allclose(SB_full@full_state, full_state)
-        assert np.allclose(SC_full@full_state, full_state)
+        assert np.allclose(SA_full @ full_state, full_state)
+        assert np.allclose(SB_full @ full_state, full_state)
+        assert np.allclose(SC_full @ full_state, full_state)
 
 
 
