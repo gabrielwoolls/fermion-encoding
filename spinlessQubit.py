@@ -25,7 +25,7 @@ class SpinlessQubitLattice():
         '''
 
         if (Lx-1)*(Ly-1)%2==1:
-            raise ValueError('Odd # faces!')
+            raise NotImplementedError('Need even num. faces!')
 
         self._Lx = Lx
         self._Ly = Ly
