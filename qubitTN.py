@@ -6,41 +6,63 @@ import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
     
 
-def make_qubit_TN(Lx, Ly, CHI=5, return_tags=False, show_graph=False):
-    vtags, ftags = dict(), dict()
-    
+def make_qubit_TN(Lx, Ly, chi=5, show_graph=False):
+    '''
+    Make a qubit TensorNetwork from local states in `arrays`, i.e.
+    the TN will be in a product state.
 
-    vtensors = [[qtn.Tensor(tags={'VERT'}) 
-                for j in range(Ly)] for i in range(Lx)]
+    arrays: tuple[sequence of sequence of array], optional
+        Specify local qubit states in (vert_array, face_array)
+    '''
+    
+    #default to `up` spin at every site
+    vert_array = [[qu.up().reshape(2) 
+                    for j in range(Ly)]
+                    for i in range(Lx)]
+        
+    face_array = [[qu.up().reshape(2) 
+                    for j in range(Ly-1)]
+                    for i in range(Lx-1)]
+
+
+    vtensors = [[qtn.Tensor(data = vert_array[i][j], 
+                            inds = [f'q{i*Ly+j}'],
+                            tags = {f'Q{i*Ly+j}', 'VERT'}) 
+                for j in range(Ly)] 
+                for i in range(Lx)]
+
 
     ftensors = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
+    k=0
     for i, j in product(range(Lx-1), range(Ly-1)):
         if i%2 == j%2:
-            ftensors[i,j] = qtn.Tensor(tags='FACE')
-    
-    for i,j in product(range(Lx), range(Ly)):
-        vtensors[i][j].new_ind(f'q{i*Ly+j}',size=2)
-        vtensors[i][j].add_tag(f'Q{i*Ly+j}')
+            ftensors[i,j] = qtn.Tensor( data=face_array[i][j],
+                                        inds=[f'q{k+Lx*Ly}'],
+                                        tags={f'Q{k+Lx*Ly}','FACE'})
+            k+=1
 
-        # vtags[(i,j)] = f'Q{i*Ly+j}'
+    
+
+    for i,j in product(range(Lx), range(Ly)):
+        # vtensors[i][j].new_ind(f'q{i*Ly+j}',size=2)
+        # vtensors[i][j].add_tag(f'Q{i*Ly+j}')
 
         if i<=Lx-2:
-            vtensors[i][j].new_bond(vtensors[i+1][j],size=CHI)
+            vtensors[i][j].new_bond(vtensors[i+1][j],size=chi)
         if j<=Ly-2:
-            vtensors[i][j].new_bond(vtensors[i][j+1],size=CHI)
+            vtensors[i][j].new_bond(vtensors[i][j+1],size=chi)
 
-    k=0    
+
     for i, j in product(range(Lx-1), range(Ly-1)):
         if not ftensors[i,j] is None:
-            ftensors[i,j].new_ind(f'q{k+Lx*Ly}',size=2)
-            ftensors[i,j].add_tag(f'Q{k+Lx*Ly}')
-            # ftags[(i,j)] = f'Q{k+Lx*Ly}'
+            # ftensors[i,j].new_ind(f'q{k+Lx*Ly}',size=2)
+            # ftensors[i,j].add_tag(f'Q{k+Lx*Ly}')
 
-            ftensors[i,j].new_bond(vtensors[i][j],size=CHI)
-            ftensors[i,j].new_bond(vtensors[i][j+1],size=CHI)
-            ftensors[i,j].new_bond(vtensors[i+1][j+1],size=CHI)
-            ftensors[i,j].new_bond(vtensors[i+1][j],size=CHI)
-            k+=1
+            ftensors[i,j].new_bond(vtensors[i][j],size=chi)
+            ftensors[i,j].new_bond(vtensors[i][j+1],size=chi)
+            ftensors[i,j].new_bond(vtensors[i+1][j+1],size=chi)
+            ftensors[i,j].new_bond(vtensors[i+1][j],size=chi)
+
 
     alltensors = vtensors + [f for f in ftensors.flatten().tolist() if not f is None]
     vtn = qtn.TensorNetwork(alltensors)
@@ -54,39 +76,8 @@ def make_qubit_TN(Lx, Ly, CHI=5, return_tags=False, show_graph=False):
         vtn.graph(color=['VERT','FACE'], show_tags=True, fix=fix)
 
 
-    if return_tags:
-        return vtags, ftags, vtn
-
-
     return vtn
 
-
-# class OnsiteHam2D():
-
-#     def __init__(Lx, Ly, H1):
-#         '''
-#         H1 can be dictionary mapping sites (i,j) to arrays, 
-#         or a single array (becomes default local term for 
-#         every site.)
-
-#         '''
-#         self.Lx = int(Lx)
-#         self.Ly = int(Ly)
-
-#         if hasattr(H1, 'shape'):
-#             H1s = {None: H1}
-#         else:
-#             H1s = dict(H1)
-        
-#         or key, X in H1s.items():
-#             if isinstance(X, qarray):
-#                 H1s[key] = X.A
-
-#         # possibly set the default single site term
-#         default_H1 = H1s.pop(None, None)
-#         if default_H1 is not None:
-#             for i, j in product(range(self.Lx), range(self.Ly)):
-#                 H1s.setdefault((i, j), default_H1)
 
 
 class MyQubitTN(qtn.TensorNetwork):
@@ -173,7 +164,10 @@ class MyQubitTN(qtn.TensorNetwork):
 
 
     def apply_gate(self, psi, G, where, inplace=False):
-        '''Apply gate `G` at sites specified in `where`,
+        '''
+        TODO: incorporate `physical_ind_id`?
+        
+        Apply gate `G` at sites specified in `where`,
         preserving physical indices.
 
         Params:
@@ -184,9 +178,9 @@ class MyQubitTN(qtn.TensorNetwork):
             shape ``(.....)``
         
         where: sequence of ints
-            The site labels on which to act, using the 
-            default numbering that includes face and vertex
-            sites.
+            The sites on which to act, using the 
+            custom numbering that includes face 
+            and vertex sites.
         '''
         # psi = self._psi if inplace else self._psi.copy()
         psi = psi if inplace else psi.copy()
@@ -232,6 +226,11 @@ class MyQubitTN(qtn.TensorNetwork):
 
     def compute_hop_expecs(self, psi=None):
         '''
+        TODO: clean up? code is repetitive
+        e.g.
+
+        for direction in ['u','d',...]
+            for (i,j,f) in self.get_edges(direction)
         Return <psi|H_hop|psi> expectation for the
         hopping terms in (qubit) Hubbard
         '''
@@ -243,18 +242,29 @@ class MyQubitTN(qtn.TensorNetwork):
 
         X,Y,Z = (qu.pauli(mu) for mu in ['x','y','z'])
 
+        # for direction in ['r','l']:
+        #     Of = Y
+        #     for (i,j,f) in self.get_edges(direction):
+
+        # for direction in ['u','d']:
+        #     Of = X
+        #     sign = {'d':1, 'u':-1}[direction]
+
+
         for (i,j,f) in self.get_edges('r+l'):
             Of = Y #operator to act on face qbit if it exists
 
             if f is None:
-                G = 0.5 * (X&X + Y&Y)
+                G = 0.5 * sum(X&X, Y&Y)
                 G_ket = self.apply_gate(psi, G, where=(i,j))
             
             else:
-                G = 0.5 * (X&X&Of + Y&Y&Of)
+                G = 0.5 * sum(X&X&Of, Y&Y&Of)
                 G_ket = self.apply_gate(psi, G, where=(i,j,f))
-         
-            E_hop += bra|G_ket ^ all
+
+            # print(bra)
+            # print(G_ket)
+            E_hop += (bra|G_ket) ^ all
         
         ## DOWN
 
@@ -262,14 +272,14 @@ class MyQubitTN(qtn.TensorNetwork):
             Of = X #operator to act on face qbit if it exists
             
             if f is None:
-                G = 0.5 * (X&X + Y&Y)
+                G = 0.5 * sum(X&X, Y&Y)
                 G_ket = self.apply_gate(psi, G, where=(i,j))
             
             else:
-                G = 0.5 * (X&X&Of + Y&Y&Of)
+                G = 0.5 * sum(X&X&Of, Y&Y&Of)
                 G_ket = self.apply_gate(psi, G, where=(i,j,f))
 
-            E_hop += bra|G_ket ^ all
+            E_hop += (bra|G_ket) ^ all
 
         ## UP
 
@@ -277,14 +287,14 @@ class MyQubitTN(qtn.TensorNetwork):
             Of = X #operator to act on face qbit if it exists
             
             if f is None:
-                G = 0.5 * (X&X + Y&Y)
+                G = 0.5 * sum(X&X, Y&Y)
                 G_ket = self.apply_gate(psi, G, where=(i,j))
             
             else:
-                G = 0.5 * (X&X&Of + Y&Y&Of)
+                G = 0.5 * sum(X&X&Of, Y&Y&Of)
                 G_ket = self.apply_gate(psi, G, where=(i,j,f))
 
-            E_hop += bra|G_ket ^ all
+            E_hop += (bra|G_ket) ^ all
 
         return E_hop            
 
