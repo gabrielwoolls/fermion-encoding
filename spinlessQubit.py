@@ -54,10 +54,10 @@ class SpinlessQubitLattice():
         #lists of edge tuples (i, j, f(i,j)) so that
         #  (i, j, r) 
         #corresponds to edge i-->j and face qbit r
-        self._edgesR = get_R_edges(V_ind, F_ind)
-        self._edgesL = get_L_edges(V_ind, F_ind)
-        self._edgesU = get_U_edges(V_ind, F_ind)
-        self._edgesD = get_D_edges(V_ind, F_ind)
+        self._edgesR = get_right_edges(V_ind, F_ind)
+        self._edgesL = get_left_edges(V_ind, F_ind)
+        self._edgesU = get_up_edges(V_ind, F_ind)
+        self._edgesD = get_down_edges(V_ind, F_ind)
         
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
@@ -534,7 +534,7 @@ class SpinlessQubitLattice():
         return HamProj #in +1 stabilizer eigenbasis
         
 
-def gen_lattice_sites(Lx,Ly):
+def gen_lattice_sites(Lx, Ly):
 
     '''
     Generate sites for lattice of shape (Lx,Ly)
@@ -599,7 +599,7 @@ def gen_lattice_sites(Lx,Ly):
     return Vs, Fs
 
 
-def get_R_edges(V_ind, F_ind):
+def get_right_edges(V_ind, F_ind):
     '''
     |  U? |
     i-->--j
@@ -631,9 +631,9 @@ def get_R_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_L_edges(V_ind, F_ind):
+def get_left_edges(V_ind, F_ind):
     '''
-    See `get_R_edges()`.
+    See `get_right_edges()`.
 
     Same method, but returns leftward edges
     rather than rightward.
@@ -656,7 +656,7 @@ def get_L_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_U_edges(V_ind, F_ind):
+def get_up_edges(V_ind, F_ind):
     '''
     Return list of up-edges
     '''
@@ -674,7 +674,7 @@ def get_U_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_D_edges(V_ind, F_ind):
+def get_down_edges(V_ind, F_ind):
     '''
     
     '''
@@ -690,6 +690,15 @@ def get_D_edges(V_ind, F_ind):
             edgesD.append((i,j,f))
 
     return edgesD
+
+
+def get_edge_map(Vs, Fs):
+    edge_map = {}
+    edge_map['r'] = get_right_edges(Vs, Fs)
+    edge_map['l'] = get_left_edges(Vs, Fs)
+    edge_map['u'] = get_up_edges(Vs, Fs)
+    edge_map['d'] = get_down_edges(Vs, Fs)
+    return edge_map
 
 
 def findFaceUD(row, cols, Vs, Fs):
@@ -728,7 +737,7 @@ def findFaceUD(row, cols, Vs, Fs):
         U = Fs[row - 1, cols[0]]
 
     #at MOST one face should have a valid index
-    assert D==None or U==None 
+    assert (D is None) or (U is None) 
 
     #if one of U/D is not None, return it.
     #Otherwise return None
