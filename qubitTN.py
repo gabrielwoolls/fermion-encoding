@@ -6,9 +6,10 @@ import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
     
 
-def make_qubit_TN(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
+def make_skeleton_net(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
     '''
     TODO: fix ftensor type (change ndarray->list[list])
+            change defaults?
 
     Make a qubit TensorNetwork from local states in `arrays`, i.e.
     the TN will be in a product state.
@@ -81,13 +82,12 @@ def make_qubit_TN(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
     return vtn
 
 
-
 def make_random_net(Lx, Ly, bond_dim, phys_dim=2):
     '''TODO: take phys_dim into account?
     '''
 
     #dummy TN, sites to be replaced with random tensors
-    tnet = make_qubit_TN(Lx, Ly, bond_dim)
+    tnet = make_skeleton_net(Lx, Ly, bond_dim)
 
     #replace vertex tensors
     for i, j in product(range(Lx), range(Ly)):
@@ -146,7 +146,7 @@ class MyQubitTN():
     def __init__(self, Lx, Ly, chi):
         '''
 
-        _edge_map: dict[string --> list]
+        _edge_map: dict[string --> list(tuple(int))]
             Gives list of edges for each direction  
             in {'u','d','r','l'}
         
@@ -160,16 +160,17 @@ class MyQubitTN():
 
             e.g. for 4x4 vertices
 
-            0----1----2----3
-            |    |    |    |
-            4----5----6----7
-            |    |    |    |
-            8----9----10---11
-            |    |    |    |
-            12---13---14---15
+            0-----1-----2-----3
+            |  x  |     |  x  |
+            4-----5-----6-----7
+            |     |  x  |     |
+            8-----9----10----11
+            |  x  |     |  x  |
+            12----13----14----15
             :
             etc
         
+
         _face_coo_map: dict[tuple(int)-->int]
             Numbering of face sites. To each tuple
             (i,j) denoting a location in the *face*
@@ -188,12 +189,12 @@ class MyQubitTN():
         
         verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
         
-        # tensor_net = make_qubit_TN(Lx, Ly, chi)
+        # tensor_net = make_skeleton_net(Lx, Ly, chi)
         tensor_net = make_random_net(Lx, Ly, chi)
         
 
-        self._vert_coo_map = np.ndenumerate(verts)
-        self._face_coo_map = np.ndenumerate(faces)
+        self._vert_coo_map = dict(np.ndenumerate(verts))
+        self._face_coo_map = dict(np.ndenumerate(faces))
         
         self._psi = tensor_net
 
@@ -238,23 +239,26 @@ class MyQubitTN():
         return f'q{self.face_site_map(i,j)}'
 
 
-    def get_edges(self, key):
+    def get_edges(self, which):
         '''
         Returns: list[tuple(int or None)]
-            List of (three-tuple) edges,
-            where edge (i,j,f) denotes vertices i,j 
-            (ints) and face f  (int or None)
+            List of (three-tuple) edges, where a tuple
+            (i,j,f) denotes the edge with vertices i,j 
+            (ints) and face f (int or None)
 
-        key: {'u','d','r','l','r+l'}
-            String specifying what edges of
-            the graph to return.
+
+        which: {'u','d','r','l','all'}
+            Which edges of the graph to return.
 
         '''
-        if key == 'r+l':
-            return self._edge_map['r']+self._edge_map['l']
-        
+        if which == 'all':
+            return list(self._edge_map['r'] + 
+                        self._edge_map['l'] +
+                        self._edge_map['u'] +
+                        self._edge_map['d'] )
+
         else:
-            return self._edge_map[key]
+            return self._edge_map[which]
 
 
 
@@ -273,12 +277,14 @@ class MyQubitTN():
             self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix)
 
 
+
     def to_dense(self):
         '''Return self._psi as dense vector, i.e. a qarray with 
         shape (-1, 1)
         '''
         inds_seq = (f'q{i}' for i in range(self._Nsites))
         return self._psi.to_dense(inds_seq).reshape(-1,1)
+
 
 
     def apply_gate(self, psi, G, where, inplace=False):
@@ -293,7 +299,7 @@ class MyQubitTN():
             
         G : array
             Gate to apply, should be compatible with 
-            shape ``(.....)``
+            shape ``([physical_dim, physical_dim]*len(where))``
         
         where: sequence of ints
             The sites on which to act, using the 
@@ -344,8 +350,6 @@ class MyQubitTN():
 
     def compute_hop_expecs(self, psi=None):
         '''
-        TODO: debug
-        
         Return <psi|H_hop|psi> expectation for the
         hopping terms in (qubit) Hubbard
         '''
@@ -391,66 +395,86 @@ class MyQubitTN():
                 E_hop += sign * (bra|G_ket) ^ all
 
         return E_hop
-
-        # for (i,j,f) in self.get_edges('r+l'):
-        #     Of = Y #operator to act on face qbit if it exists
-
-        #     if f is None:
-        #         G = 0.5 * sum(X&X, Y&Y)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j))
-            
-        #     else:
-        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
-
-        #     # print(bra)
-        #     # print(G_ket)
-        #     E_hop += (bra|G_ket) ^ all
-        
-        ## DOWN
-
-        # for (i,j,f) in self.get_edges('d'):
-        #     Of = X #operator to act on face qbit if it exists
-            
-        #     if f is None:
-        #         G = 0.5 * sum(X&X, Y&Y)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j))
-            
-        #     else:
-        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
-
-        #     E_hop += (bra|G_ket) ^ all
-
-        ## UP
-
-        # for (i,j,f) in self.get_edges('u'):
-        #     Of = X #operator to act on face qbit if it exists
-            
-        #     if f is None:
-        #         G = 0.5 * sum(X&X, Y&Y)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j))
-            
-        #     else:
-        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
-        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
-
-        #     E_hop += (bra|G_ket) ^ all
-
-        # return E_hop            
+ 
 
     
-    # def compute_nnint_expecs(self, psi=None):
-    #     '''
-    #     Return <psi|H_int|psi> for the nearest-neighbor
-    #     repulsion terms in 1D-Hubbard.
-    #     '''
-    #     if psi is None: 
-    #         psi = self._psi
-
-
-
+    def compute_nnint_expecs(self, psi=None):
+        '''
+        Return <psi|H_int|psi> for the nearest-neighbor
+        repulsion terms in spinless-Hubbard.
+        '''
+        if psi is None: 
+            psi = self._psi
         
+        E_int = 0
+        bra = psi.H
+
+        for (i, j, _) in self.get_edges('all'):
+            #ignore all faces here
+
+            G = self.number_op() & self.number_op()
+            G_ket = self.apply_gate(psi, G, where=(i,j))
+
+            E_int += (bra|G_ket)^all
+
+        return E_int
+
+
+    def compute_occs_expecs(self, psi=None, return_array=False):
+        '''
+        Compute local occupation/number expectations,
+        <psi|n_xy|psi>
+
+        return_array: bool
+            Whether to return 2D array of local number 
+            expectations. Defaults to false, in which case
+            only the total sum is returned.
+        '''
+        Lx,Ly = self._Lx, self._Ly
+
+        if psi is None: 
+            psi = self._psi
+        
+        bra = psi.H
+
+        nxy_array = [[None for y in range(Ly)] for x in range(Lx)]
+
+        G = self.number_op()
+
+        #only finds occupations at *vertices*!
+        for x,y in product(range(Lx),range(Ly)):
+            
+            where = self.vert_coo_map(x,y)
+            G_ket = self.apply_gate(psi, G, where=(where,))
+
+            nxy_array[x][y] = (bra | G_ket) ^ all
+            
+
+        if return_array: 
+            return nxy_array
+
+        return np.sum(nxy_array)            
+    
+
+
+    def compute_energy(self, t, V, mu):
+        return (t  * self.compute_hop_expecs() 
+              + V  * self.compute_nnint_expecs()
+              - mu * self.compute_occs_expecs())
+
+
+    def number_op(self):
+            '''
+            Fermionic number operator is
+            mapped to qubit spin-down
+            projector acting on 2-dim qbit space.
+
+            n_j --> (1-Vj)/2 
+                    = (1-Zj)/2 
+                    = |down><down|
+            '''
+            return qu.qu([[0, 0], [0, 1]])
+            
 
 
 
