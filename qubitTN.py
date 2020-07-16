@@ -6,8 +6,10 @@ import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
     
 
-def make_qubit_TN(Lx, Ly, chi=5, default_spin='up', show_graph=False):
+def make_qubit_TN(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
     '''
+    TODO: fix ftensor type (change ndarray->list[list])
+
     Make a qubit TensorNetwork from local states in `arrays`, i.e.
     the TN will be in a product state.
 
@@ -16,6 +18,7 @@ def make_qubit_TN(Lx, Ly, chi=5, default_spin='up', show_graph=False):
     '''
     
     #default to `up` spin at every site
+    
     vert_array = [[qu.up().reshape(2) 
                     for j in range(Ly)]
                     for i in range(Lx)]
@@ -68,7 +71,7 @@ def make_qubit_TN(Lx, Ly, chi=5, default_spin='up', show_graph=False):
     vtn = qtn.TensorNetwork(alltensors)
 
     if show_graph:
-        LAT_CONST = 50 #lattice constant for graphing
+        LAT_CONST = 50 #lattice constant for graph
 
         fix = {
             **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
@@ -79,9 +82,68 @@ def make_qubit_TN(Lx, Ly, chi=5, default_spin='up', show_graph=False):
 
 
 
+def make_random_net(Lx, Ly, bond_dim, phys_dim=2):
+    '''TODO: take phys_dim into account?
+    '''
+
+    #dummy TN, sites to be replaced with random tensors
+    tnet = make_qubit_TN(Lx, Ly, bond_dim)
+
+    #replace vertex tensors
+    for i, j in product(range(Lx), range(Ly)):
+        
+        tid = tuple(tnet.tag_map[f'Q{i*Ly+j}'])
+        assert len(tid)==1
+        tid = tid[0]
+
+        old_tensor = tnet._pop_tensor(tid)
+
+        shape = old_tensor.shape
+        tags = old_tensor.tags #[f'Q{i*Ly + j}', 'VERT']
+        inds  = old_tensor.inds #[..., f'q{i*Ly + j}']
+
+                
+        rand_data = qtn.array_ops.sensibly_scale(
+                            qtn.array_ops.sensibly_scale(
+                            qu.gen.rand.randn(shape)))
+        
+        tensor_ij = qtn.Tensor(rand_data, inds, tags)
+        tnet |= tensor_ij
+    
+    
+    k=0
+    for i, j in product(range(Lx-1), range(Ly-1)):
+        #replace face tensors
+        if i%2 == j%2:
+            
+            tid = tuple(tnet.tag_map[f'Q{k+Lx*Ly}'])
+            assert len(tid)==1
+            tid = tid[0]
+
+            old_tensor = tnet._pop_tensor(tid)
+
+            shape = old_tensor.shape
+            tags = old_tensor.tags 
+            inds  = old_tensor.inds
+
+                    
+            rand_data = qtn.array_ops.sensibly_scale(
+                                qtn.array_ops.sensibly_scale(
+                                qu.gen.rand.randn(shape)))
+            
+            tensor_ij = qtn.Tensor(rand_data, inds, tags)
+            tnet |= tensor_ij
+
+
+        else: pass
+    
+    return tnet
+            
+
+
 class MyQubitTN():
 
-    def __init__(self, Lx, Ly, chi, default_spin='up'):
+    def __init__(self, Lx, Ly, chi):
         '''
 
         _edge_map: dict[string --> list]
@@ -92,12 +154,44 @@ class MyQubitTN():
             State of the qubit lattice
         
         _vert_coo_map: dict[tuple(int) --> int]
+            Numbering of the vertex sites, i.e.
+            maps each location (i,j) in the vertex lattice
+            to an integer.
+
+            e.g. for 4x4 vertices
+
+            0----1----2----3
+            |    |    |    |
+            4----5----6----7
+            |    |    |    |
+            8----9----10---11
+            |    |    |    |
+            12---13---14---15
+            :
+            etc
+        
+        _face_coo_map: dict[tuple(int)-->int]
+            Numbering of face sites. To each tuple
+            (i,j) denoting a location in the *face*
+            lattice, assigns an integer.
+
+            e.g. for 4x4 vertices (3x3 faces)
+
+            o----o----o----o
+            | 16 |    | 17 |
+            o----o----o----o
+            |    | 18 |    |
+            o----o----o----o
+            | 19 |    | 20 |
+            o----o----o----o
         '''
         
         verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
         
-        tensor_net = make_qubit_TN(Lx, Ly, chi, default_spin)
+        # tensor_net = make_qubit_TN(Lx, Ly, chi)
+        tensor_net = make_random_net(Lx, Ly, chi)
         
+
         self._vert_coo_map = np.ndenumerate(verts)
         self._face_coo_map = np.ndenumerate(faces)
         
