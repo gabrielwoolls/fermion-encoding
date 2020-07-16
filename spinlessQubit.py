@@ -87,7 +87,7 @@ class SpinlessQubitLattice():
 
         i, j: (directed) edge qubits indices
         f: face qubit index
-        dir: 'vertical' or 'horizontal'
+        dir: {'vertical', 'horizontal'}
 
         Returns hopping term acting on qbits ijf,
             

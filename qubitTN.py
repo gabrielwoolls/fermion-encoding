@@ -6,13 +6,13 @@ import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
     
 
-def make_qubit_TN(Lx, Ly, chi=5, show_graph=False):
+def make_qubit_TN(Lx, Ly, chi=5, default_spin='up', show_graph=False):
     '''
     Make a qubit TensorNetwork from local states in `arrays`, i.e.
     the TN will be in a product state.
 
-    arrays: tuple[sequence of sequence of array], optional
-        Specify local qubit states in (vert_array, face_array)
+    arrays: sequence of arrays, optional
+        Specify local qubit states in vertices, faces
     '''
     
     #default to `up` spin at every site
@@ -20,7 +20,7 @@ def make_qubit_TN(Lx, Ly, chi=5, show_graph=False):
                     for j in range(Ly)]
                     for i in range(Lx)]
         
-    face_array = [[qu.up().reshape(2) 
+    face_array = [[qu.plus().reshape(2) 
                     for j in range(Ly-1)]
                     for i in range(Lx-1)]
 
@@ -75,34 +75,50 @@ def make_qubit_TN(Lx, Ly, chi=5, show_graph=False):
             }
         vtn.graph(color=['VERT','FACE'], show_tags=True, fix=fix)
 
-
     return vtn
 
 
 
-class MyQubitTN(qtn.TensorNetwork):
+class MyQubitTN():
 
-    def __init__(self, Lx, Ly, chi):
+    def __init__(self, Lx, Ly, chi, default_spin='up'):
+        '''
+
+        _edge_map: dict[string --> list]
+            Gives list of edges for each direction  
+            in {'u','d','r','l'}
+        
+        _psi: TensorNetwork 
+            State of the qubit lattice
+        
+        _vert_coo_map: dict[tuple(int) --> int]
+        '''
         
         verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
         
-        tensors = make_qubit_TN(Lx, Ly, chi)
+        tensor_net = make_qubit_TN(Lx, Ly, chi, default_spin)
         
         self._vert_coo_map = np.ndenumerate(verts)
         self._face_coo_map = np.ndenumerate(faces)
         
-        self._psi = tensors
+        self._psi = tensor_net
 
         self._Lx = Lx
         self._Ly = Ly
+
+        self._Nverts = verts.size
+        self._Nsites = verts.size + faces[faces!=None].size
+        self._d_physical = 2
+
 
         self._edge_map = spinlessQubit.get_edge_map(verts, faces)
         
         self._site_tag_id = 'Q{}'
         self._phys_ind_id = 'q{}'
-        self._d_physical = 2
 
-        super().__init__(tensors)
+        
+        #If we subclass TensorNetwork -- should we?
+        # super().__init__(tensors)
 
 
     def vert_coo_map(self, i, j):
@@ -161,6 +177,14 @@ class MyQubitTN(qtn.TensorNetwork):
                 **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
                 }
             self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix)
+
+
+    def to_dense(self):
+        '''Return self._psi as dense vector, i.e. a qarray with 
+        shape (-1, 1)
+        '''
+        inds_seq = (f'q{i}' for i in range(self._Nsites))
+        return self._psi.to_dense(inds_seq).reshape(-1,1)
 
 
     def apply_gate(self, psi, G, where, inplace=False):
@@ -226,11 +250,8 @@ class MyQubitTN(qtn.TensorNetwork):
 
     def compute_hop_expecs(self, psi=None):
         '''
-        TODO: clean up? code is repetitive
-        e.g.
-
-        for direction in ['u','d',...]
-            for (i,j,f) in self.get_edges(direction)
+        TODO: debug
+        
         Return <psi|H_hop|psi> expectation for the
         hopping terms in (qubit) Hubbard
         '''
@@ -242,61 +263,87 @@ class MyQubitTN(qtn.TensorNetwork):
 
         X,Y,Z = (qu.pauli(mu) for mu in ['x','y','z'])
 
-        # for direction in ['r','l']:
-        #     Of = Y
-        #     for (i,j,f) in self.get_edges(direction):
+        #Horizontal edges
+        for direction in ['r','l']:
 
-        # for direction in ['u','d']:
-        #     Of = X
-        #     sign = {'d':1, 'u':-1}[direction]
+            Of = Y #face operator
 
-
-        for (i,j,f) in self.get_edges('r+l'):
-            Of = Y #operator to act on face qbit if it exists
-
-            if f is None:
-                G = 0.5 * sum(X&X, Y&Y)
-                G_ket = self.apply_gate(psi, G, where=(i,j))
+            for (i,j,f) in self.get_edges(direction):
+                if f is None:
+                    G = ((X&X) + (Y&Y))/2
+                    G_ket = self.apply_gate(psi, G, where=(i,j))
             
-            else:
-                G = 0.5 * sum(X&X&Of, Y&Y&Of)
-                G_ket = self.apply_gate(psi, G, where=(i,j,f))
+                else:
+                    G = ((X&X&Of) + (Y&Y&Of))/2
+                    G_ket = self.apply_gate(psi, G, where=(i,j,f))
 
-            # print(bra)
-            # print(G_ket)
-            E_hop += (bra|G_ket) ^ all
+                E_hop += (bra|G_ket) ^ all
+
+
+        #Vertical edges (sign changes!)
+        for direction, sign in [('u', -1), ('d', 1)]:
+
+            Of = X #face operator 
+
+            for (i,j,f) in self.get_edges(direction):
+                if f is None:
+                    G = ((X&X) + (Y&Y))/2
+                    G_ket = self.apply_gate(psi, G, where=(i,j))
+            
+                else:
+                    G = ((X&X&Of) + (Y&Y&Of))/2
+                    G_ket = self.apply_gate(psi, G, where=(i,j,f))
+
+                E_hop += sign * (bra|G_ket) ^ all
+
+        return E_hop
+
+        # for (i,j,f) in self.get_edges('r+l'):
+        #     Of = Y #operator to act on face qbit if it exists
+
+        #     if f is None:
+        #         G = 0.5 * sum(X&X, Y&Y)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j))
+            
+        #     else:
+        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
+
+        #     # print(bra)
+        #     # print(G_ket)
+        #     E_hop += (bra|G_ket) ^ all
         
         ## DOWN
 
-        for (i,j,f) in self.get_edges('d'):
-            Of = X #operator to act on face qbit if it exists
+        # for (i,j,f) in self.get_edges('d'):
+        #     Of = X #operator to act on face qbit if it exists
             
-            if f is None:
-                G = 0.5 * sum(X&X, Y&Y)
-                G_ket = self.apply_gate(psi, G, where=(i,j))
+        #     if f is None:
+        #         G = 0.5 * sum(X&X, Y&Y)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j))
             
-            else:
-                G = 0.5 * sum(X&X&Of, Y&Y&Of)
-                G_ket = self.apply_gate(psi, G, where=(i,j,f))
+        #     else:
+        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
 
-            E_hop += (bra|G_ket) ^ all
+        #     E_hop += (bra|G_ket) ^ all
 
         ## UP
 
-        for (i,j,f) in self.get_edges('u'):
-            Of = X #operator to act on face qbit if it exists
+        # for (i,j,f) in self.get_edges('u'):
+        #     Of = X #operator to act on face qbit if it exists
             
-            if f is None:
-                G = 0.5 * sum(X&X, Y&Y)
-                G_ket = self.apply_gate(psi, G, where=(i,j))
+        #     if f is None:
+        #         G = 0.5 * sum(X&X, Y&Y)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j))
             
-            else:
-                G = 0.5 * sum(X&X&Of, Y&Y&Of)
-                G_ket = self.apply_gate(psi, G, where=(i,j,f))
+        #     else:
+        #         G = 0.5 * sum(X&X&Of, Y&Y&Of)
+        #         G_ket = self.apply_gate(psi, G, where=(i,j,f))
 
-            E_hop += (bra|G_ket) ^ all
+        #     E_hop += (bra|G_ket) ^ all
 
-        return E_hop            
+        # return E_hop            
 
     
     # def compute_nnint_expecs(self, psi=None):
