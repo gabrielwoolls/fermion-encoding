@@ -5,6 +5,7 @@ import functools
 import itertools
 import operator
 
+
 class SpinlessQubitLattice():
 
     def __init__(self, Lx=2, Ly=3):
@@ -29,7 +30,7 @@ class SpinlessQubitLattice():
 
         self._Lx = Lx
         self._Ly = Ly
-        self._shape = (Lx, Ly)
+        self._lat_shape = (Lx, Ly)
 
         #generate indices for qbit lattice
         V_ind, F_ind = gen_lattice_sites(Lx,Ly)
@@ -54,11 +55,13 @@ class SpinlessQubitLattice():
         #lists of edge tuples (i, j, f(i,j)) so that
         #  (i, j, r) 
         #corresponds to edge i-->j and face qbit r
-        self._edgesR = get_right_edges(V_ind, F_ind)
-        self._edgesL = get_left_edges(V_ind, F_ind)
-        self._edgesU = get_up_edges(V_ind, F_ind)
-        self._edgesD = get_down_edges(V_ind, F_ind)
+        self._edgesR = make_right_edges(V_ind, F_ind)
+        self._edgesL = make_left_edges(V_ind, F_ind)
+        self._edgesU = make_up_edges(V_ind, F_ind)
+        self._edgesD = make_down_edges(V_ind, F_ind)
         
+        self._edge_map = make_edge_map(V_ind,F_ind)
+
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
         
@@ -66,6 +69,36 @@ class SpinlessQubitLattice():
         #(written in stabilizer eigenbasis)
         self._HamCode = None
         self._eigens, self._eigstates = None, None
+
+
+    def get_edges(self, which):
+
+        if which == 'horizontal':
+            return self._edge_map['r'] + self._edge_map['l']
+        
+
+        if which == 'all':
+            return (self._edge_map['r']+
+                    self._edge_map['l']+
+                    self._edge_map['u']+
+                    self._edge_map['d'] )
+
+
+        key =  {'d' : 'd',
+                'down':'d',
+                'u' : 'u',
+                'up': 'u',
+                'left':'l',
+                'l' : 'l',
+                'right':'r',
+                'r':'r',
+                'he':'he',
+                'ho':'ho',
+                've':'ve',
+                'vo':'vo'}[which]
+        
+        return self._edge_map[key]
+
 
 
     def H_nn_int(self, i, j):
@@ -253,7 +286,7 @@ class SpinlessQubitLattice():
               True : self._fermi_dims} [fermi]
 
         return [qu.ikron(self.number_op(), ds, [site]) 
-                        for site in sites]#.reshape(self._shape)
+                        for site in sites]#.reshape(self._lat_shape)
 
 
     def state_local_occs(self, qstate=None, k=0, faces=False):
@@ -281,43 +314,62 @@ class SpinlessQubitLattice():
             qstate = self._eigstates[:,k] 
         
         #local number ops acting on each site j
-        # Nj = self.site_number_ops(sites=self.allSiteInds() , fermi=False)
+        # Nj = self.site_number_ops(sites=self.all_sites() , fermi=False)
         Nj = [qu.ikron(self.number_op(), self._dims, [site]) 
-                        for site in self.allSiteInds()]
+                        for site in self.all_sites()]
 
         #expectation <N> for each vertex
         nocc_v = np.array([qu.expec(Nj[v], qstate)
-                        for v in self.vertexInds()]).reshape(self._shape)
+                        for v in self.vertex_sites()]).reshape(self._lat_shape)
 
         if not faces:
             return nocc_v
 
         #expectation <Nj> for each face
-        nocc_f = np.array([qu.expec(Nj[f], qstate) for f in self.faceInds()])
+        nocc_f = np.array([qu.expec(Nj[f], qstate) for f in self.face_sites()])
         
         return nocc_v, nocc_f
             
 
-    def vertexInds(self):
+    def vertex_sites(self):
         '''
         Indices for vertex qubits,
         equivalent to range(Lx*Ly)
         '''
-        return np.copy(self._V_ind.flatten())
+        return list(self._V_ind.flatten())
 
-    def faceInds(self):
+    def face_sites(self):
         '''
         Indices of face-qubits 
         '''
-        F = np.copy(self._F_ind).flatten()
-        return F[F!=None]
+        F = self._F_ind.flatten()
+        return list(F[F!=None])
     
-    def allSiteInds(self):
+    def all_sites(self):
         '''
         All qubit indices (vertex and face)
         '''
-        return np.concatenate([self.vertexInds(),
-                              self.faceInds()])
+        return self.vertex_sites() + self.face_sites()
+
+
+    def vert_array(self):
+        '''ndarray of vertex site numbers
+        '''
+        return self._V_ind.copy()
+    
+    def face_array(self):
+        '''ndarray of face site numbers
+        '''
+        return self._F_ind.copy()
+
+    def num_verts(self):
+        return self._V_ind.size
+    
+    def num_faces(self):
+        return self._F_ind[self._F_ind!=None].size
+
+    def num_sites(self):
+        return self.num_faces()+self.num_verts()
 
 
     def make_stabilizer(self):
@@ -452,10 +504,10 @@ class SpinlessQubitLattice():
         print('Stabilizer:')
         print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
 
-        u_face = findFaceUD(row=i, cols=(j,j+1), Vs=Vs, Fs=Fs)
-        d_face = findFaceUD(row=i+1, cols=(j,j+1), Vs=Vs, Fs=Fs)
-        l_face = findFaceLR(rows=(i,i+1), col=j, Vs=Vs, Fs=Fs)
-        r_face = findFaceLR(rows=(i,i+1), col=j+1, Vs=Vs, Fs=Fs)
+        u_face = find_face_up_down(row=i, cols=(j,j+1), Vs=Vs, Fs=Fs)
+        d_face = find_face_up_down(row=i+1, cols=(j,j+1), Vs=Vs, Fs=Fs)
+        l_face = find_face_right_left(rows=(i,i+1), col=j, Vs=Vs, Fs=Fs)
+        r_face = find_face_right_left(rows=(i,i+1), col=j+1, Vs=Vs, Fs=Fs)
 
         print(u_face, d_face, l_face, r_face, end='\n\n')
 
@@ -599,7 +651,7 @@ def gen_lattice_sites(Lx, Ly):
     return Vs, Fs
 
 
-def get_right_edges(V_ind, F_ind):
+def make_right_edges(V_ind, F_ind):
     '''
     |  U? |
     i-->--j
@@ -623,7 +675,7 @@ def get_right_edges(V_ind, F_ind):
     for row in range(1,Lx,2): 
         for col in range(Ly-1):
                 i, j = V_ind[row,col], V_ind[row,col+1]
-                f = findFaceUD(row=row, cols=(col,col+1), Vs=V_ind, Fs=F_ind)
+                f = find_face_up_down(row=row, cols=(col,col+1), Vs=V_ind, Fs=F_ind)
                 edgesR.append((i, j, f))
 
     return edgesR
@@ -631,12 +683,9 @@ def get_right_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_left_edges(V_ind, F_ind):
-    '''
-    See `get_right_edges()`.
-
-    Same method, but returns leftward edges
-    rather than rightward.
+def make_left_edges(V_ind, F_ind):
+    '''List of left-edges for given arrays
+    of vertices and faces
     '''
     Lx, Ly = V_ind.shape
     assert F_ind.shape==(Lx-1,Ly-1)
@@ -648,7 +697,7 @@ def get_left_edges(V_ind, F_ind):
         for col in range(Ly-1,0,-1):
 
             i,j = V_ind[row, col], V_ind[row, col-1]
-            f = findFaceUD(row=row, cols=(col-1,col), Vs=V_ind, Fs=F_ind)
+            f = find_face_up_down(row=row, cols=(col-1,col), Vs=V_ind, Fs=F_ind)
             edgesL.append((i, j, f))
 
     return edgesL
@@ -656,9 +705,9 @@ def get_left_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_up_edges(V_ind, F_ind):
-    '''
-    Return list of up-edges
+def make_up_edges(V_ind, F_ind):
+    '''List of up-edges for given arrays
+    of vertices and faces
     '''
     Lx, Ly = V_ind.shape
     edgesU=[]
@@ -666,7 +715,7 @@ def get_up_edges(V_ind, F_ind):
     for row in range(Lx-1,0,-1):
         for col in range(0, Ly, 2):
             i, j = V_ind[row, col], V_ind[row-1, col]
-            f = findFaceLR(rows=(row-1,row), col=col, Vs=V_ind, Fs=F_ind)
+            f = find_face_right_left(rows=(row-1,row), col=col, Vs=V_ind, Fs=F_ind)
             edgesU.append((i,j,f))
 
     return edgesU
@@ -674,9 +723,9 @@ def get_up_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def get_down_edges(V_ind, F_ind):
-    '''
-    
+def make_down_edges(V_ind, F_ind):
+    '''List of down-edges for given arrays
+    of vertices and faces  
     '''
     Lx, Ly = V_ind.shape
     assert F_ind.shape == (Lx-1,Ly-1)
@@ -686,27 +735,90 @@ def get_down_edges(V_ind, F_ind):
     for row in range(0,Lx-1):
         for col in range(1, Ly, 2):
             i, j = V_ind[row, col], V_ind[row+1, col]
-            f = findFaceLR(rows=(row,row+1), col=col, Vs=V_ind, Fs=F_ind)
+            f = find_face_right_left(rows=(row,row+1), col=col, Vs=V_ind, Fs=F_ind)
             edgesD.append((i,j,f))
 
     return edgesD
 
 
-def get_edge_map(Vs, Fs):
+def inverse_coo_map(Vs):
+    '''Given array/map of coordinates to vertices,
+    return a map taking vertex number to (x,y)
+    '''
+    if not isinstance(Vs, dict):
+        Vs = dict(np.ndenumerate(Vs))
+    
+    inv_map = {vert : coo for coo, vert in Vs.items()}
+    return inv_map
+
+
+
+def make_edge_map(Vs, Fs):
+    '''Map to edges of the graph
+    in various directions/groupings.
+    
+    Returns:
+    edge_map: dict[string : list(tuple(int))]
+
+        keys: {'u','d','r','l','he','ho','ve','vo'}
+        
+        values: lists of edges, i.e. lists of
+        tuples (i,j,f) 
+    '''
+    Lx,Ly = Vs.shape
+    
     edge_map = {}
-    edge_map['r'] = get_right_edges(Vs, Fs)
-    edge_map['l'] = get_left_edges(Vs, Fs)
-    edge_map['u'] = get_up_edges(Vs, Fs)
-    edge_map['d'] = get_down_edges(Vs, Fs)
+    
+    edge_map['r'] = make_right_edges(Vs, Fs)
+    edge_map['l'] = make_left_edges(Vs, Fs)
+    edge_map['u'] = make_up_edges(Vs, Fs)
+    edge_map['d'] = make_down_edges(Vs, Fs)
+
+
+    horizontals = edge_map['r'] + edge_map['l']
+    verticals = edge_map['u'] + edge_map['d']
+
+    inv_coo_map = inverse_coo_map(Vs)
+
+    hor_even, hor_odd = [], []
+    for (i,j,f) in horizontals:
+        xi, yi = inv_coo_map[i]
+        xj, yj = inv_coo_map[j]
+        assert xi==xj and abs(yi-yj)==1
+
+        if min([yi,yj])%2 == 0:
+            hor_even.append(tuple([i,j,f]))
+        else:
+            hor_odd.append(tuple([i,j,f]))
+
+    ver_even, ver_odd = [], []
+    for (i,j,f) in verticals:
+        xi, yi = inv_coo_map[i]
+        xj, yj = inv_coo_map[j]
+        assert yi==yj and abs(xi-xj)==1
+
+        if min([xi,xj])%2 == 0:
+            ver_even.append(tuple([i,j,f]))
+        else:
+            ver_odd.append(tuple([i,j,f]))
+        
+    edge_map['he'] = hor_even
+    edge_map['ho'] = hor_odd
+    edge_map['ve'] = ver_even
+    edge_map['vo'] = ver_odd
+
     return edge_map
 
 
-def findFaceUD(row, cols, Vs, Fs):
+def find_face_up_down(row, cols, Vs, Fs):
     '''
-    `row`: int
-    `cols`: tuple (k,k+1)
-    `Vs`: (Lx, Ly) ndarray of vertex indices
-    `Fs`: (Lx-1, Ly-1) ndarray of face indices
+    Get face-site that's above *or* below the edge
+    corresponding to (x,y)->(x,y+1)
+
+    row: int
+    cols: tuple[int] -- (y, y+1)
+    Vs: (Lx, Ly) ndarray of vertex indices
+    Fs: (Lx-1, Ly-1) ndarray of face indices
     
 
     |  U? |
@@ -746,7 +858,7 @@ def findFaceUD(row, cols, Vs, Fs):
     else: 
         return U
 
-def findFaceLR(rows, col, Vs, Fs):
+def find_face_right_left(rows, col, Vs, Fs):
     '''
     `rows`: tuple (k, k+1)
     `col`: int
@@ -789,7 +901,17 @@ def findFaceLR(rows, col, Vs, Fs):
         return L
     else: 
         return R
+
     
+def edges_commute(edges):
+    '''Check that no edges share a vertex
+    '''
+    vertices=[]
+    for (i,j,_) in edges:
+        vertices.extend([i,j])
+
+    return len(vertices)==len(set(vertices))
+
 
 def is_diagonal(a):
     return np.allclose(a, np.diag(np.diag(a)))

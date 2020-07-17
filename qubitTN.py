@@ -4,6 +4,7 @@ from itertools import product, chain
 import quimb.tensor as qtn
 import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
+from collections import defaultdict
     
 
 def make_skeleton_net(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
@@ -141,19 +142,19 @@ def make_random_net(Lx, Ly, bond_dim, phys_dim=2):
             
 
 
-class MyQubitTN():
+class QubitEncodeNet():
 
-    def __init__(self, Lx, Ly, chi):
+    def __init__(self, qlattice, chi=8):
         '''
 
-        _edge_map: dict[string --> list(tuple(int))]
+        _edge_map: dict[string : list(tuple(int))]
             Gives list of edges for each direction  
             in {'u','d','r','l'}
         
         _psi: TensorNetwork 
             State of the qubit lattice
         
-        _vert_coo_map: dict[tuple(int) --> int]
+        _vert_coo_map: dict[tuple(int) : int]
             Numbering of the vertex sites, i.e.
             maps each location (i,j) in the vertex lattice
             to an integer.
@@ -164,7 +165,7 @@ class MyQubitTN():
             |  x  |     |  x  |
             4-----5-----6-----7
             |     |  x  |     |
-            8-----9----10----11
+            8-----9-----10----11
             |  x  |     |  x  |
             12----13----14----15
             :
@@ -172,41 +173,46 @@ class MyQubitTN():
         
 
         _face_coo_map: dict[tuple(int)-->int]
-            Numbering of face sites. To each tuple
-            (i,j) denoting a location in the *face*
-            lattice, assigns an integer.
+            Numbering of face sites. Assigns an integer
+            to each location (i,j) in the *face* array.
 
             e.g. for 4x4 vertices (3x3 faces)
 
-            o----o----o----o
+            x----x----x----x
             | 16 |    | 17 |
-            o----o----o----o
+            x----x----x----x
             |    | 18 |    |
-            o----o----o----o
+            x----x----x----x
             | 19 |    | 20 |
-            o----o----o----o
+            x----x----x----x
         '''
         
-        verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
-        
-        # tensor_net = make_skeleton_net(Lx, Ly, chi)
-        tensor_net = make_random_net(Lx, Ly, chi)
-        
+        # verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
+        self.qlattice = qlattice
+
+        verts = qlattice.vert_array()
+        faces = qlattice.face_array()
+        Lx, Ly = qlattice._Lx, qlattice._Ly 
 
         self._vert_coo_map = dict(np.ndenumerate(verts))
         self._face_coo_map = dict(np.ndenumerate(faces))
         
+        # tensor_net = make_skeleton_net(Lx, Ly, chi)
+        tensor_net = make_random_net(Lx, Ly, chi)
+
         self._psi = tensor_net
 
         self._Lx = Lx
         self._Ly = Ly
 
-        self._Nverts = verts.size
-        self._Nsites = verts.size + faces[faces!=None].size
+
+        self._Nverts = qlattice.num_verts()
+        self._Nsites = qlattice.num_sites()
+
         self._d_physical = 2
 
 
-        self._edge_map = spinlessQubit.get_edge_map(verts, faces)
+        self._edge_map = spinlessQubit.make_edge_map(verts, faces)
         
         self._site_tag_id = 'Q{}'
         self._phys_ind_id = 'q{}'
@@ -217,9 +223,15 @@ class MyQubitTN():
 
 
     def vert_coo_map(self, i, j):
+        '''Maps location (i,j) in vertex lattice
+        to the corresponding site number.
+        '''
         return self._vert_coo_map[(i,j)]
     
     def face_coo_map(self, i, j):
+        '''Maps location (i,j) in *face* lattice
+        to the corresponding site number.
+        '''
         return self._face_coo_map[(i,j)]
 
     
@@ -247,19 +259,21 @@ class MyQubitTN():
             (ints) and face f (int or None)
 
 
-        which: {'u','d','r','l','all'}
-            Which edges of the graph to return.
+        Param:
 
+        which: {'u', 'd', 'r', 'l',
+                'he', 'ho', 've', 'vo',
+                'horizontal', 'all'}
         '''
-        if which == 'all':
-            return list(self._edge_map['r'] + 
-                        self._edge_map['l'] +
-                        self._edge_map['u'] +
-                        self._edge_map['d'] )
+        return self.qlattice.get_edges(which)
 
-        else:
-            return self._edge_map[which]
 
+    def Lx(self):
+        return self.qlattice._Lx
+    
+
+    def Ly(self):
+        return self.qlattice._Ly
 
 
     def graph_psi(self, show_tags=False, auto=False):
@@ -269,7 +283,7 @@ class MyQubitTN():
         
         else:
             LAT_CONST = 50 #lattice constant for graphing
-            Lx,Ly = self._Lx, self._Ly
+            Lx,Ly = self.Lx(), self.Ly()
 
             fix = {
                 **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
@@ -302,8 +316,8 @@ class MyQubitTN():
             shape ``([physical_dim, physical_dim]*len(where))``
         
         where: sequence of ints
-            The sites on which to act, using the 
-            custom numbering that includes face 
+            The sites on which to act, using the (default) 
+            custom numbering that labels/orders both face 
             and vertex sites.
         '''
         # psi = self._psi if inplace else self._psi.copy()
@@ -412,7 +426,7 @@ class MyQubitTN():
         for (i, j, _) in self.get_edges('all'):
             #ignore all faces here
 
-            G = self.number_op() & self.number_op()
+            G = number_op() & number_op()
             G_ket = self.apply_gate(psi, G, where=(i,j))
 
             E_int += (bra|G_ket)^all
@@ -439,7 +453,7 @@ class MyQubitTN():
 
         nxy_array = [[None for y in range(Ly)] for x in range(Lx)]
 
-        G = self.number_op()
+        G = number_op()
 
         #only finds occupations at *vertices*!
         for x,y in product(range(Lx),range(Ly)):
@@ -458,25 +472,229 @@ class MyQubitTN():
 
 
     def compute_energy(self, t, V, mu):
-        return (t  * self.compute_hop_expecs() 
-              + V  * self.compute_nnint_expecs()
-              - mu * self.compute_occs_expecs())
+        E_hop, E_int, E_occ = 0,0,0
+
+        if t!=0.0: E_hop = t  * self.compute_hop_expecs()
+        if V!=0.0: E_int = V  * self.compute_nnint_expecs()
+        if mu!=0.0: E_occ = - mu * self.compute_occs_expecs()
+        
+        return E_hop + E_int + E_occ
+              
 
 
-    def number_op(self):
-            '''
-            Fermionic number operator is
-            mapped to qubit spin-down
-            projector acting on 2-dim qbit space.
+    def compute_ham_expec(self, Ham):
+        '''
+        Ham: SimulatorHam
+        '''
+        psi = self._psi
+        bra = psi.H
 
-            n_j --> (1-Vj)/2 
-                    = (1-Zj)/2 
-                    = |down><down|
-            '''
-            return qu.qu([[0, 0], [0, 1]])
+        terms = Ham._ham_terms
+        E = 0
+        
+        for (i,j,f) in self.get_edges('all'):
             
+            G = terms[(i,j,f)]
+            where = (i,j) if f is None else (i,j,f)
+            G_ket = self.apply_gate(psi, G, where)
+
+            E += (bra|G_ket) ^ all
+        
+        return E
+
+    
+    # def apply_trotter_gates(self):
+
+    #     Ham = self._Ham2D
+
+    #     for group in ['he', 'ho', 've', 'vo']:
+
+    #         for (i,j,f), gate in Ham.trotter_gates(group).items()
+
+    #             where = (i,j) if f is None else (i,j,f)
+    #             self.apply_gate(gate, where, inplace=True)
+        
+
+
+        
+
+
+
+
+def number_op():
+    '''Fermionic number operator, aka
+    qubit spin-down projector
+    '''
+    return qu.qu([[0, 0], [0, 1]])
+    
 
 
 
 
      
+
+
+class SimulatorHam():
+
+    def __init__(self, qlattice, t, V, mu):
+        '''
+        qlattice: [SpinlessQubitLattice]
+                The lattice of qubits specifying the geometry
+                and vertex/face sites.
+        
+        t: hopping parameter
+        V: nearest-neighbor repulsion
+        mu: single-site chemical potential
+
+        H =   t  * hopping
+            + V  * repulsion
+            - mu * occupation
+        '''
+        
+        self.qlattice = qlattice
+
+        self._t = t
+        self._V = V
+        self._mu = mu
+
+        self._ham_terms = self.make_ham_terms()
+        self._exp_gates = None
+        
+        
+
+    def make_ham_terms(self):
+        '''Store all terms in Ham as two/three-site gates, 
+        in a dict() mapping edges to qarrays.
+        
+        ``terms``:  dict{ edge (i,j,f) : gate [qarray] }
+
+        Iff `f` is None, the corresponding gate will be two-site.
+        Otherwise, gate acts on three sites.
+        '''
+        t, V, mu = self.ham_params()
+
+        terms = dict()
+
+        #vertical edges
+        for direction, sign in [('down', 1), ('up', -1)]:
+
+            for (i,j,f) in self.get_edges(direction):
+                
+                #two-site
+                if f is None:
+                    terms[(i,j,f)] = sign * t * self.two_site_hop_gate()
+                    terms[(i,j,f)] += V * (number_op()&number_op())
+                
+                #three-site
+                else:
+                    terms[(i,j,f)] = sign * t * self.three_site_hop_gate(edge_dir='vertical')
+                    terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
+
+
+        #horizontal edges
+        for (i,j,f) in self.get_edges('horizontal'):
+
+            #two-site 
+            if f is None:
+                    terms[(i,j,f)] =  t * self.two_site_hop_gate()
+                    terms[(i,j,f)] += V * (number_op()&number_op())
+
+            #three-site    
+            else:
+                terms[(i,j,f)] =  t * self.three_site_hop_gate(edge_dir='horizontal')
+                terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
+
+        
+        if mu == 0.0:
+            return terms
+
+
+        n_op = number_op() #one-site number operator 
+
+        #map each vertex to the list of edges where it appears
+        self._vertices_to_covering_terms = defaultdict(list)
+        for edge in terms:
+            (i,j,f) = edge
+            self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
+            self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+
+
+        #for each vertex in lattice, absorb chemical potential term
+        #uniformly into the edge terms that include it
+        for vertex in self.qlattice.vertex_sites():
+            
+            #get edges that include this vertex
+            edges = self._vertices_to_covering_terms[vertex]
+            num_edges = len(edges)
+
+            assert num_edges > 1 #should appear in at least two edge terms!
+
+            for (i,j,f) in edges:
+                
+                ham_term = terms[(i,j,f)]
+
+                v_place = (i,j,f).index(vertex) #vertex is either i or j
+
+                if f is None: #ham_term should act on two sites
+                    terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*2, inds=v_place)
+
+                else: #act on three sites
+                    terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*3, inds=v_place)
+
+        return terms
+
+
+
+
+    def two_site_hop_gate(self):
+        '''Hopping between two vertices, with no face site.
+        '''
+        X, Y = (qu.pauli(mu) for mu in ['x','y'])
+        return 0.5* ((X&X) + (Y&Y))
+
+
+    def three_site_hop_gate(self, edge_dir):
+        '''Hop gate acting on two vertices and a face site.
+        '''
+        X, Y = (qu.pauli(mu) for mu in ['x','y'])
+        O_face = {'vertical': X, 'horizontal':Y} [edge_dir]
+
+        return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
+        
+
+    def edge_gate(self, edge):
+        '''Term in Ham corresponding to ``edge``.
+        '''
+        return self._ham_terms[edge]
+
+
+    def get_trotter_gates(self, group):
+        '''Returns mapping of edges (in ``group``) to
+        the corresponding Trotter gates
+        
+        Returns: dict[edge : exp(Ham gate)]
+        '''
+        edges = self.get_edges(group)
+        gate_map = {edge : self._exp_gates[edge] for edge in edges}
+        return gate_map
+    
+
+    def get_edges(self, which):
+        '''Retrieves (selected) edges from internal qLattice object.
+        '''
+        return self.qlattice.get_edges(which)
+
+
+    def ham_params(self):
+        '''Gets Ham coupling constants
+       (t: hopping parameter,
+        V: nearest-neighbor repulsion,
+        mu: chemical potential)
+        '''
+        return (self._t, self._V, self._mu)
+    
+    def Lx():
+        return self.qlattice._Lx
+    
+    def Ly():
+        return self.qlattice._Ly
