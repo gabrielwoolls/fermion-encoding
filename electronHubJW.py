@@ -6,7 +6,7 @@ import operator
 import spinlessQubit as sqb
 import numpy as np
 
-class ElectronHubbard():
+class HubbardSpinHalf():
     
     def __init__(self, Lx=2, Ly=3):
         V_ind, F_ind = sqb.gen_lattice_sites(Lx,Ly)

@@ -31,9 +31,17 @@ class HubbardSpinless():
 
 
     
-    def H_hop_boson(self, i, j):
+
+    def H_hop_fermion(self, i, j):
+        '''Qubit operator for fermion-hopping on sites i, j
         '''
-        Hopping term *without* anti-symmetrization
+        ci, cj = self.jw_annihil_op(i), self.jw_annihil_op(j)
+        cidag, cjdag = self.jw_creation_op(i), self.jw_creation_op(j)
+        return cidag@cj + cjdag@ci
+
+
+    def H_hop_boson(self, i, j):
+        '''Hopping term *without* anti-symmetrization
         '''
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
@@ -41,29 +49,15 @@ class HubbardSpinless():
         return ccd+cdc
 
 
-    def H_hop_fermion(self, i, j):
-        '''
-        Qubit operator for fermion-hopping 
-        on sites i, j
-        '''
-        ci, cj = self.jw_annihil_op(i), self.jw_annihil_op(j)
-        cidag, cjdag = self.jw_creation_op(i), self.jw_creation_op(j)
-        return cidag@cj + cjdag@ci
-
-
     def H_occ(self, i):
-        '''
-        Occupation/number operator at site i
+        '''Occupation/number operator at site i
         '''
         return qu.ikron(ops=number_op(), dims=self._dims, inds=[i])
 
 
     def H_nn(self, i, j):
+        '''Nearest-neighbor repulsion (n_i)(n_j)
         '''
-        Nearest-neighbor repulsion
-        (n_i)x(n_j)
-        '''
-        nop = number_op()
         return qu.ikron(ops=[number_op(),number_op()],
                         dims=self._dims, inds=[i,j])
 
@@ -170,3 +164,134 @@ def number_op():
 
 
 # ***************************************** #
+
+class HubbardSpinHalf():
+    
+    def __init__(self, Lx, Ly, t, U):
+        
+        self.qlattice = sqb.SpinlessQubitLattice(Lx,Ly)
+        
+        self._Nverts = self.qlattice._Nfermi
+        self._dims = [4] * self._Nverts
+
+        self._t = t
+        self._U = U
+        
+        self._Ham = None
+
+
+    def hop_term(self, i, j, spin):
+    
+    # def H_hop(self, i, j, spin):
+        '''Fermion-hopping on sites i, j,
+        and spin sector `spin`
+        '''
+        ci, cj = self.jw_annihil_op(i, spin), self.jw_annihil_op(j, spin)
+        ci_dag, cj_dag = self.jw_creation_op(i,spin), self.jw_creation_op(j,spin)
+        return ci_dag @ cj + cj_dag @ ci
+
+
+    def onsite_int_term(self, i):
+        '''On-site spin-spin repulsion at 
+        vertex site `i`
+        '''
+        return qu.ikron(number_op() & number_op(),
+                         dims=self._dims, inds=i)
+
+
+    def build_spinhalf_ham(self):
+        
+        t, U = self._t, self._U
+
+        def hops():
+            for (i,j,_) in self.qlattice.get_edges('all'):
+                yield t * self.hop_term(i, j, spin='up')
+                yield t * self.hop_term(i, j, spin='down')
+
+        def onsite_ints():
+            for vertex in self.qlattice.vertex_sites():
+                yield U * self.onsite_int_term(vertex)
+
+        hopping_terms, onsite_terms = 0, 0
+        
+        if t != 0.0: hopping_terms = functools.reduce(operator.add, hops())
+        if U != 0.0: onsite_terms = functools.reduce(operator.add, onsite_ints())
+
+        H = hopping_terms + onsite_terms
+
+        if qu.isreal(H): 
+            H = H.real    
+
+        self._Ham = H
+
+    def HamExact(self):
+        return self._Ham.copy()
+     
+    def jw_annihil_op(self, k, spin):
+        '''
+        Annihilation Jordan-Wigner qubit operator,
+        acting on site `k` and `spin` sector.
+
+        (Z_0)x(Z_1)x ...x(Z_k-1)x |0><1|_k
+        '''
+        spin = {0: 0,
+                1: 1,
+                'up': 0,
+                'down': 1,
+                'u': 0,
+                'd': 1
+                }[spin]
+
+        Z, I = qu.pauli('z'), qu.eye(2)
+        s_minus = qu.qu([[0,1],[0,0]]) #|0><1|
+        N = self._Nverts
+        
+        Z_sig = {0: Z & I, 
+                 1: I & Z}[spin]
+
+        s_minus_sig = { 0: s_minus & I,
+                        1: I & s_minus
+                     }[spin]
+                    
+       
+        op_list = [Z_sig for i in range(k)] + [s_minus_sig]
+        ind_list = [i for i in range(k+1)]
+
+        return qu.ikron(ops=op_list, dims=self._dims, 
+                        inds=ind_list)
+    
+
+    def jw_creation_op(self, k, spin):
+        '''
+        Jordan-Wigner transformed creation operator,
+        for site k and `spin` sector
+
+        (Z_0)x(Z_1)x ...x(Z_k-1)x |1><0|_k
+        '''
+        spin = {0: 0,
+                1: 1,
+                'up': 0,
+                'down': 1,
+                'u': 0,
+                'd': 1
+                }[spin]
+
+        Z, I = qu.pauli('z'), qu.eye(2)
+        s_plus = qu.qu([[0,0],[1,0]])
+        N = self._Nverts
+
+        Z_sig = {0: Z & I, 
+                 1: I & Z}[spin]
+
+        s_plus_sig = {  0: s_plus & I,
+                        1: I & s_plus
+                     }[spin]
+                    
+       
+        op_list = [Z_sig for i in range(k)] + [s_plus_sig]
+        ind_list = [i for i in range(k+1)]
+
+        return qu.ikron(ops=op_list, dims=self._dims, 
+                        inds=ind_list)
+    
+

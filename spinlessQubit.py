@@ -25,8 +25,8 @@ class SpinlessQubitLattice():
         Lattice site dims: [2 for i in (0, 1, ... N-1)]
         '''
 
-        if (Lx-1)*(Ly-1)%2==1:
-            raise NotImplementedError('Need even num. faces!')
+        if (Lx-1)*(Ly-1) % 2 == 1:
+            raise NotImplementedError('Need even number of faces!')
 
         self._Lx = Lx
         self._Ly = Ly
@@ -39,13 +39,11 @@ class SpinlessQubitLattice():
         self._V_ind = V_ind
         self._F_ind = F_ind
 
-        #number of qbits on lattice
-        #IGNORES faces w/out qubits
+        #number lattice sites (IGNORES faces w/out qubits)
         self._Nsites = V_ind.size + F_ind[F_ind!=None].size
         self._dims = [2]*(self._Nsites)
 
-        #number of vertex qubits only, aka
-        #number of fermionic sites.
+        #number of vertex qubits, i.e. fermionic sites
         self._Nfermi = V_ind.size
 
         #TODO: not true for odd num. faces
@@ -55,10 +53,10 @@ class SpinlessQubitLattice():
         #lists of edge tuples (i, j, f(i,j)) so that
         #  (i, j, r) 
         #corresponds to edge i-->j and face qbit r
-        self._edgesR = make_right_edges(V_ind, F_ind)
-        self._edgesL = make_left_edges(V_ind, F_ind)
-        self._edgesU = make_up_edges(V_ind, F_ind)
-        self._edgesD = make_down_edges(V_ind, F_ind)
+        # self._edgesR = make_right_edges(V_ind, F_ind)
+        # self._edgesL = make_left_edges(V_ind, F_ind)
+        # self._edgesU = make_up_edges(V_ind, F_ind)
+        # self._edgesD = make_down_edges(V_ind, F_ind)
         
         self._edge_map = make_edge_map(V_ind,F_ind)
 
@@ -173,36 +171,36 @@ class SpinlessQubitLattice():
             - mu <onsite occupation>
         
         Store qubit Hamiltonian in --> self._HamSim
-
         '''
         self._coupling_const = (t, V, mu)
 
         def hops(): #fermion hopping terms
             
-            for (i,j,f) in self._edgesR:
+            # for (i,j,f) in self._edgesR:
+            for (i,j,f) in self.get_edges('right'):
                 yield t * self.H_hop(i, j, f, 'horizontal')
             
-            for (i,j,f) in self._edgesL:
+            for (i,j,f) in self.get_edges('left'):
                 yield t * self.H_hop(i, j, f, 'horizontal')
 
-            for (i,j,f) in self._edgesU:
+            for (i,j,f) in self.get_edges('up'):
                 #minus sign! (See Derby & Klassen)
                 yield -t * self.H_hop(i, j, f, 'vertical')
             
-            for (i,j,f) in self._edgesD:
+            for (i,j,f) in self.get_edges('down'):
                 yield  t * self.H_hop(i, j, f, 'vertical')
 
         def interactions(): #pairwise neighbor repulsion terms
            
-            allEdges = self._edgesR + self._edgesU + self._edgesL + self._edgesD
+            # allEdges = self._edgesR + self._edgesU + self._edgesL + self._edgesD
             
-            for (i,j,f) in allEdges: 
+            for (i,j,f) in self.get_edges('all'): 
                 #doesn't require face qbit!
                 yield V * self.H_nn_int(i,j)
 
         def occs(): #occupation at each vertex
             #only counts vertex qbits, ignores faces!
-            for i in self._V_ind.flatten():
+            for i in self.vertex_sites():
                 yield -mu * qu.ikron(self.number_op(), 
                                     dims=self._dims, 
                                     inds=i)

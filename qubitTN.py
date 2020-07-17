@@ -323,6 +323,7 @@ class QubitEncodeNet():
         # psi = self._psi if inplace else self._psi.copy()
         psi = psi if inplace else psi.copy()
 
+        #let G be a one-site gate
         if isinstance(where, int): 
             where = (where,)
 
@@ -410,7 +411,6 @@ class QubitEncodeNet():
 
         return E_hop
  
-
     
     def compute_nnint_expecs(self, psi=None):
         '''
@@ -470,8 +470,9 @@ class QubitEncodeNet():
         return np.sum(nxy_array)            
     
 
-
-    def compute_energy(self, t, V, mu):
+    def compute_energy_deprec(self, t, V, mu):
+        '''Don't use anymore, see `compute_ham_expec`
+        '''
         E_hop, E_int, E_occ = 0,0,0
 
         if t!=0.0: E_hop = t  * self.compute_hop_expecs()
@@ -481,20 +482,20 @@ class QubitEncodeNet():
         return E_hop + E_int + E_occ
               
 
-
     def compute_ham_expec(self, Ham):
-        '''
-        Ham: SimulatorHam
+        '''Return <psi|H|psi>
+        Ham: [SimulatorHam]
+            Specifies a two- or three-site gate for each edge in
+            the lattice (third site is the possible face qubit)
         '''
         psi = self._psi
         bra = psi.H
 
-        terms = Ham._ham_terms
         E = 0
         
         for (i,j,f) in self.get_edges('all'):
             
-            G = terms[(i,j,f)]
+            G = Ham.get_gate((i,j,f))
             where = (i,j) if f is None else (i,j,f)
             G_ket = self.apply_gate(psi, G, where)
 
@@ -516,22 +517,12 @@ class QubitEncodeNet():
         
 
 
-        
-
-
-
-
 def number_op():
     '''Fermionic number operator, aka
     qubit spin-down projector
     '''
     return qu.qu([[0, 0], [0, 1]])
     
-
-
-
-
-     
 
 
 class SimulatorHam():
@@ -560,7 +551,7 @@ class SimulatorHam():
         self._ham_terms = self.make_ham_terms()
         self._exp_gates = None
         
-        
+
 
     def make_ham_terms(self):
         '''Store all terms in Ham as two/three-site gates, 
@@ -662,7 +653,7 @@ class SimulatorHam():
         return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
         
 
-    def edge_gate(self, edge):
+    def get_gate(self, edge):
         '''Term in Ham corresponding to ``edge``.
         '''
         return self._ham_terms[edge]
