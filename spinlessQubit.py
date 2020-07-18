@@ -35,34 +35,32 @@ class SpinlessQubitLattice():
         #generate indices for qbit lattice
         V_ind, F_ind = gen_lattice_sites(Lx,Ly)
 
+
         #vertex/face indices in np.ndarrays
         self._V_ind = V_ind
         self._F_ind = F_ind
+
+        self._edge_map = make_edge_map(V_ind,F_ind)
+
 
         #number lattice sites (IGNORES faces w/out qubits)
         self._Nsites = V_ind.size + F_ind[F_ind!=None].size
         self._dims = [2]*(self._Nsites)
 
+
         #number of vertex qubits, i.e. fermionic sites
         self._Nfermi = V_ind.size
 
+
         #TODO: not true for odd num. faces
         #codespace dimensions = dim(Fock)
-        self._dims_code = [2]*(self._Nfermi)
+        self._encoded_dims = [2]*(self._Nfermi)
 
-        #lists of edge tuples (i, j, f(i,j)) so that
-        #  (i, j, r) 
-        #corresponds to edge i-->j and face qbit r
-        # self._edgesR = make_right_edges(V_ind, F_ind)
-        # self._edgesL = make_left_edges(V_ind, F_ind)
-        # self._edgesU = make_up_edges(V_ind, F_ind)
-        # self._edgesD = make_down_edges(V_ind, F_ind)
-        
-        self._edge_map = make_edge_map(V_ind,F_ind)
 
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
-        
+
+
         #Codespace Hamiltonian
         #(written in stabilizer eigenbasis)
         self._HamCode = None
@@ -435,18 +433,6 @@ class SpinlessQubitLattice():
         +1 stabilizer eigenspace.
         '''       
         return self._HamCode.copy()
-
-    def dims(self, code=False):
-        '''
-        List of dimensions for qubit space 
-        (or joint stabilizer eigenspace if 
-        code==True)
-        '''
-        #dimensions of full qubit space
-        if not code: return self._dims.copy()
-        
-        #dimensions of codespace
-        else:        return self._dims_code.copy()
 
     #COMMENT
     def t_make_stabilizers(self):
