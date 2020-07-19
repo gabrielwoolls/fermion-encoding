@@ -69,7 +69,7 @@ class SpinlessQubitLattice():
 
     def get_edges(self, which):
 
-        if which == 'horizontal':
+        if which in ['horizontal', 'right+left']:
             return self._edge_map['r'] + self._edge_map['l']
         
 
@@ -345,7 +345,8 @@ class SpinlessQubitLattice():
         '''
         All qubit indices (vertex and face)
         '''
-        return self.vertex_sites() + self.face_sites()
+        # return self.vertex_sites() + self.face_sites()
+        return list(range(self._Nsites))
 
 
     def vert_array(self):
@@ -420,6 +421,7 @@ class SpinlessQubitLattice():
     def stabilizer(self):
         return self._stabilizer.copy()
 
+
     def ham_sim(self):
         '''
         Simulator Hamiltonian acting
@@ -427,12 +429,14 @@ class SpinlessQubitLattice():
         '''
         return self._HamSim.copy()
 
+
     def ham_code(self):
         '''
         Projected Hamiltonian acting only on
         +1 stabilizer eigenspace.
         '''       
         return self._HamCode.copy()
+
 
     #COMMENT
     def t_make_stabilizers(self):

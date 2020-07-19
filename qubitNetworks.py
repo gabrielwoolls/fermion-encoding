@@ -222,6 +222,8 @@ class QubitEncodeNet():
         # super().__init__(tensors)
 
 
+
+
     def vert_coo_map(self, i, j):
         '''Maps location (i,j) in vertex lattice
         to the corresponding site number.
@@ -235,7 +237,6 @@ class QubitEncodeNet():
         return self._face_coo_map[(i,j)]
 
     
-
     def vertex_coo_tag(self,i,j):
         return f'Q{self.vert_coo_map(i,j)}'
     
@@ -292,13 +293,14 @@ class QubitEncodeNet():
 
 
 
-    def to_dense(self):
+    def net_to_dense(self):
         '''Return self._psi as dense vector, i.e. a qarray with 
         shape (-1, 1)
         '''
-        inds_seq = (f'q{i}' for i in range(self._Nsites))
+        #TODO: check change from range(self._Nsites)
+        
+        inds_seq = (f'q{i}' for i in self.qlattice.all_sites())
         return self._psi.to_dense(inds_seq).reshape(-1,1)
-
 
 
     def apply_gate(self, psi, G, where, inplace=False):
@@ -496,22 +498,22 @@ class QubitEncodeNet():
         for (i,j,f) in self.get_edges('all'):
             
             G = Ham.get_gate((i,j,f))
+            
             where = (i,j) if f is None else (i,j,f)
+            
             G_ket = self.apply_gate(psi, G, where)
-
+            
             E += (bra|G_ket) ^ all
         
         return E
 
     
-    # def apply_trotter_gates(self):
-
-    #     Ham = self._Ham2D
+    # def apply_trotter_gates(self, Ham, tau):
 
     #     for group in ['he', 'ho', 've', 'vo']:
 
-    #         for (i,j,f), gate in Ham.trotter_gates(group).items()
-
+    #         for edge, gate in Ham.trotter_gates(group, tau).items():
+    #             i,j,f = edge
     #             where = (i,j) if f is None else (i,j,f)
     #             self.apply_gate(gate, where, inplace=True)
         
@@ -524,8 +526,74 @@ def number_op():
     return qu.qu([[0, 0], [0, 1]])
     
 
+### *********************** ###
 
 class SimulatorHam():
+    '''Parent class for simulator (i.e. qubit-space) 
+    Hamiltonians. 
+
+    Needs a `qlattice` object to handle lattice geometry/edges, 
+    and a mapping `_ham_terms` of edges to two/three site gates.
+    '''
+    
+    def __init__(self, qlattice, ham_terms):
+        
+        self.qlattice = qlattice
+        self._ham_terms = ham_terms
+        self._exp_gates = None
+
+
+    def get_gate(self, edge):
+        '''Term in Ham corresponding to ``edge``
+        in the qubit lattice.
+        '''
+        return self._ham_terms[edge]
+
+
+    def trotter_gates(self, group, tau):
+        '''Returns mapping of edges (in ``group``) to
+        the corresponding Trotter gates.
+        
+        Returns: dict[edge : exp(Ham gate)]
+        '''
+        edges = self.get_edges(group)
+        gate_map = {edge : self._exp_gates[edge] for edge in edges}
+        return gate_map
+    
+
+    def get_edges(self, which):
+        '''Retrieves (selected) edges from internal qLattice object.
+        '''
+        return self.qlattice.get_edges(which)
+
+
+    def ham_params(self):
+        '''Relevant parameters, to be specified for
+         each daughter Hamiltonian.
+        '''
+        pass
+
+
+    def Lx():
+        return self.qlattice._Lx
+
+
+    def Ly():
+        return self.qlattice._Ly
+
+
+## ******************* ##
+# Subclass Hamiltonians
+## ******************* ##
+
+class SpinlessFermiSim(SimulatorHam):
+    '''Encoded Hubbard Hamiltonian for spinless fermions,
+    encoded as a qubit simulator Ham.
+
+    H =   t  * hopping
+        + V  * repulsion
+        - mu * occupation
+    '''
 
     def __init__(self, qlattice, t, V, mu):
         '''
@@ -537,30 +605,25 @@ class SimulatorHam():
         V: nearest-neighbor repulsion
         mu: single-site chemical potential
 
-        H =   t  * hopping
-            + V  * repulsion
-            - mu * occupation
         '''
         
-        self.qlattice = qlattice
-
         self._t = t
         self._V = V
         self._mu = mu
 
-        self._ham_terms = self.make_ham_terms()
-        self._exp_gates = None
+        terms = self.make_ham_terms(qlattice)
+
+        super().__init__(qlattice, terms)
         
 
-
-    def make_ham_terms(self):
-        '''Store all terms in Ham as two/three-site gates, 
+    def make_ham_terms(self, qlattice):
+        '''Get all terms in Ham as two/three-site gates, 
         in a dict() mapping edges to qarrays.
         
-        ``terms``:  dict{ edge (i,j,f) : gate [qarray] }
+        ``terms``:  dict[edge (i,j,f) : gate [qarray] ]
 
-        Iff `f` is None, the corresponding gate will be two-site.
-        Otherwise, gate acts on three sites.
+        If `f` is None, the corresponding gate will be two-site 
+        (vertices only). Otherwise, gate acts on three sites.
         '''
         t, V, mu = self.ham_params()
 
@@ -569,7 +632,7 @@ class SimulatorHam():
         #vertical edges
         for direction, sign in [('down', 1), ('up', -1)]:
 
-            for (i,j,f) in self.get_edges(direction):
+            for (i,j,f) in qlattice.get_edges(direction):
                 
                 #two-site
                 if f is None:
@@ -583,7 +646,7 @@ class SimulatorHam():
 
 
         #horizontal edges
-        for (i,j,f) in self.get_edges('horizontal'):
+        for (i,j,f) in qlattice.get_edges('horizontal'):
 
             #two-site 
             if f is None:
@@ -612,7 +675,7 @@ class SimulatorHam():
 
         #for each vertex in lattice, absorb chemical potential term
         #uniformly into the edge terms that include it
-        for vertex in self.qlattice.vertex_sites():
+        for vertex in qlattice.vertex_sites():
             
             #get edges that include this vertex
             edges = self._vertices_to_covering_terms[vertex]
@@ -635,8 +698,6 @@ class SimulatorHam():
         return terms
 
 
-
-
     def two_site_hop_gate(self):
         '''Hopping between two vertices, with no face site.
         '''
@@ -653,29 +714,6 @@ class SimulatorHam():
         return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
         
 
-    def get_gate(self, edge):
-        '''Term in Ham corresponding to ``edge``.
-        '''
-        return self._ham_terms[edge]
-
-
-    def get_trotter_gates(self, group):
-        '''Returns mapping of edges (in ``group``) to
-        the corresponding Trotter gates
-        
-        Returns: dict[edge : exp(Ham gate)]
-        '''
-        edges = self.get_edges(group)
-        gate_map = {edge : self._exp_gates[edge] for edge in edges}
-        return gate_map
-    
-
-    def get_edges(self, which):
-        '''Retrieves (selected) edges from internal qLattice object.
-        '''
-        return self.qlattice.get_edges(which)
-
-
     def ham_params(self):
         '''Gets Ham coupling constants
        (t: hopping parameter,
@@ -684,8 +722,177 @@ class SimulatorHam():
         '''
         return (self._t, self._V, self._mu)
     
-    def Lx():
-        return self.qlattice._Lx
+###
+
+class SpinhalfHubbardSim(SimulatorHam):
+    '''Simulator Hamiltonian, acting on qubit space,
+    that encodes the Fermi-Hubbard model Ham for 
+    spin-1/2 fermions. Each local site is 4-dimensional.
+
+    Gates act on 2 or 3 sites (2 vertices + 1 possible face)
+    '''
+
+    def __init__(self, qlattice, t, U):
+        
+        self._t = t
+        self._U = U
+
+        terms = self.make_ham_terms(qlattice)
+
+        super().__init__(qlattice, terms)
     
-    def Ly():
-        return self.qlattice._Ly
+
+    def make_ham_terms(self, qlattice):
+        '''Get all Hamiltonian terms, as two/three-site gates, 
+        in a dict() mapping edges to arrays.
+        
+        `terms`:  dict[edge (i,j,f) : gate [qarray] ]
+
+        If `f` is None, the corresponding gate will be two-site 
+        (vertices only). Otherwise, gate acts on three sites.
+        '''
+        t, U = self.ham_params()
+
+        terms = dict()
+
+        #vertical edges
+        for direction, sign in [('down', 1), ('up', -1)]:
+            
+            spin_up_hop = self.two_site_hop_gate(spin=0)
+            spin_down_hop = self.two_site_hop_gate(spin=1)
+
+            for (i,j,f) in qlattice.get_edges(direction):
+                
+                #two-site
+                if f is None:
+                    terms[(i,j,f)] =  sign * t * spin_up_hop
+                    terms[(i,j,f)] += sign * t * spin_down_hop
+                    # terms[(i,j,f)] += U * self.onsite_gate()
+                
+                #three-site
+                else:
+                    terms[(i,j,f)] =  sign * t * self.three_site_hop_gate(spin=0, edge_dir='vertical')
+                    terms[(i,j,f)] += sign * t * self.three_site_hop_gate(spin=1, edge_dir='vertical')
+                    # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
+
+
+        #horizontal edges
+        for (i,j,f) in qlattice.get_edges('right+left'):
+            
+            #two-site 
+            if f is None:
+                    terms[(i,j,f)] =  t * self.two_site_hop_gate(spin=0)
+                    terms[(i,j,f)] += t * self.two_site_hop_gate(spin=1)
+                    # terms[(i,j,f)] += U * self.onsite_gate()
+                
+            #three-site    
+            else:
+                terms[(i,j,f)] =  sign * t * self.three_site_hop_gate(spin=0, edge_dir='horizontal')
+                terms[(i,j,f)] += sign * t * self.three_site_hop_gate(spin=1, edge_dir='horizontal')
+                # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
+        
+        
+        if U == 0.0:
+            return terms
+
+
+        G_onsite = self.onsite_int_gate() #on-site spin-spin interaction
+
+        #map each vertex to the list of edges where it appears
+        self._vertices_to_covering_terms = defaultdict(list)
+        for edge in terms:
+            (i,j,f) = edge
+            self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
+            self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+
+
+        #for each vertex in lattice, absorb onsite repulsion term
+        #uniformly into the edge terms that include it
+        for vertex in qlattice.vertex_sites():
+            
+            #get edges that include this vertex
+            edges = self._vertices_to_covering_terms[vertex]
+            num_edges = len(edges)
+
+            assert num_edges > 1 #should appear in at least two edge terms!
+
+            for (i,j,f) in edges:
+                
+                # ham_term = terms[(i,j,f)]
+
+                v_place = (i,j,f).index(vertex) #vertex is either i or j
+
+                if f is None: #term should act on two sites
+                    terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*2, inds=v_place)
+
+                else: #act on three sites
+                    terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*3, inds=v_place)
+
+        return terms
+
+
+    def ham_params(self):
+        '''t (hopping), U (repulsion)
+        '''
+        return (self._t, self._U)
+
+
+    def two_site_hop_gate(self, spin):
+        '''(Encoded) hopping between two vertex sites, for 
+        fermions in the `spin` sector.
+        '''
+        spin = {0: 'u',
+                1: 'd',
+                'up': 'u',
+                'down': 'd',
+                'u': 'u',
+                'd': 'd'
+                }[spin]
+            
+        X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
+
+        #`spin` says which spin sector to act on
+
+        X_s = { 'u': X & I, 
+                'd': I & X}[spin]
+
+        Y_s = { 'u': Y & I,
+                'd': I & Y}[spin]
+
+        return 0.5* ((X_s & X_s) + (Y_s & Y_s))
+    
+
+    def three_site_hop_gate(self, spin, edge_dir):
+        '''Hop gate acting on two vertices and a face site,
+        in `spin` sector. Action on the face site depends
+        on `edge_dir`: {'vertical', 'horizontal'}
+        '''
+        spin = {0: 'up',
+                1: 'down',
+                'up': 'up',
+                'down': 'down',
+                'u': 'up',
+                'd': 'down'
+                }[spin]
+
+        X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
+        
+        #operators acting on the correct spin sector
+        if spin == 'up':
+            X_s = X & I
+            Y_s = Y & I
+        
+        elif spin == 'down':
+            X_s = I & X
+            Y_s = I & Y
+
+        #operator on face qubit (in `spin` sector)
+        Of_s = {'vertical': X_s, 'horizontal':Y_s} [edge_dir]
+
+        return 0.5 * ((X_s & X_s & Of_s) + (Y_s & Y_s & Of_s))
+
+
+    def onsite_int_gate(self):
+        '''Spin-spin interaction at a single vertex.
+        '''
+        return number_op() & number_op()
