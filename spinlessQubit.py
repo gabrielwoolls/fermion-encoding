@@ -569,6 +569,190 @@ class SpinlessDense(QubitCodeLattice):
         return HamProj #in +1 stabilizer eigenbasis
         
 
+### ************************ ###
+### Spin-1/2 Hubbard (dense) ###
+### ************************ ###
+
+class DenseSpinhalfEncoder(QubitCodeLattice):
+
+    def __init__(self, Lx=2, Ly=3):
+        '''
+        Each site has local physical dim = 4:
+        effectively two qubits per site, for spin up/down 
+        sectors of fermionic Fock space.
+
+        N sites => N qdits (2N qbits) counting both vertex and
+        face qbits, residing in pairs on the N lattice
+        sites.
+
+        Lattice indices: i = {0, 1, ... N-1}
+
+        '''
+        #Simulator Hamiltonian in full qubit space
+        self._HamSim = None
+
+
+        #Codespace Hamiltonian
+        self._HamCode = None
+        self._eigens, self._eigstates = None, None
+
+        super().__init__(Lx, Ly, local_dim=4)
+
+
+
+    def H_onsite(self, i):
+        '''
+        Spin-spin repulsion at site i (should only
+        be called for vertex sites, not face sites)
+
+        (n^up_i)(n^down_i) --> (1-Vi^up)(1-Vi^down)/4
+
+        Projects onto [down (x) down] for qbits at index i
+        '''
+        return qu.ikron(ops=[self.q_number_op() & self.q_number_op()],
+                        dims=self._sim_dims,
+                        inds=[i])
+
+
+    def H_hop(self, i, j, f, dir, spin):
+        '''
+        Returns "hopping" term acting on sites i,j,f:
+            
+            (XiXjOf + YiYjOf)/2
+                
+        on vertex qdits i,j, face qdit f, spin sector `spin`,
+        where Of is {Xf, Yf, I} depending on edge.
+
+        dir: {'vertical', 'horizontal'}
+        '''
+        spin = {0: 'u',
+                1: 'd',
+                'up': 'u',
+                'down': 'd',
+                'u': 'u',
+                'd': 'd'
+                }[spin]
+
+        X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
+
+        #`spin` says which spin sector to act on
+
+        X_sigma = {'u': X & I,
+                   'd': I & X}[spin]
+
+        Y_sigma = {'u': Y & I,
+                   'd': I & Y}[spin]
+
+
+        Of = {'vertical': X_sigma, 'horizontal':Y_sigma}[dir]
+
+
+        #no associated face qbit
+        if f==None:         
+            XXO=qu.ikron(ops=[X_sigma,X_sigma], dims=self._sim_dims, inds=[i,j])
+            YYO=qu.ikron(ops=[Y_sigma,Y_sigma], dims=self._sim_dims, inds=[i,j])
+        
+        #otherwise, let Of act on index f
+        else:
+            XXO=qu.ikron(ops=[X_sigma,X_sigma,Of], dims=self._sim_dims, inds=[i,j,f])
+            YYO=qu.ikron(ops=[Y_sigma,Y_sigma,Of], dims=self._sim_dims, inds=[i,j,f])
+
+        return 0.5*(XXO+YYO) 
+    
+
+
+    def q_number_op(self):
+        '''
+        Single-qubit operator,
+        equiv. to fermionic number
+        on a single spin sector.
+        '''
+        return qu.qu([[0, 0], [0, 1]])
+
+
+    #TODO: delete?
+    def spin_numberop(self, spin):
+        '''
+        TODO: why can't use ikron()?
+
+        Fermionic number operator
+        acting on `spin` sector.
+        '''
+        #which fermion-spin sector to act on?
+        #i.e. act on qbit 0 or qbit 1?
+        opmap = {0 : lambda: qu.qu([[0, 0], [0, 1]]) & qu.eye(2),
+
+                 1 : lambda: qu.eye(2) & qu.qu([[0, 0], [0, 1]])}
+        
+        op = opmap[spin]() 
+
+        qu.core.make_immutable(op)
+        return op
+        
+
+        
+    def make_simulator_ham(self, t, U):
+        '''Makes spin-1/2 SIMULATOR Hamiltonian, stores in self._HamSim.
+
+        Hubbard H = t <pairwise hopping>
+                  + U <on-site spin-spin repulsion> 
+        '''
+
+        def hops(): #edgewise hopping terms 
+
+            for (i,j,f) in self.get_edges('horizontal'):
+                yield t * self.H_hop(i, j, f, 'horizontal',spin=0)
+                yield t * self.H_hop(i, j, f, 'horizontal',spin=1)
+
+            for direction, sign in [('down',1), ('up',-1)]:
+                for (i,j,f) in self.get_edges(direction):
+                    yield sign * t * self.H_hop(i, j, f, 'vertical', spin=0)
+                    yield sign * t * self.H_hop(i, j, f, 'vertical', spin=1)
+
+
+        def onsites(): #onsite spin-spin interaction
+            for i in self.vertex_sites():
+                yield U * self.H_onsite(i)
+        
+
+        hopping_terms, onsite_terms = 0, 0
+
+        if t != 0.0: hopping_terms = functools.reduce(operator.add, hops())
+        if U != 0.0: onsite_terms = functools.reduce(operator.add, onsites())
+            
+        H = hopping_terms + onsite_terms
+        
+        if qu.isreal(H):
+            H = H.real
+        
+        self._HamSim = H
+
+
+    def ham_sim(self):
+        return self._HamSim.copy()
+
+
+    def solveED(self):
+        '''Diagonalize codespace Ham, 
+        store eigensystem.
+        '''
+        self._eigens, self._eigstates = qu.eigh(self._HamCode)
+
+
+    def eigspectrum(self):
+        '''Returns energy eigenvalues and eigenstates of
+        self._Ham, obtained through ED
+        '''
+        if None in [self._eigens, self._eigstates]:
+            self.solveED()
+        
+        return np.copy(self._eigens), np.copy(self._eigstates)
+    
+
+### end class ###
+
+
+
 def gen_lattice_sites(Lx, Ly):
 
     '''
