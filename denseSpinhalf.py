@@ -6,7 +6,7 @@ import itertools
 import operator
 import spinlessQubit
 
-class DenseSpinhalfEncoder():
+class DenseSpinhalfEncoder(spinlessQubit.QubitCodeLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''
@@ -22,77 +22,78 @@ class DenseSpinhalfEncoder():
 
         '''
         
-        if (Lx-1)*(Ly-1) % 2 == 1:
-            raise NotImplementedError('Need even number of faces!')
+        # if (Lx-1)*(Ly-1) % 2 == 1:
+        #     raise NotImplementedError('Need even number of faces!')
 
-        self._Lx = Lx
-        self._Ly = Ly
-        self._lat_shape = (Lx, Ly)
+        # self._Lx = Lx
+        # self._Ly = Ly
+        # self._lat_shape = (Lx, Ly)
 
-        #generate indices for qbit lattice
-        verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
+        # #generate indices for qbit lattice
+        # verts, faces = spinlessQubit.gen_lattice_sites(Lx,Ly)
         
-        #vertex/face indices in np.ndarrays
-        self._verts = verts
-        self._faces = faces
+        # #vertex/face indices in np.ndarrays
+        # self._verts = verts
+        # self._faces = faces
 
 
-        self._edge_map = spinlessQubit.make_edge_map(verts,faces)
+        # self._edge_map = spinlessQubit.make_edge_map(verts,faces)
 
 
-        #number lattice sites (IGNORES faces w/out qudits)
-        self._Nsites = verts.size + faces[faces!=None].size
+        # #number lattice sites (IGNORES faces w/out qudits)
+        # self._Nsites = verts.size + faces[faces!=None].size
         
-        self._d_physical = 4
-        self._sim_dims = [4]*(self._Nsites)
+        # self._d_physical = 4
+        # self._sim_dims = [4]*(self._Nsites)
         
 
-        #number of vertices, i.e. fermionic sites
-        self._Nfermi = verts.size
+        # #number of vertices, i.e. fermionic sites
+        # self._Nfermi = verts.size
 
 
-        #TODO: not true for odd num. faces
-        #codespace dimensions = dim(Fock)
-        self._encoded_dims = [4]*(self._Nfermi)
+        # #TODO: not true for odd num. faces
+        # #codespace dimensions = dim(Fock)
+        # self._encoded_dims = [4]*(self._Nfermi)
 
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
 
 
         #Codespace Hamiltonian
-        #(written in stabilizer eigenbasis)
         self._HamCode = None
         self._eigens, self._eigstates = None, None
 
+        super().__init__(Lx, Ly, local_dim=4)
+
     
 
-    def get_edges(self, which):
+    # def get_edges(self, which):
 
-        if which == 'horizontal':
-            return self._edge_map['r'] + self._edge_map['l']
+    #     if which == 'horizontal':
+    #         return self._edge_map['r'] + self._edge_map['l']
         
 
-        if which == 'all':
-            return (self._edge_map['r']+
-                    self._edge_map['l']+
-                    self._edge_map['u']+
-                    self._edge_map['d'] )
+    #     if which == 'all':
+    #         return (self._edge_map['r']+
+    #                 self._edge_map['l']+
+    #                 self._edge_map['u']+
+    #                 self._edge_map['d'] )
 
 
-        key =  {'d' : 'd',
-                'down':'d',
-                'u' : 'u',
-                'up': 'u',
-                'left':'l',
-                'l' : 'l',
-                'right':'r',
-                'r':'r',
-                'he':'he',
-                'ho':'ho',
-                've':'ve',
-                'vo':'vo'}[which]
+    #     key =  {'d' : 'd',
+    #             'down':'d',
+    #             'u' : 'u',
+    #             'up': 'u',
+    #             'left':'l',
+    #             'l' : 'l',
+    #             'right':'r',
+    #             'r':'r',
+    #             'he':'he',
+    #             'ho':'ho',
+    #             've':'ve',
+    #             'vo':'vo'}[which]
         
-        return self._edge_map[key]
+    #     return self._edge_map[key]
 
 
 
@@ -245,44 +246,44 @@ class DenseSpinhalfEncoder():
         return np.copy(self._eigens), np.copy(self._eigstates)
 
     
-    def vertex_sites(self):
-        '''Array of indices for vertex qubits,
-        equivalent to range(Lx*Ly)
-        '''
-        return list(self._verts.flatten().copy())
+    # def vertex_sites(self):
+    #     '''Array of indices for vertex qubits,
+    #     equivalent to range(Lx*Ly)
+    #     '''
+    #     return list(self._verts.flatten().copy())
 
 
-    def face_sites(self):
-        '''Indices of face-qubits 
-        '''
-        F = self._faces.flatten()
-        return list(F[F!=None])
+    # def face_sites(self):
+    #     '''Indices of face-qubits 
+    #     '''
+    #     F = self._faces.flatten()
+    #     return list(F[F!=None])
 
 
-    def all_sites(self):
-        '''All 'qudit' indices (vertex and face)
-        '''
-        return self.vertex_sites() + self.face_sites()
+    # def all_sites(self):
+    #     '''All 'qudit' indices (vertex and face)
+    #     '''
+    #     return self.vertex_sites() + self.face_sites()
 
     
-    def vert_array(self):
-        '''ndarray of vertex site numbers
-        '''
-        return self._verts.copy()
+    # def vert_array(self):
+    #     '''ndarray of vertex site numbers
+    #     '''
+    #     return self._verts.copy()
     
-    def face_array(self):
-        '''ndarray of face site numbers
-        '''
-        return self._faces.copy()
+    # def face_array(self):
+    #     '''ndarray of face site numbers
+    #     '''
+    #     return self._faces.copy()
 
-    def num_verts(self):
-        return self._verts.size
+    # def num_verts(self):
+    #     return self._verts.size
     
-    def num_faces(self):
-        return self._faces[self._faces!=None].size
+    # def num_faces(self):
+    #     return self._faces[self._faces!=None].size
 
-    def num_sites(self):
-        return self.num_faces()+self.num_verts()
+    # def num_sites(self):
+    #     return self.num_faces()+self.num_verts()
 
 
     # def second_lat(self, V1, F1):

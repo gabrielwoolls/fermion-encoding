@@ -8,20 +8,20 @@ import numpy as np
 
 DEBUG=0
 
-class HubbardSpinless():
+class HubbardSpinlessExact():
     def __init__(self, Lx=2, Ly=3):
         V_ind, F_ind = sqb.gen_lattice_sites(Lx,Ly)
 
         self._V_ind = V_ind
         
         self._edgesR = [(i,j) for (i,j,f) in 
-                        sqb.get_R_edges(V_ind, F_ind)]
+                        sqb.make_right_edges(V_ind, F_ind)]
         self._edgesL = [(i,j) for (i,j,f) in 
-                        sqb.get_L_edges(V_ind, F_ind)]
+                        sqb.make_left_edges(V_ind, F_ind)]
         self._edgesU = [(i,j) for (i,j,f) in 
-                        sqb.get_U_edges(V_ind, F_ind)]
+                        sqb.make_up_edges(V_ind, F_ind)]
         self._edgesD = [(i,j) for (i,j,f) in 
-                        sqb.get_D_edges(V_ind, F_ind)]
+                        sqb.make_down_edges(V_ind, F_ind)]
 
         self._allEdges = self._edgesU+self._edgesR+self._edgesD+self._edgesL
 
@@ -165,7 +165,7 @@ def number_op():
 
 # ***************************************** #
 
-class HubbardSpinHalf():
+class HubbardSpinhalfExact():
     
     def __init__(self, Lx, Ly, t, U):
         

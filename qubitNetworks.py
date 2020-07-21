@@ -194,8 +194,11 @@ class iTimeTEBD:
         compute_every=None
     ):
 
-        self.psi0 = qnetwork.state()
+        self.psi0 = qnetwork.qbit_state()
         self.qnet = qnetwork
+
+        self.norm = qnetwork.get_norm_scalar()
+        
         self.ham = ham
         self.tau = tau
         self.progbar = progbar
@@ -227,11 +230,11 @@ class iTimeTEBD:
 
 
     def compute_energy(self):
-        return self.qnet.compute_ham_expec(self.ham)
+        return self.qnet.compute_ham_expec(self.ham) / self.norm
 
 
     def evolve(self, steps):
-        tau = self.tau
+        # tau = self.tau
 
         pbar = tqdm.tqdm(total=steps, disable=self.progbar is not True)
 
@@ -247,8 +250,14 @@ class iTimeTEBD:
                     self._update_progbar(pbar)
                 
                 self.sweep()
+
+                self.update_norm()
                 self._n += 1
+
                 pbar.update()
+
+            #compute final energy
+            self._check_energy()
         
         except KeyboardInterrupt:
             # allow the user to interupt early
@@ -258,10 +267,17 @@ class iTimeTEBD:
             pbar.close()
     
     def sweep(self):
-        '''Perform a full sweep of gates at every edge.
+        '''Perform a full sweep, exp(gate)s at every edge.
         '''
         self.qnet.apply_trotter_gates_(self.ham, -self.tau)
-        
+        self.qnet._psi.contract(tags=['GATE'], inplace=True)
+    
+
+    def update_norm(self):
+        normsq = self.qnet.get_norm_tensor() ^ all
+        assert np.isclose(normsq, abs(normsq))
+        self.norm = np.real(normsq)
+
 
 
 
@@ -271,10 +287,6 @@ class QubitEncodeNet:
     def __init__(self, qlattice, psi=None, phys_dim=2, chi=5):
         '''
 
-        _edge_map: dict[string : list(tuple(int))]
-            Gives list of edges for each direction  
-            in {'u','d','r','l'}
-        
         _psi: TensorNetwork 
             State of the qubit lattice
         
@@ -326,7 +338,7 @@ class QubitEncodeNet:
 
 
         #simulator wavefunction
-        self._psi = psi if psi is not None else make_random_net(Lx, Ly, chi, phys_dim)
+        self._psi = psi if psi is not None else make_random_net(Lx, Ly, phys_dim, chi)
 
         # self._edge_map = spinlessQubit.make_edge_map(verts, faces)
 
@@ -334,6 +346,9 @@ class QubitEncodeNet:
         
         self._site_tag_id = 'Q{}'
         self._phys_ind_id = 'q{}'
+
+        self._Hdense = None
+        # self._psi_dense = None
 
         
         #If we subclass TensorNetwork -- should we?
@@ -348,7 +363,7 @@ class QubitEncodeNet:
         return cls(qlattice, randnet, phys_dim, chi)
 
 
-    def sim_state(self):
+    def qbit_state(self):
         return self._psi.copy()
 
 
@@ -429,15 +444,34 @@ class QubitEncodeNet:
             self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True)
 
 
+    def check_dense_energy(self, div_norm=1.0):
+        
+        if self.qlattice.ham_sim() is None:
+            self.qlattice.make_simulator_ham()
+
+        Hsim = self.qlattice.ham_sim()
+
+        psi_d = self.net_to_dense()
+        
+        return (psi_d.H @ Hsim @ psi_d).item() / div_norm
+
 
     def net_to_dense(self):
-        '''Return self._psi as dense vector, i.e. a qarray with 
+        '''TODO: use self._phys_ind_id
+
+        Return self._psi as dense vector, i.e. a qarray with 
         shape (-1, 1)
         '''
         #TODO: check change from range(self._Nsites)
         
         inds_seq = (f'q{i}' for i in self.qlattice.all_sites())
-        return self._psi.to_dense(inds_seq).reshape(-1,1)
+
+        # if self._psi_dense is not None:
+        #     return self._psi_dense
+            
+        psid = self._psi.to_dense(inds_seq).reshape(-1,1)
+        # self._psi_dense = psid
+        return psid
 
 
     def apply_gate_(self, G, where):
@@ -477,7 +511,7 @@ class QubitEncodeNet:
             where = (where,)
 
         numsites = len(where) #gate is `numsites`-local
-        dp = self._d_physical
+        dp = self._phys_dim
 
         G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
 
@@ -517,9 +551,8 @@ class QubitEncodeNet:
 
 
 
-    def make_norm_tensor(self, psi=None):
-        '''
-        Return <psi|psi> as a TensorNetwork.
+    def get_norm_tensor(self, psi=None):
+        '''<psi|psi> as a TensorNetwork.
         '''
 
         if psi is None:
@@ -532,6 +565,16 @@ class QubitEncodeNet:
         bra.conj_()
 
         return ket | bra
+    
+
+    # def get_normsq_scalar(self):
+    #     '''<psi|psi> real scalar
+    #     '''
+    #     normsq = self.get_norm_tensor()^all
+
+    #     assert np.isclose(normsq, abs(normsq))
+
+    #     return np.real(normsq)
 
 
     def compute_hop_expecs(self, psi=None):

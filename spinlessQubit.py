@@ -5,25 +5,8 @@ import functools
 import itertools
 import operator
 
-
-class SpinlessQubitLattice():
-
-    def __init__(self, Lx=2, Ly=3):
-        '''
-        TODO: odd # of faces
-
-        Spinless fermion model is mapped to 
-        a lattice (Lx, Ly) of qubits, following
-        the low-weight fermionic encoding of
-        Derby and Klassen (2020):
-
-        	arXiv:2003.06939 [quant-ph]
-
-        Vertex qubit indices --> self._V_ind
-        Face qubit indices   --> self._F_ind
-
-        Lattice site dims: [2 for i in (0, 1, ... N-1)]
-        '''
+class QubitCodeLattice():
+    def __init__(self, Lx, Ly, local_dim):
 
         if (Lx-1)*(Ly-1) % 2 == 1:
             raise NotImplementedError('Need even number of faces!')
@@ -32,43 +15,33 @@ class SpinlessQubitLattice():
         self._Ly = Ly
         self._lat_shape = (Lx, Ly)
 
-        #generate indices for qbit lattice
-        V_ind, F_ind = gen_lattice_sites(Lx,Ly)
-
+        #generate ordering for qbit lattice
+        verts, faces = gen_lattice_sites(Lx,Ly)
 
         #vertex/face indices in np.ndarrays
-        self._V_ind = V_ind
-        self._F_ind = F_ind
+        self._verts = verts
+        self._faces = faces
 
-        self._edge_map = make_edge_map(V_ind,F_ind)
-
+        self._edge_map = make_edge_map(verts,faces)
 
         #number lattice sites (IGNORES faces w/out qubits)
-        self._Nsites = V_ind.size + F_ind[F_ind!=None].size
-        self._dims = [2]*(self._Nsites)
-
+        self._Nsites = verts.size + faces[faces!=None].size
+        self._sim_dims = [local_dim]*(self._Nsites)
+        # self._local_dim = local_dim
 
         #number of vertex qubits, i.e. fermionic sites
-        self._Nfermi = V_ind.size
+        self._Nfermi = verts.size
 
 
         #TODO: not true for odd num. faces
         #codespace dimensions = dim(Fock)
-        self._encoded_dims = [2]*(self._Nfermi)
+        self._encoded_dims = [local_dim]*(self._Nfermi)
 
-
-        #Simulator Hamiltonian in full qubit space
-        self._HamSim = None
-
-
-        #Codespace Hamiltonian
-        #(written in stabilizer eigenbasis)
-        self._HamCode = None
-        self._eigens, self._eigstates = None, None
 
 
     def get_edges(self, which):
-
+        '''TODO IMPLEMENT
+        '''
         if which in ['horizontal', 'right+left']:
             return self._edge_map['r'] + self._edge_map['l']
         
@@ -94,6 +67,69 @@ class SpinlessQubitLattice():
                 'vo':'vo'}[which]
         
         return self._edge_map[key]
+    
+    
+    def vertex_sites(self):
+        '''
+        Indices for vertex qubits,
+        equivalent to range(Lx*Ly)
+        '''
+        return list(self._verts.flatten())
+
+    def face_sites(self):
+        '''
+        Indices of face-qubits 
+        '''
+        F = self._faces.flatten()
+        return list(F[F!=None])
+    
+    def all_sites(self):
+        '''
+        All qubit indices (vertex and face)
+        '''
+        # return self.vertex_sites() + self.face_sites()
+        return list(range(self._Nsites))
+
+
+    def vert_array(self):
+        '''ndarray of vertex site numbers
+        '''
+        return self._verts.copy()
+    
+    def face_array(self):
+        '''ndarray of face site numbers
+        '''
+        return self._faces.copy()
+
+    def num_verts(self):
+        return self._verts.size
+    
+    def num_faces(self):
+        return self._faces[self._faces!=None].size
+
+    def num_sites(self):
+        return self.num_faces()+self.num_verts()
+
+
+class SpinlessDense(QubitCodeLattice):
+
+    def __init__(self, Lx=2, Ly=3):
+        '''
+        Spinless fermion model is mapped to 
+        a lattice (Lx, Ly) of qubits, following
+        the low-weight fermionic encoding of
+        Derby and Klassen (2020):
+
+        	arXiv:2003.06939 [quant-ph]
+        '''
+        #Simulator Hamiltonian in full qubit space
+        self._HamSim = None
+
+        #Codespace Hamiltonian
+        self._HamCode = None
+        self._eigens, self._eigstates = None, None
+        
+        super().__init__(Lx, Ly, local_dim=2)
 
 
 
@@ -106,7 +142,7 @@ class SpinlessQubitLattice():
         Return (n_i)(n_j)
         '''
         return qu.ikron(ops=[self.number_op(), self.number_op()],
-                        dims=self._dims,
+                        dims=self._sim_dims,
                         inds=[i,j])
 
 
@@ -130,18 +166,18 @@ class SpinlessQubitLattice():
         #if no face qbit
         if f==None:  
             # print('{}--{}-->{}   (None)'.format(i,dir[0],j))       
-            # XXO=qu.ikron(ops=[X,X], dims=self._dims, inds=[i,j])
-            # YYO=qu.ikron(ops=[Y,Y], dims=self._dims, inds=[i,j])
-            XXO=qu.pkron(op=X&X, dims=self._dims, inds=[i,j])
-            YYO=qu.pkron(op=Y&Y, dims=self._dims, inds=[i,j])
+            # XXO=qu.ikron(ops=[X,X], dims=self._sim_dims, inds=[i,j])
+            # YYO=qu.ikron(ops=[Y,Y], dims=self._sim_dims, inds=[i,j])
+            XXO=qu.pkron(op=X&X, dims=self._sim_dims, inds=[i,j])
+            YYO=qu.pkron(op=Y&Y, dims=self._sim_dims, inds=[i,j])
         
         #if there's a face qubit: Of acts on index f
         else:
             # print('{}--{}-->{},  face {}'.format(i,dir[0],j,f))
-            # XXO=qu.ikron(ops=[X,X,Of], dims=self._dims, inds=[i,j,f])
-            # YYO=qu.ikron(ops=[Y,Y,Of], dims=self._dims, inds=[i,j,f])
-            XXO = qu.pkron(op=X&X&Of, dims=self._dims, inds=(i,j,f))
-            YYO = qu.pkron(op=Y&Y&Of, dims=self._dims, inds=(i,j,f))
+            # XXO=qu.ikron(ops=[X,X,Of], dims=self._sim_dims, inds=[i,j,f])
+            # YYO=qu.ikron(ops=[Y,Y,Of], dims=self._sim_dims, inds=[i,j,f])
+            XXO = qu.pkron(op=X&X&Of, dims=self._sim_dims, inds=(i,j,f))
+            YYO = qu.pkron(op=Y&Y&Of, dims=self._sim_dims, inds=(i,j,f))
 
         return 0.5*(XXO+YYO) 
 
@@ -200,7 +236,7 @@ class SpinlessQubitLattice():
             #only counts vertex qbits, ignores faces!
             for i in self.vertex_sites():
                 yield -mu * qu.ikron(self.number_op(), 
-                                    dims=self._dims, 
+                                    dims=self._sim_dims, 
                                     inds=i)
 
         hopping_terms, int_terms, occ_terms = 0, 0, 0
@@ -226,8 +262,8 @@ class SpinlessQubitLattice():
 
         `qstate` needs to be in *full* qubit space!
         '''
-        assert qstate.size == qu.prod(self._dims)
-        return qu.ptr(qstate, dims=self._dims, keep=i)
+        assert qstate.size == qu.prod(self._sim_dims)
+        return qu.ptr(qstate, dims=self._sim_dims, keep=i)
 
 
     def lift_cstate(self, cstate):
@@ -278,7 +314,7 @@ class SpinlessQubitLattice():
         in the large qubit space basis (False) or in the restricted
         stabilizer eigenbasis (True)
         '''
-        ds = {False : self._dims,
+        ds = {False : self._sim_dims,
               True : self._fermi_dims} [fermi]
 
         return [qu.ikron(self.number_op(), ds, [site]) 
@@ -311,7 +347,7 @@ class SpinlessQubitLattice():
         
         #local number ops acting on each site j
         # Nj = self.site_number_ops(sites=self.all_sites() , fermi=False)
-        Nj = [qu.ikron(self.number_op(), self._dims, [site]) 
+        Nj = [qu.ikron(self.number_op(), self._sim_dims, [site]) 
                         for site in self.all_sites()]
 
         #expectation <N> for each vertex
@@ -326,48 +362,6 @@ class SpinlessQubitLattice():
         
         return nocc_v, nocc_f
             
-
-    def vertex_sites(self):
-        '''
-        Indices for vertex qubits,
-        equivalent to range(Lx*Ly)
-        '''
-        return list(self._V_ind.flatten())
-
-    def face_sites(self):
-        '''
-        Indices of face-qubits 
-        '''
-        F = self._F_ind.flatten()
-        return list(F[F!=None])
-    
-    def all_sites(self):
-        '''
-        All qubit indices (vertex and face)
-        '''
-        # return self.vertex_sites() + self.face_sites()
-        return list(range(self._Nsites))
-
-
-    def vert_array(self):
-        '''ndarray of vertex site numbers
-        '''
-        return self._V_ind.copy()
-    
-    def face_array(self):
-        '''ndarray of face site numbers
-        '''
-        return self._F_ind.copy()
-
-    def num_verts(self):
-        return self._V_ind.size
-    
-    def num_faces(self):
-        return self._F_ind[self._F_ind!=None].size
-
-    def num_sites(self):
-        return self.num_faces()+self.num_verts()
-
 
     def make_stabilizer(self):
         '''
@@ -384,14 +378,14 @@ class SpinlessQubitLattice():
         ## TODO: make general
         # ops = [Z,Z,Z,Z,X]
         # inds = [1,2,4,5,6]
-        # stabilizer = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        # stabilizer = qu.ikron(ops=ops, dims=self._sim_dims, inds=inds)
         
         _, Ux = qu.eigh(qu.pauli('x')) 
         
         stabilizer = self.loop_stabilizer(0,1)
 
         #TODO: change to general rather than inds=6, Ux
-        U = qu.ikron(Ux.copy(), dims=self._dims, inds=[6])
+        U = qu.ikron(Ux.copy(), dims=self._sim_dims, inds=[6])
         
         #TODO: can this be done without rounding()/real part?
         Stilde = (U.H @ stabilizer @ U).real.round()
@@ -479,7 +473,8 @@ class SpinlessQubitLattice():
 
         X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
         
-        Vs, Fs = self._V_ind, self._F_ind
+        Vs = self.vert_array()
+        Fs = self.face_array()
         
         assert Fs[i,j] == None
 
@@ -520,7 +515,7 @@ class SpinlessQubitLattice():
         
         assert len(ops) > 4
 
-        loop_op = qu.ikron(ops=ops, dims=self._dims, inds=inds)
+        loop_op = qu.ikron(ops=ops, dims=self._sim_dims, inds=inds)
         
         if qu.isreal(loop_op): 
             loop_op = loop_op.real
@@ -562,7 +557,7 @@ class SpinlessQubitLattice():
         #X because stabilizer acts with X on 7th qubit
         _, Ux = qu.eigh(qu.pauli('x')) 
         
-        U = qu.ikron(Ux.copy(), dims=self._dims, inds=[6])
+        U = qu.ikron(Ux.copy(), dims=self._sim_dims, inds=[6])
         
         Stilde = (U.H @ self.stabilizer() @ U).real.round()
         #Stilde should be diagonal!
