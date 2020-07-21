@@ -569,11 +569,17 @@ class SpinlessDense(QubitCodeLattice):
         return HamProj #in +1 stabilizer eigenbasis
         
 
+
+
+
 ### ************************ ###
 ### Spin-1/2 Hubbard (dense) ###
 ### ************************ ###
 
-class DenseSpinhalfEncoder(QubitCodeLattice):
+
+
+
+class DenseSpinhalf(QubitCodeLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''

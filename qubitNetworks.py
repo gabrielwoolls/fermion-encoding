@@ -197,7 +197,8 @@ class iTimeTEBD:
         self.psi0 = qnetwork.qbit_state()
         self.qnet = qnetwork
 
-        self.norm = qnetwork.get_norm_scalar()
+        #set self.norm = sqrt <psi|psi>
+        self.update_norm()
         
         self.ham = ham
         self.tau = tau
