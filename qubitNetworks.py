@@ -5,15 +5,18 @@ import quimb.tensor as qtn
 import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
 from collections import defaultdict
+from autoray import do, dag
+import tqdm
     
 
-def make_skeleton_net(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
+def make_skeleton_net(Lx, Ly, phys_dim, chi=5, show_graph=False):
     '''
     TODO: fix ftensor type (change ndarray->list[list])
             change defaults?
+            tensor tag id
 
     Make a qubit TensorNetwork from local states in `arrays`, i.e.
-    the TN will be in a product state.
+    the TN will represent a product state.
 
     arrays: sequence of arrays, optional
         Specify local qubit states in vertices, faces
@@ -21,11 +24,11 @@ def make_skeleton_net(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
     
     #default to `up` spin at every site
     
-    vert_array = [[qu.up().reshape(2) 
+    vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
                     for j in range(Ly)]
                     for i in range(Lx)]
         
-    face_array = [[qu.plus().reshape(2) 
+    face_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
                     for j in range(Ly-1)]
                     for i in range(Lx-1)]
 
@@ -83,12 +86,12 @@ def make_skeleton_net(Lx, Ly, chi=5, phys_dim=2, show_graph=False):
     return vtn
 
 
-def make_random_net(Lx, Ly, bond_dim, phys_dim=2):
+def make_random_net(Lx, Ly, phys_dim, chi=5):
     '''TODO: take phys_dim into account?
     '''
 
     #dummy TN, sites to be replaced with random tensors
-    tnet = make_skeleton_net(Lx, Ly, bond_dim)
+    tnet = make_skeleton_net(Lx, Ly, phys_dim, chi)
 
     #replace vertex tensors
     for i, j in product(range(Lx), range(Ly)):
@@ -139,12 +142,133 @@ def make_random_net(Lx, Ly, bond_dim, phys_dim=2):
         else: pass
     
     return tnet
-            
 
 
-class QubitEncodeNet():
+def make_vertex_net(Lx,Ly, chi=5, show_graph=True):
+    vert_array = [[qu.up().reshape(2) 
+                    for j in range(Ly)]
+                    for i in range(Lx)]
+       
 
-    def __init__(self, qlattice, chi=8):
+    vtensors = [[qtn.Tensor(data = vert_array[i][j], 
+                            inds = [f'q{i*Ly+j}'],
+                            tags = {f'Q{i*Ly+j}', 'VERT'}) 
+                for j in range(Ly)] 
+                for i in range(Lx)]
+
+    
+
+    for i,j in product(range(Lx), range(Ly)):
+        # vtensors[i][j].new_ind(f'q{i*Ly+j}',size=2)
+        # vtensors[i][j].add_tag(f'Q{i*Ly+j}')
+
+        if i<=Lx-2:
+            vtensors[i][j].new_bond(vtensors[i+1][j],size=chi)
+        if j<=Ly-2:
+            vtensors[i][j].new_bond(vtensors[i][j+1],size=chi)
+
+
+    # alltensors = vtensors + [f for f in ftensors.flatten().tolist() if not f is None]
+    vtn = qtn.TensorNetwork(vtensors)
+
+
+    if show_graph:
+        LAT_CONST = 50 #lattice constant for graph
+
+        fix = {
+            **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
+            }
+        vtn.graph(color=['VERT','FACE'], show_tags=False, fix=fix)
+
+    return vtn
+
+
+class iTimeTEBD:
+    def __init__(
+        self,
+        qnetwork, 
+        ham, 
+        chi=8,
+        tau=0.01,
+        progbar=True,
+        compute_every=None
+    ):
+
+        self.psi0 = qnetwork.state()
+        self.qnet = qnetwork
+        self.ham = ham
+        self.tau = tau
+        self.progbar = progbar
+        
+
+        self._n = 0
+        self.iters = [] #iterations
+        self.taus = []
+        self.energies=[]
+
+        self.compute_energy_every = compute_every
+        
+
+    def _check_energy(self):
+        if self.iters and (self._n==self.iters[-1]):
+            return self.energies[-1]
+        
+        en = self.compute_energy()
+        
+        self.energies.append(en)
+        self.taus.append(float(self.tau))
+        self.iters.append(self._n)
+
+        return self.energies[-1]
+
+    def _update_progbar(self, pbar):
+        desc = f"n={self._n}, tau={self.tau}, energy~{float(self._check_energy()):.6f}"
+        pbar.set_description(desc)
+
+
+    def compute_energy(self):
+        return self.qnet.compute_ham_expec(self.ham)
+
+
+    def evolve(self, steps):
+        tau = self.tau
+
+        pbar = tqdm.tqdm(total=steps, disable=self.progbar is not True)
+
+        try:
+            for i in range(steps):
+
+                should_compute_energy = (
+                    bool(self.compute_energy_every) and
+                    (i % self.compute_energy_every == 0))
+                
+                if should_compute_energy:
+                    self._check_energy()
+                    self._update_progbar(pbar)
+                
+                self.sweep()
+                self._n += 1
+                pbar.update()
+        
+        except KeyboardInterrupt:
+            # allow the user to interupt early
+            pass
+        
+        finally:
+            pbar.close()
+    
+    def sweep(self):
+        '''Perform a full sweep of gates at every edge.
+        '''
+        self.qnet.apply_trotter_gates_(self.ham, -self.tau)
+        
+
+
+
+
+class QubitEncodeNet:
+
+    def __init__(self, qlattice, psi=None, phys_dim=2, chi=5):
         '''
 
         _edge_map: dict[string : list(tuple(int))]
@@ -198,21 +322,15 @@ class QubitEncodeNet():
         self._face_coo_map = dict(np.ndenumerate(faces))
         
         # tensor_net = make_skeleton_net(Lx, Ly, chi)
-        tensor_net = make_random_net(Lx, Ly, chi)
-
-        self._psi = tensor_net
-
-        self._Lx = Lx
-        self._Ly = Ly
+        # wavefn = make_random_net(Lx, Ly, chi)
 
 
-        self._Nverts = qlattice.num_verts()
-        self._Nsites = qlattice.num_sites()
+        #simulator wavefunction
+        self._psi = psi if psi is not None else make_random_net(Lx, Ly, chi, phys_dim)
 
-        self._d_physical = 2
+        # self._edge_map = spinlessQubit.make_edge_map(verts, faces)
 
-
-        self._edge_map = spinlessQubit.make_edge_map(verts, faces)
+        self._phys_dim = phys_dim
         
         self._site_tag_id = 'Q{}'
         self._phys_ind_id = 'q{}'
@@ -222,6 +340,16 @@ class QubitEncodeNet():
         # super().__init__(tensors)
 
 
+    @classmethod
+    def rand_network(cls, qlattice, phys_dim, chi=5):
+        
+        Lx, Ly = qlattice._Lx, qlattice._Ly
+        randnet = make_random_net(Lx, Ly, phys_dim, chi)
+        return cls(qlattice, randnet, phys_dim, chi)
+
+
+    def sim_state(self):
+        return self._psi.copy()
 
 
     def vert_coo_map(self, i, j):
@@ -229,7 +357,8 @@ class QubitEncodeNet():
         to the corresponding site number.
         '''
         return self._vert_coo_map[(i,j)]
-    
+
+
     def face_coo_map(self, i, j):
         '''Maps location (i,j) in *face* lattice
         to the corresponding site number.
@@ -255,9 +384,9 @@ class QubitEncodeNet():
     def get_edges(self, which):
         '''
         Returns: list[tuple(int or None)]
-            List of (three-tuple) edges, where a tuple
+            List of (three-tuple) edges, where tuple
             (i,j,f) denotes the edge with vertices i,j 
-            (ints) and face f (int or None)
+            and face f (int or None)
 
 
         Param:
@@ -277,10 +406,18 @@ class QubitEncodeNet():
         return self.qlattice._Ly
 
 
-    def graph_psi(self, show_tags=False, auto=False):
+    def Nsites(self):
+        return self.qlattice.num_sites()
+
+
+    def Nverts(self):
+        return self.qlattice.num_verts()
+
+
+    def graph_psi(self, show_tags=False, auto=False, **graph_opts):
         
         if auto:
-            self._psi.graph(color=['VERT','FACE','GATE'])
+            self._psi.graph(color=['VERT','FACE','GATE'], *graph_opts)
         
         else:
             LAT_CONST = 50 #lattice constant for graphing
@@ -289,7 +426,7 @@ class QubitEncodeNet():
             fix = {
                 **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
                 }
-            self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix)
+            self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True)
 
 
 
@@ -303,12 +440,22 @@ class QubitEncodeNet():
         return self._psi.to_dense(inds_seq).reshape(-1,1)
 
 
+    def apply_gate_(self, G, where):
+        '''Inplace apply gate to internal
+        wavefunction i.e. self._psi
+        '''
+        self.apply_gate(psi=self._psi, 
+                        G=G, 
+                        where=where,
+                        inplace=True)
+
+
     def apply_gate(self, psi, G, where, inplace=False):
         '''
         TODO: incorporate `physical_ind_id`?
         
         Apply gate `G` at sites specified in `where`,
-        preserving physical indices.
+        preserving physical indices of `psi`.
 
         Params:
         psi: TensorNetwork
@@ -336,6 +483,8 @@ class QubitEncodeNet():
 
         #new physical indices
         site_inds = [f'q{i}' for i in where] 
+        # site_inds = [self._phys_ind_id.format(i) for i in where] 
+
         #old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
         #replace physical inds with gate/bond inds
@@ -346,6 +495,26 @@ class QubitEncodeNet():
         psi.reindex_(reindex_map)
         psi |= TG
         return psi
+
+
+    def apply_stabilizer_gate_(self, vert_inds, face_ops, face_inds):
+        '''Inplace application of a stabilizer gate that acts with 
+        'ZZZZ' on `vert_inds`, and acts on `face_inds` with the operators
+        specified in `face_ops`, e.g. 'YXY'.
+
+        vert_inds: sequence of ints (length 4)
+        face_ops: string 
+        face_inds: sequence of ints (len face_inds==len face_ops)
+        '''
+        X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
+        opmap = {'X': X, 'Y':Y, 'Z':Z, 'I':I}
+        stab_op = qu.kron(*[opmap[Q] for Q in ('ZZZZ' + face_ops)])
+
+        self.apply_gate(psi = self._psi, 
+                        G = stab_op, 
+                        where = vert_inds + face_inds,
+                        inplace = True)
+
 
 
     def make_norm_tensor(self, psi=None):
@@ -446,7 +615,7 @@ class QubitEncodeNet():
             expectations. Defaults to false, in which case
             only the total sum is returned.
         '''
-        Lx,Ly = self._Lx, self._Ly
+        Lx,Ly = self.Lx(), self.Ly()
 
         if psi is None: 
             psi = self._psi
@@ -486,9 +655,11 @@ class QubitEncodeNet():
 
     def compute_ham_expec(self, Ham):
         '''Return <psi|H|psi>
+
         Ham: [SimulatorHam]
             Specifies a two- or three-site gate for each edge in
-            the lattice (third site is the possible face qubit)
+            the lattice (third site if acting on the possible face
+            qubit)
         '''
         psi = self._psi
         bra = psi.H
@@ -499,6 +670,7 @@ class QubitEncodeNet():
             
             G = Ham.get_gate((i,j,f))
             
+            #two vertices + possible face site
             where = (i,j) if f is None else (i,j,f)
             
             G_ket = self.apply_gate(psi, G, where)
@@ -508,14 +680,18 @@ class QubitEncodeNet():
         return E
 
     
-    # def apply_trotter_gates(self, Ham, tau):
+    def apply_trotter_gates_(self, Ham, tau):
+        '''Inplace-apply the Ham gates, exponentiated by `tau`,
+        in groups of {horizontal-even, horizontal-odd, etc}.
+        '''
+        for group in ['he', 'ho', 've', 'vo']:
 
-    #     for group in ['he', 'ho', 've', 'vo']:
-
-    #         for edge, gate in Ham.trotter_gates(group, tau).items():
-    #             i,j,f = edge
-    #             where = (i,j) if f is None else (i,j,f)
-    #             self.apply_gate(gate, where, inplace=True)
+            for edge, gate in Ham.trotter_gates(group, tau).items():
+                
+                i,j,f = edge
+                where = (i,j) if f is None else (i,j,f)
+                #inplace gate apply
+                self.apply_gate_(gate, where)
         
 
 
@@ -540,35 +716,58 @@ class SimulatorHam():
         
         self.qlattice = qlattice
         self._ham_terms = ham_terms
-        self._exp_gates = None
+        self._exp_gates = dict()
 
+        # self._op_cache = defaultdict(dict)
+
+
+    # def _expm_cached(self, gate, t):
+    #     cache = self._op_cache['expm']
+    #     key = (id(gate), t)
+    #     if key not in cache:
+    #         el, ev = do('linalg.eigh', gate)
+    #         cache[key] = ev @ do('diag', do('exp', el * t)) @ dag(ev)
+    #     return cache[key]
 
     def get_gate(self, edge):
-        '''Term in Ham corresponding to ``edge``
-        in the qubit lattice.
+        '''Local term corresponding to `edge`
         '''
         return self._ham_terms[edge]
 
+    def get_expm_gate(self, edge, t):
+        '''Local term for `edge`, matrix-exponentiated
+        by `t`.
+        '''
+        # return self._expm_cached(self.get_gate(edge), x)
+        key = (edge, t)
+        if key not in self._exp_gates:
+            gate = self.get_gate(edge)
+            el, ev = do('linalg.eigh',gate)
+            self._exp_gates[key] = ev @ do('diag', do('exp', el*t)) @ dag(ev)
+        return self._exp_gates[key]
 
-    def trotter_gates(self, group, tau):
+    
+
+    def trotter_gates(self, group, x):
         '''Returns mapping of edges (in ``group``) to
-        the corresponding Trotter gates.
+        the corresponding exponentiated gates.
         
         Returns: dict[edge : exp(Ham gate)]
         '''
         edges = self.get_edges(group)
-        gate_map = {edge : self._exp_gates[edge] for edge in edges}
+        gate_map = {edge : self.get_expm_gate(edge,x) for edge in edges}
         return gate_map
     
 
     def get_edges(self, which):
-        '''Retrieves (selected) edges from internal qLattice object.
+        '''Retrieves (selected) edges from internal 
+        qlattice object.
         '''
         return self.qlattice.get_edges(which)
 
 
     def ham_params(self):
-        '''Relevant parameters, to be specified for
+        '''Relevant parameters. Override for
          each daughter Hamiltonian.
         '''
         pass
@@ -681,11 +880,11 @@ class SpinlessFermiSim(SimulatorHam):
             edges = self._vertices_to_covering_terms[vertex]
             num_edges = len(edges)
 
-            assert num_edges > 1 #should appear in at least two edge terms!
+            assert num_edges>1 or qlattice.num_faces()==0 #should appear in at least two edge terms!
 
             for (i,j,f) in edges:
                 
-                ham_term = terms[(i,j,f)]
+                # ham_term = terms[(i,j,f)]
 
                 v_place = (i,j,f).index(vertex) #vertex is either i or j
 
@@ -814,7 +1013,7 @@ class SpinhalfHubbardSim(SimulatorHam):
             edges = self._vertices_to_covering_terms[vertex]
             num_edges = len(edges)
 
-            assert num_edges > 1 #should appear in at least two edge terms!
+            assert num_edges>1 or qlattice.num_faces()==0  #should appear in at least two edge terms!
 
             for (i,j,f) in edges:
                 

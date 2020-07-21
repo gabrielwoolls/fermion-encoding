@@ -25,6 +25,7 @@ class qubitStabilizer():
         
         
     def string_to_op(string_op):
+        X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
         opmap = {'X': X, 'Y':Y, 'Z':Z, 'I':I}
         return qu.kron(*[opmap[Q] for Q in strng_op])
 
@@ -231,6 +232,9 @@ def three_qubit_stabilizer(qLattice, qstabs=None):
                 eigfaces[indA,indB,indC] = face_vec
     
     
+    ###For testing!!
+    return eigfaces
+
     Nfermi, Nqubit = qLattice._Nfermi, qLattice._Nsites
     code_dims = [2]*Nfermi #vertices 
     qub_dims = [2]*Nqubit #vertices&faces
