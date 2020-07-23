@@ -5,6 +5,7 @@ import quimb.tensor as qtn
 import spinlessQubit
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
 from collections import defaultdict
+from numbers import Integral
 from autoray import do, dag
 import tqdm
     
@@ -436,12 +437,17 @@ class QubitEncodeNet:
         return self.qlattice._Ly
 
 
-    def Nsites(self):
+    def num_sites(self):
         return self.qlattice.num_sites()
 
-
-    def Nverts(self):
+    def num_verts(self):
         return self.qlattice.num_verts()
+
+    def codespace_dims(self):
+        return self.qlattice.codespace_dims()
+    
+    def simspace_dims(self):
+        return self.qlattice.simspace_dims()
 
 
     def graph_psi(self, show_tags=False, auto=False, **graph_opts):
@@ -459,16 +465,32 @@ class QubitEncodeNet:
             self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True)
 
 
-    def check_dense_energy(self, div_norm=1.0):
+    # def check_dense_energy(self, div_norm=1.0):
         
-        if self.qlattice.ham_sim() is None:
-            self.qlattice.make_simulator_ham()
+    #     if self.qlattice.ham_sim() is None:
+    #         self.qlattice.make_simulator_ham()
 
-        Hsim = self.qlattice.ham_sim()
+    #     Hsim = self.qlattice.ham_sim()
 
-        psi_d = self.net_to_dense()
+    #     psi_d = self.net_to_dense()
         
-        return (psi_d.H @ Hsim @ psi_d).item() / div_norm
+    #     return (psi_d.H @ Hsim @ psi_d).item() / div_norm
+
+
+    # def exact_projector_from_matrix(self, Udag_matrix):
+    #     Nfermi, Nqubit = self.num_verts(), self.num_sites()
+
+    #     if Udag_matrix.shape != (2**Nfermi, 2**Nqubit):
+    #         raise ValueError('Wrong U* shape')
+        
+    #     sim_dims = self.simspace_dims()
+    #     code_dims = self.codespace_dims()
+        
+    #     sim_inds = [f'q{i}' for i in range(Nqubit)]
+        
+    #     Udagger = Udag_matrix.reshape(code_dims+sim_dims)
+
+    #     Udagger = qtn.Tensor()
 
 
     def net_to_dense(self):
@@ -499,7 +521,7 @@ class QubitEncodeNet:
                         inplace=True)
 
 
-    def apply_gate(self, psi, G, where, inplace=False):
+    def apply_gate(self, G, where, psi=None, inplace=False):
         '''
         TODO: incorporate `physical_ind_id`?
         
@@ -519,10 +541,13 @@ class QubitEncodeNet:
             and vertex sites.
         '''
         # psi = self._psi if inplace else self._psi.copy()
+        if psi is None:
+            psi = self._psi
+
         psi = psi if inplace else psi.copy()
 
         #let G be a one-site gate
-        if isinstance(where, int): 
+        if isinstance(where, Integral): 
             where = (where,)
 
         numsites = len(where) #gate acts on `numsites`
@@ -544,32 +569,6 @@ class QubitEncodeNet:
         psi.reindex_(reindex_map)
         psi |= TG
         return psi
-
-
-    def apply_stabilizer_gate_(self, vert_inds, face_ops, face_inds):
-        '''Inplace application of a stabilizer gate that acts with 
-        'ZZZZ' on `vert_inds`, and acts on `face_inds` with the operators
-        specified in `face_ops`, e.g. 'YXY'.
-
-        vert_inds: sequence of ints (length 4)
-        face_ops: string 
-        face_inds: sequence of ints (len face_inds==len face_ops)
-        '''
-        X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
-        opmap = {'X': X, 'Y':Y, 'Z':Z}
-        
-        # stab_op = qu.kron(*[opmap[Q] for Q in ('ZZZZ' + face_ops)])
-        gates = (opmap[Q] for Q in ('ZZZZ'+face_ops))
-        inds = tuple(vert_inds + face_inds)
-
-        for G, where in zip(gates, inds):
-            self.apply_gate_(G, where=vert_inds+face_inds)
-
-
-        # self.apply_gate(psi = self._psi, 
-        #                 G = stab_op, 
-        #                 where = vert_inds + face_inds,
-        #                 inplace = True)
 
 
 
@@ -758,6 +757,29 @@ class QubitEncodeNet:
                 #inplace gate apply
                 self.apply_gate_(gate, where)
 
+    
+    #TODO: RECOMMENT
+    def apply_stabilizer_gate_(self, loop_stab_data):
+        '''Inplace application of a stabilizer gate that acts with 
+        'ZZZZ' on `vert_inds`, and acts on `face_inds` with the operators
+        specified in `face_ops`, e.g. 'YXY'.
+
+        vert_inds: sequence of ints (length 4)
+        face_ops: string 
+        face_inds: sequence of ints (len face_inds==len face_ops)
+        '''
+        # X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+        # opmap = {'X': X, 'Y':Y, 'Z':Z}
+        
+        # stab_op = qu.kron(*[opmap[Q] for Q in ('ZZZZ' + face_ops)])
+        gates = (qu.pauli(Q) for Q in loop_stab_data['opstring'])
+        inds = loop_stab_data['inds']
+
+        for G, where in zip(gates, inds):
+            print(type(where))
+            self.apply_gate_(G, where)
+
+
 
     def apply_all_stabilizers_(self, H_stab):
         '''``H_stab`` specifies the active sites and 
@@ -766,6 +788,7 @@ class QubitEncodeNet:
         '''
         for where, G in H_stab.gen_stabilizer_gates():
             self.apply_gate_(G, where)
+
 
 
     def apply_stabilizer_exp_gates_(self, H_stab, tau):

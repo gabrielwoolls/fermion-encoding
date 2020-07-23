@@ -116,6 +116,14 @@ class QubitCodeLattice():
     def num_sites(self):
         return self.num_faces()+self.num_verts()
     
+
+    def codespace_dims(self):
+        return self._encoded_dims
+    
+    def simspace_dims(self):
+        return self._sim_dims
+
+
     def make_coo_stabilizer_map(self):
         Lx, Ly = self._Lx, self._Ly
         faces = self._faces
@@ -558,31 +566,31 @@ class SpinlessDense(QubitCodeLattice):
 
 
 
-    # TODO: delete?
-    def projected_ham_2(self):
-        '''
-        Alternative projected Hamiltonian.
+    # # TODO: delete?
+    # def projected_ham_2(self):
+    #     '''
+    #     Alternative projected Hamiltonian.
 
-        Obtained by numerically diagonalizing stabilizer
-        rather than "manually", so pHam should be equivalent 
-        to regular HamCode under a basis rotation.
-        '''
+    #     Obtained by numerically diagonalizing stabilizer
+    #     rather than "manually", so pHam should be equivalent 
+    #     to regular HamCode under a basis rotation.
+    #     '''
 
-        evals, V = qu.eigh(self._stabilizer)
+    #     evals, V = qu.eigh(self._stabilizer)
         
-        assert np.array_equal(evals,np.array([-1.0]*64 + [1.0]*64))
+    #     assert np.array_equal(evals,np.array([-1.0]*64 + [1.0]*64))
 
-        if qu.isreal(V): V=V.real
+    #     if qu.isreal(V): V=V.real
 
-        projector = V @ np.diag( [0]*64 + [1]*64 ) @ V.H #projector onto +1 eigenspace
+    #     projector = V @ np.diag( [0]*64 + [1]*64 ) @ V.H #projector onto +1 eigenspace
 
-        self._stab_projector = projector
+    #     self._stab_projector = projector
 
-        Vp = V[:, np.where(evals==1.0)].reshape(128,64)
-        #shape=(128,64)
+    #     Vp = V[:, np.where(evals==1.0)].reshape(128,64)
+    #     #shape=(128,64)
 
-        pHam = Vp.H @ self._HamSim @ Vp 
-        return pHam
+    #     pHam = Vp.H @ self._HamSim @ Vp 
+    #     return pHam
         #(64,64)
         
     #TODO: delete?

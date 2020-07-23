@@ -36,7 +36,7 @@ class loopStabOperator():
 
 ## Lone functions ##
 
-def one_qubit_U_matrix(qlattice, empt_face_coo):
+def one_qubit_U_matrices(qlattice, empt_face_coo):
     '''
     TODO: check parity more intelligently
 
@@ -58,7 +58,7 @@ def one_qubit_U_matrix(qlattice, empt_face_coo):
     
     #dimensions of simulator space [2,2,...]
     sim_space_dims = qlattice._sim_dims
-    vertex_space_dims = qlattice._encoded_dims
+    code_space_dims = qlattice._encoded_dims
     
     #sites and action-string of stabilizer operator
     stab_data = qlattice.loop_stabilizer_data(*empt_face_coo)
@@ -68,7 +68,7 @@ def one_qubit_U_matrix(qlattice, empt_face_coo):
     #(this is only for one-face-qubit stabilizers)
     assert len(arrays) == 4+1
 
-    # inds = stab_data['inds']
+    inds = stab_data['inds']
 
     # stabilizer = qu.ikron(  ops=arrays, 
     #                         dims=sim_space_dims,
@@ -83,11 +83,13 @@ def one_qubit_U_matrix(qlattice, empt_face_coo):
 
     #II..ZZZZ..III parity-check the vertices of face-loop
     corner_parity_op = qu.ikron(ops=arrays[:4],
-                                dims=vertex_space_dims,
+                                dims=code_space_dims,
                                 inds=inds[:4])
 
     #get all the stabilizer eigenvectors
     Uplus = np.zeros((2**Nqubit, 2**Nfermi))
+    Uplus_dagger = np.zeros((2**Nfermi, 2**Nqubit))
+
     for i in range(2**Nfermi):
 
         vertex_state_i = qu.basis_vec(i=i, dim=2**Nfermi)
@@ -100,9 +102,21 @@ def one_qubit_U_matrix(qlattice, empt_face_coo):
         full_state_i = vertex_state_i & face_state_i
 
         Uplus[:,i] = full_state_i.flatten()
+        Uplus_dagger[i,:] = full_state_i.H.flatten()
 
-    return qu.qu(Uplus)
+    # if not tensorize:
+    return qu.qu(Uplus), qu.qu(Uplus_dagger)
     
+    # Uplus = Uplus.reshape(sim_space_dims+code_space_dims)
+    # Uplus_dagger = Uplus_dagger.reshape(code_space_dims+sim_space_dims)
+
+    # sim_inds = [f's{i}' for i in range(Nqubit)]
+    # code_inds = [f'c{i}' for i in range(Nfermi)]
+
+    # Uplus = qtn.Tensor(Uplus, inds=)    
+
+
+
 
 # def parity_check(i, Nfermi, vert_inds):
 #     '''Check ZZZZ parity at 4 corners `vert_inds`.
