@@ -1,9 +1,11 @@
 import numpy as np
+from itertools import product
 import quimb as qu
 from operator import add
 import functools
 import itertools
 import operator
+import stabilizers
 
 class QubitCodeLattice():
     def __init__(self, Lx, Ly, local_dim):
@@ -22,7 +24,11 @@ class QubitCodeLattice():
         self._verts = verts
         self._faces = faces
 
+        #map strings {'u','r','d', ...} to edge 3-tuples
         self._edge_map = make_edge_map(verts,faces)
+        
+        #map face coos to `loopStabOperator` objects
+        # self._coo_stab_map = self.make_coo_stabilizer_map()
 
         #number lattice sites (IGNORES faces w/out qubits)
         self._Nsites = verts.size + faces[faces!=None].size
@@ -109,6 +115,103 @@ class QubitCodeLattice():
 
     def num_sites(self):
         return self.num_faces()+self.num_verts()
+    
+    def make_coo_stabilizer_map(self):
+        Lx, Ly = self._Lx, self._Ly
+        faces = self._faces
+        stab_map = dict()
+
+        for x,y in product(range(Lx-1),range(Ly-1)):
+            if faces[x,y] is None:
+                stab_map[(x,y)] = self.loop_stabilizer_data(x,y)
+        
+        return stab_map
+
+    
+    def loop_stabilizer_data(self, i, j, verbose=False):
+        '''
+        Returns `loop_op_data`, corresponding to face
+        at location (i,j) in face array, which maps
+        
+        {'inds' : (indices),
+         'opstring' : (string)}
+
+              u
+           1-----2
+         l |(i,j)| r   ==>  S = Z1*Z2*Z3*Z4*Yu*Xr*Yd*Xl
+           4-----3
+              d
+
+        Note clockwise = ccwise, i.e.
+        (E12)(E23)(E34)(E41) = (E14)(E43)(E32)(E21)
+        
+        TODO: test!
+        '''
+
+        # X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+        
+        verts = self.vert_array()
+        faces = self.face_array()
+        
+        assert faces[i,j] is None
+
+        #corner vertex sites, 1=upper-left --> clockwise
+        v1 = verts[i, j]
+        v2 = verts[i, j+1]
+        v3 = verts[i+1, j+1]
+        v4 = verts[i+1, j]
+
+        
+        u_face = find_face_up_down(row=i, cols=(j,j+1), Vs=verts, Fs=faces)
+        d_face = find_face_up_down(row=i+1, cols=(j,j+1), Vs=verts, Fs=faces)
+        l_face = find_face_right_left(rows=(i,i+1), col=j, Vs=verts, Fs=faces)
+        r_face = find_face_right_left(rows=(i,i+1), col=j+1, Vs=verts, Fs=faces)
+
+
+        if verbose:
+            print('Stabilizer:')
+            print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
+            print(f'u: {u_face}, d: {d_face}, l: {l_face}, r: {r_face}', end='\n\n')
+
+
+        # vert_ops = [Z, Z, Z, Z]
+        vert_inds = [v1, v2, v3, v4]
+
+        face_inds, face_ops = [], ''
+        if u_face is not None:
+            face_inds.append(u_face)
+            face_ops += 'Y'
+        
+        if d_face is not None:
+            face_inds.append(d_face)
+            face_ops += 'Y'
+
+        if r_face is not None:
+            face_inds.append(r_face)
+            face_ops += 'X'
+        
+        if l_face is not None:
+            face_inds.append(l_face)
+            face_ops += 'X'
+        
+        assert len(face_ops) >= 1
+        
+        # ops = vert_ops + face_ops
+        # inds = vert_inds+face_inds
+        # loop_op = qu.ikron(ops=ops, dims=self._sim_dims, inds=inds)
+        # if qu.isreal(loop_op): 
+        #     loop_op = loop_op.real
+
+        # face_ops = ''.join(face_ops)
+        
+        # loop_op = stabilizers.loopStabOperator(vert_inds=vert_inds,
+        #                                     face_inds=face_inds,
+        #                                     face_op_str=face_ops)
+        
+        loop_op_data = { 'inds':  vert_inds + face_inds,
+                         'opstring': 'ZZZZ' + face_ops}
+        
+        return loop_op_data
 
 
 class SpinlessDense(QubitCodeLattice):
@@ -120,7 +223,7 @@ class SpinlessDense(QubitCodeLattice):
         the low-weight fermionic encoding of
         Derby and Klassen (2020):
 
-        	arXiv:2003.06939 [quant-ph]
+            arXiv:2003.06939 [quant-ph]
         '''
         #Simulator Hamiltonian in full qubit space
         self._HamSim = None
@@ -210,7 +313,6 @@ class SpinlessDense(QubitCodeLattice):
 
         def hops(): #fermion hopping terms
             
-            # for (i,j,f) in self._edgesR:
             for (i,j,f) in self.get_edges('right'):
                 yield t * self.H_hop(i, j, f, 'horizontal')
             
@@ -365,6 +467,8 @@ class SpinlessDense(QubitCodeLattice):
 
     def make_stabilizer(self):
         '''
+        DEPREC -- DON'T USE 
+        
         TODO: 
         * add a projector onto codespace (see method 2)
         * generalize indices, rotation, reshape, etc
@@ -382,8 +486,11 @@ class SpinlessDense(QubitCodeLattice):
         
         _, Ux = qu.eigh(qu.pauli('x')) 
         
-        stabilizer = self.loop_stabilizer(0,1)
-
+        stab_data = self.loop_stabilizer_data(0,1)
+        oplist = [qu.pauli(Q) for Q in stab_data['opstring']]
+        stabilizer = qu.ikron(  ops=oplist,
+                                dims=self._sim_dims,
+                                inds=stab_data['inds'] )
         #TODO: change to general rather than inds=6, Ux
         U = qu.ikron(Ux.copy(), dims=self._sim_dims, inds=[6])
         
@@ -432,95 +539,24 @@ class SpinlessDense(QubitCodeLattice):
         return self._HamCode.copy()
 
 
-    #COMMENT
-    def t_make_stabilizers(self):
-        '''
-        TODO: test! Could be completely wrong
+    # def t_make_stabilizers(self):
+    #     '''
+    #     TODO: test! Could be completely wrong
 
-        To be used in general case when lattice has 
-        multiple stabilizer operators.
-        '''
+    #     To be used in general case when lattice has 
+    #     multiple stabilizer operators.
+    #     '''
         
-        self._stabilizers = {}
+    #     self._stabilizers = {}
         
-        for (i,j) in np.argwhere(self._F_ind==None):
+    #     for (i,j) in np.argwhere(self._F_ind==None):
 
-            loop_op_ij = self.loop_stabilizer(i,j)
+    #         loop_op_ij = self.loop_stabilizer(i,j)
             
-            self._stabilizers[(i,j)] = loop_op_ij
+    #         self._stabilizers[(i,j)] = loop_op_ij
 
 
 
-    def loop_stabilizer(self, i, j):
-        '''
-        Returns loop operator S corresponding to face
-        at location (i,j) in face array (self._F_ind)
-              u
-           1-----2
-         l |     | r
-           4-----3
-              d
-
-        Note (E12)(E23)(E34)(E41) = (E14)(E43)(E32)(E21),
-        i.e. clockwise = ccwise 
-
-        S = (Z1 Z2 Z3 Z4) (Yu) (Xr) (Yd) (Xl)
-
-        where urdl are face qubits up, right, etc.
-
-        TODO: test!
-        '''
-
-        X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
-        
-        Vs = self.vert_array()
-        Fs = self.face_array()
-        
-        assert Fs[i,j] == None
-
-        #corner vertex sites, 1=upper-left --> clockwise
-        v1 = Vs[i, j]
-        v2 = Vs[i, j+1]
-        v3 = Vs[i+1, j+1]
-        v4 = Vs[i+1, j]
-
-        print('Stabilizer:')
-        print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
-
-        u_face = find_face_up_down(row=i, cols=(j,j+1), Vs=Vs, Fs=Fs)
-        d_face = find_face_up_down(row=i+1, cols=(j,j+1), Vs=Vs, Fs=Fs)
-        l_face = find_face_right_left(rows=(i,i+1), col=j, Vs=Vs, Fs=Fs)
-        r_face = find_face_right_left(rows=(i,i+1), col=j+1, Vs=Vs, Fs=Fs)
-
-        print(u_face, d_face, l_face, r_face, end='\n\n')
-
-        ops = [Z, Z, Z, Z]
-        inds = [v1, v2, v3, v4]
-
-        if u_face != None:
-            inds.append(u_face)
-            ops.append(Y)
-        
-        if d_face != None:
-            inds.append(d_face)
-            ops.append(Y)
-
-        if r_face != None:
-            inds.append(r_face)
-            ops.append(X)
-        
-        if l_face != None:
-            inds.append(l_face)
-            ops.append(X)
-        
-        assert len(ops) > 4
-
-        loop_op = qu.ikron(ops=ops, dims=self._sim_dims, inds=inds)
-        
-        if qu.isreal(loop_op): 
-            loop_op = loop_op.real
-
-        return loop_op
 
     # TODO: delete?
     def projected_ham_2(self):

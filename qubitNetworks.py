@@ -198,7 +198,8 @@ class iTimeTEBD:
         self.qnet = qnetwork
 
         #set self.norm = sqrt <psi|psi>
-        self.update_norm()
+        # self.update_norm()
+        self.normsq = self.get_current_normsq()
         
         self.ham = ham
         self.tau = tau
@@ -231,7 +232,7 @@ class iTimeTEBD:
 
 
     def compute_energy(self):
-        return self.qnet.compute_ham_expec(self.ham) / self.norm
+        return self.qnet.compute_ham_expec(self.ham) / self.normsq
 
 
     def evolve(self, steps):
@@ -252,7 +253,9 @@ class iTimeTEBD:
                 
                 self.sweep()
 
-                self.update_norm()
+                # self.update_norm()
+                self.normsq = self.get_current_normsq()
+
                 self._n += 1
 
                 pbar.update()
@@ -275,10 +278,21 @@ class iTimeTEBD:
     
 
     def update_norm(self):
-        normsq = self.qnet.get_norm_tensor() ^ all
-        assert np.isclose(normsq, abs(normsq))
-        self.norm = np.real(normsq)
+        # normsq = self.qnet.get_norm_tensor() ^ all
+        # assert np.isclose(normsq, abs(normsq))
+        # self.norm = np.real(normsq)
+        self.normsq = self.get_current_normsq()
 
+    def get_current_normsq(self):
+        normsq = self.qnet.get_norm_tensor() ^ all
+        assert np.isclose(normsq, abs(normsq)) #imag==0
+        return np.real(normsq)
+    
+    # def get_current_state(self):
+    #     norm = np.sqrt(self.get_current_normsq())
+    #     return self.
+    
+    
 
 
 
@@ -511,7 +525,7 @@ class QubitEncodeNet:
         if isinstance(where, int): 
             where = (where,)
 
-        numsites = len(where) #gate is `numsites`-local
+        numsites = len(where) #gate acts on `numsites`
         dp = self._phys_dim
 
         G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
@@ -541,14 +555,21 @@ class QubitEncodeNet:
         face_ops: string 
         face_inds: sequence of ints (len face_inds==len face_ops)
         '''
-        X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
-        opmap = {'X': X, 'Y':Y, 'Z':Z, 'I':I}
-        stab_op = qu.kron(*[opmap[Q] for Q in ('ZZZZ' + face_ops)])
+        X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+        opmap = {'X': X, 'Y':Y, 'Z':Z}
+        
+        # stab_op = qu.kron(*[opmap[Q] for Q in ('ZZZZ' + face_ops)])
+        gates = (opmap[Q] for Q in ('ZZZZ'+face_ops))
+        inds = tuple(vert_inds + face_inds)
 
-        self.apply_gate(psi = self._psi, 
-                        G = stab_op, 
-                        where = vert_inds + face_inds,
-                        inplace = True)
+        for G, where in zip(gates, inds):
+            self.apply_gate_(G, where=vert_inds+face_inds)
+
+
+        # self.apply_gate(psi = self._psi, 
+        #                 G = stab_op, 
+        #                 where = vert_inds + face_inds,
+        #                 inplace = True)
 
 
 
@@ -725,7 +746,7 @@ class QubitEncodeNet:
 
     
     def apply_trotter_gates_(self, Ham, tau):
-        '''Inplace-apply the Ham gates, exponentiated by `tau`,
+        '''In-place apply the Ham gates, exponentiated by `tau`,
         in groups of {horizontal-even, horizontal-odd, etc}.
         '''
         for group in ['he', 'ho', 've', 'vo']:
@@ -736,7 +757,25 @@ class QubitEncodeNet:
                 where = (i,j) if f is None else (i,j,f)
                 #inplace gate apply
                 self.apply_gate_(gate, where)
-        
+
+
+    def apply_all_stabilizers_(self, H_stab):
+        '''``H_stab`` specifies the active sites and 
+        gates, multiplied by ``StabModifier.multiplier``, 
+        of all loop stabilizer operators in this lattice.
+        '''
+        for where, G in H_stab.gen_stabilizer_gates():
+            self.apply_gate_(G, where)
+
+
+    def apply_stabilizer_exp_gates_(self, H_stab, tau):
+        '''In-place apply exp(tau * multiplier * stabilizer), 
+        i.e. the exponential (by `tau`) of the Lagrange-multiplier
+        stabilizer gates.
+        '''
+        for where, expG in H_stab.generate_exp_stab_gates(tau):
+            self.apply_gate_(expG, where)
+
 
 
 def number_op():
@@ -746,14 +785,170 @@ def number_op():
     return qu.qu([[0, 0], [0, 1]])
     
 
+
+
+# def loop_stab_to_tensor(loop_stab):
+#     '''Convert `loop_stabilizer` [loopStabOperator]
+#      to a qtn.Tensor of 8 gates.
+#     '''
+#     X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+#     opmap = {'X': X, 'Y':Y, 'Z':Z}
+
+#     if isinstance(loop_stab, dict):
+#         opstring = loop_stab['opstring']
+#         inds = loop_stab['inds']
+#         # vert_inds = loop_stab['verts']
+#         # face_inds = loop_stab['faces']
+
+#     elif isinstance(loop_stab, stabilizers.loopStabOperator):
+#         opstring = loop_stab.op_string
+#         inds = loop_stab.inds
+#         # vert_inds = loop_stab.vert_inds
+#         # face_inds = loop_stab.face_inds
+
+#     else: ValueError('Unknown loop stabilizer')
+    
+#     # numsites = 4 + len(face_inds)
+
+#     gates = (opmap[Q] for Q in opstring)
+#     ind_list = (f'q{i}' for i in vert_inds + face_inds)
+
+#     tensors = [qtn.Tensor(gate, inds=k)]
+    
+#     #new physical indices
+#     site_inds = [f'q{i}' for i in where] 
+#     # site_inds = [self._phys_ind_id.format(i) for i in where] 
+
+#     #old physical indices joined to new gate
+#     bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
+#     #replace physical inds with gate/bond inds
+#     reindex_map = dict(zip(site_inds, bond_inds))
+
+#     TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=['GATE'])
+    
+
+
 ### *********************** ###
+
+class HamStabModifier():
+
+    def __init__(self, qlattice, multiplier):
+        '''TODO: INSTEAD can store lists of 8 1-site gates?
+
+        Stores 8-site gates corresponding to the loop
+        stabilizer operators, to be added to the Hamiltonian
+        with Lagrange `multiplier`. 
+        '''
+        
+        self.qlattice = qlattice
+
+        self.multiplier = multiplier
+        
+        #map coos to `loopStabOperator` objects
+        coo_stab_map = qlattice.make_coo_stabilizer_map()
+
+
+        self._stab_gates = self.make_stab_gate_map(coo_stab_map)
+        self._exp_stab_gates = dict()
+
+
+
+    def make_stab_gate_map(self, coo_stab_map):
+        '''TODO: ALTERED!! NOW MAPS coos to (where, gate) tuples.
+
+        Return
+        -------
+        gate_map: dict[tuple : (tuple, qarray)] 
+            Maps coordinates (x,y) in the *face* array (empty 
+            faces!) to pairs (where, gate) that specify the 
+            stabilizer gate and the sites to be acted on.
+
+        Param:
+        ------
+        coo_stab_map: dict[dict]
+            Maps coordinates (x,y) in the face array of the lattice
+            to `loop_stab` dictionaries of the form
+            {'inds' : (indices),   'opstring' : (string)}
+        '''
+        gate_map = dict()
+
+        for coo, loop_stab in coo_stab_map.items():
+            #tuple e.g. (1,2,4,5,6)
+            inds = loop_stab['inds']
+            #string e.g. 'ZZZZX'
+            opstring = loop_stab['opstring']
+            #qarray
+            gate = qu.kron(*[qu.pauli(Q) for Q in opstring])
+            
+            gate *= self.multiplier
+            
+            # gatelist = [qu.pauli(Q) for Q in opstring]
+            gate_map[coo] = (inds, gate)
+        
+        return gate_map
+
+
+
+
+    def gen_stabilizer_gates(self):
+        '''Generate (where, gate) pairs for acting with 
+        the 8-site stabilizer gates on sites `where`.
+        '''
+        for where, gate in self._stab_gates.values():
+            yield (where, gate)
+
+
+    
+    def get_exp_stab_gate(self, coo, tau):
+        '''
+        Returns   exp(tau * gate)
+                = exp(tau * multiplier * stabilizer)
+        
+                for the stabilizer at empty face `coo`.
+
+        Params
+        -------
+        coo: tuple (x,y)
+            (Irrelevant) location of the empty face that 
+            the stabilizer corresponds to. Just a label.
+        
+        tau: float
+            Imaginary time for the exp(tau * gate)
+        '''
+        key = (coo, tau)
+
+        if key not in self._exp_stab_gates:
+            where, gate = self._stab_gates[coo]
+            el, ev = do('linalg.eigh', gate)
+            expgate = ev @ do('diag', do('exp', el*tau)) @ dag(ev)
+            self._exp_stab_gates[key] = (where, expgate)
+        
+        return self._exp_stab_gates[key]
+
+
+    
+    def generate_exp_stab_gates(self, tau):
+        '''Generate (where, exp(tau*gate)) pairs for acting
+        with exponentiated stabilizers on lattice.
+        '''
+        for coo in self.empty_face_coos():
+            yield self.get_exp_stab_gate(coo, tau)
+
+
+
+    def empty_face_coos(self):
+        return self._stab_gates.keys()
+
+
+###  **********************************  ###
+
 
 class SimulatorHam():
     '''Parent class for simulator (i.e. qubit-space) 
     Hamiltonians. 
 
-    Needs a `qlattice` object to handle lattice geometry/edges, 
-    and a mapping `_ham_terms` of edges to two/three site gates.
+    Takes a `qlattice` object to handle lattice geometry/edges, 
+    and a mapping `ham_terms` of edges to two/three site gates.
     '''
     
     def __init__(self, qlattice, ham_terms):

@@ -1,8 +1,8 @@
 import numpy as np
 import quimb as qu
 
-class qubitStabilizer():
-    def __init__(self, vert_inds, face_op, face_inds):
+class loopStabOperator():
+    def __init__(self, vert_inds, face_op_str, face_inds):
         '''
         Params:
 
@@ -12,22 +12,112 @@ class qubitStabilizer():
 
         face_inds: face qubit indices
 
-        face_op [string]: action on face qubits, e.g. 'YXIX'
+        face_op_str [string]: action on face qubits, e.g. 'YXIX'
         '''
-        assert len(face_inds)==len(face_op)
+        assert len(face_inds)==len(face_op_str)
         assert len(vert_inds)==4
 
         self.vert_inds = vert_inds 
-        self.vert_op = 'ZZZZ'
+        # self.vert_op_str = 'ZZZZ'
         
-        self.face_op = face_op 
+        self.face_op_str = face_op_str
         self.face_inds = face_inds 
+
+        self.op_string = 'ZZZZ' + face_op_str
+        self.inds = vert_inds + face_inds
         
-        
-    def string_to_op(string_op):
+
+    @classmethod
+    def string_to_gate(cls, string_op):
         X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
         opmap = {'X': X, 'Y':Y, 'Z':Z, 'I':I}
-        return qu.kron(*[opmap[Q] for Q in strng_op])
+        return qu.kron(*[opmap[Q] for Q in string_op])
+
+
+## Lone functions ##
+
+def one_qubit_U_matrix(qlattice, empt_face_coo):
+    '''
+    TODO: check parity more intelligently
+
+    U matrix for lifting states from 'Fock' space
+    to 'Stab' subspace of Simulator space.
+
+    empt_face_coo: tuple (x,y) 
+        location of empty face corresponding to the loop
+        stabilizer operator.
+    '''
+    assert qlattice._faces[empt_face_coo] is None
+
+    X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
+    opmap = {'X':X, 'Y':Y, 'Z':Z}
+    
+    #number of fermionic/qubit DOF
+    Nfermi = qlattice._Nfermi 
+    Nqubit = qlattice._Nsites
+    
+    #dimensions of simulator space [2,2,...]
+    sim_space_dims = qlattice._sim_dims
+    vertex_space_dims = qlattice._encoded_dims
+    
+    #sites and action-string of stabilizer operator
+    stab_data = qlattice.loop_stabilizer_data(*empt_face_coo)
+
+    arrays = [opmap[Q] for Q in stab_data['opstring']]
+
+    #(this is only for one-face-qubit stabilizers)
+    assert len(arrays) == 4+1
+
+    # inds = stab_data['inds']
+
+    # stabilizer = qu.ikron(  ops=arrays, 
+    #                         dims=sim_space_dims,
+    #                         inds=inds)
+
+    #action on just the face qubit, either X or Y
+    face_op = arrays[4]
+    elx, evx = qu.eigh(face_op)
+    #diagonalized the face qubit        
+    eigenfaces = {-1 : evx[:,0],
+                  +1 : evx[:,1]}
+
+    #II..ZZZZ..III parity-check the vertices of face-loop
+    corner_parity_op = qu.ikron(ops=arrays[:4],
+                                dims=vertex_space_dims,
+                                inds=inds[:4])
+
+    #get all the stabilizer eigenvectors
+    Uplus = np.zeros((2**Nqubit, 2**Nfermi))
+    for i in range(2**Nfermi):
+
+        vertex_state_i = qu.basis_vec(i=i, dim=2**Nfermi)
+        
+        sign = qu.expec(corner_parity_op,
+                        vertex_state_i)
+
+        face_state_i = eigenfaces[int(sign)].reshape(-1,1)
+        
+        full_state_i = vertex_state_i & face_state_i
+
+        Uplus[:,i] = full_state_i.flatten()
+
+    return qu.qu(Uplus)
+    
+
+# def parity_check(i, Nfermi, vert_inds):
+#     '''Check ZZZZ parity at 4 corners `vert_inds`.
+#     '''
+#     ops = [qu.pauli('z') for _ in range(4)]
+#     dims = [2] * Nfermi
+#     state = qu.basis_vec(i, dim=2**Nfermi)
+#     return qu.expec()
+
+
+
+        
+        
+
+
 
 
 
@@ -46,7 +136,6 @@ def two_qubit_eigsectors(strA='XY', strB='YX'):
         eigsectors[0,1]: +1, -1
         eigsectors[1,0]: -1, +1
         eigsectors[1,1]: -1, -1
-
 
     '''
     sign_dic = {0: 1.0,  1: -1.0}
@@ -94,23 +183,26 @@ def two_qubit_eigsectors(strA='XY', strB='YX'):
 
 
 
-def two_qubit_codespace(qLattice):
+def two_qubit_U_matrix(qlattice):
     '''
     TODO: generalize :/
 
     Find the joint +1 stabilizer eigenbasis.
 
-    Return: Uplus [qarray, shape = (2**Nqubit, 2**Nfermi)]
-
-            rectangular matrix, contains stabilizer eigenstates
-            written in the basis of the full qubit space
+    Return
+    -------
+     Uplus: qarray, shape = (2**Nqubit, 2**Nfermi)
+        Rectangular matrix, contains stabilizer eigenstates
+        written in the computational basis of the full 
+        'simulator' qubit space
     
-    Params: qLattice [spinlessQubitLattice object]
+    Params
+    ------
+    qlattice: spinlessQubitLattice object
     '''
     
     X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
     sector = {1.0: 0,  -1.0: 1}
-
 
     #ndarray of joint stabilizer eigenstates 
     #(in 2-face-qubit subspace)
@@ -122,7 +214,7 @@ def two_qubit_codespace(qLattice):
     SA, SB = X&Y, Y&X
     #########################
 
-    Nfermi, Nqubit = qLattice._Nfermi, qLattice._Nsites
+    Nfermi, Nqubit = qlattice._Nfermi, qlattice._Nsites
     code_dims = [2]*Nfermi
     qub_dims = [2]*Nqubit
 
@@ -161,12 +253,10 @@ def two_qubit_codespace(qLattice):
 
 ## ***************************************** ##
 
-def three_qubit_stabilizer(qLattice, qstabs=None):
+def three_qubit_U_matrix(qlattice, qstabs=None):
     '''
-
     TODO: 
     *define SX_vert (vertices acted on by Z-stabilizer)
-
     '''
     sectors = {1.0: 0,  -1.0: 1}
     X, Y, Z, I = (qu.pauli(mu) for mu in ['x','y','z','i'])
@@ -177,22 +267,22 @@ def three_qubit_stabilizer(qLattice, qstabs=None):
 
     if qstabs==None:
 
-        qstab_A = qubitStabilizer(  vert_inds=[1,2,5,4],
-                                    face_op='XYI',
+        qstab_A = loopStabOperator( vert_inds=[1,2,5,4],
+                                    face_op_str='XYI',
                                     face_inds=[12,13,14])  
 
-        qstab_B = qubitStabilizer(  vert_inds=[3,4,7,6],
-                                    face_op='YXY',
+        qstab_B = loopStabOperator( vert_inds=[3,4,7,6],
+                                    face_op_str='YXY',
                                     face_inds=[12,13,14])  
         
-        qstab_C = qubitStabilizer(  vert_inds=[7,8,11,10],
-                                    face_op='IYX',
+        qstab_C = loopStabOperator( vert_inds=[7,8,11,10],
+                                    face_op_str='IYX',
                                     face_inds=[12,13,14])                                                                 
     
 
-    SA = qu.kron(*[opmap[Q] for Q in qstab_A.face_op])
-    SB = qu.kron(*[opmap[Q] for Q in qstab_B.face_op])
-    SC = qu.kron(*[opmap[Q] for Q in qstab_C.face_op])
+    SA = qu.kron(*[opmap[Q] for Q in qstab_A.face_op_str])
+    SB = qu.kron(*[opmap[Q] for Q in qstab_B.face_op_str])
+    SC = qu.kron(*[opmap[Q] for Q in qstab_C.face_op_str])
     # SA, SB, SC = X&Y&I, Y&X&Y, I&Y&X 
 
     eigfaces = np.ndarray(shape=face_dims, dtype=object)
@@ -231,11 +321,12 @@ def three_qubit_stabilizer(qLattice, qstabs=None):
                 
                 eigfaces[indA,indB,indC] = face_vec
     
-    
-    ###For testing!!
-    return eigfaces
 
-    Nfermi, Nqubit = qLattice._Nfermi, qLattice._Nsites
+    ###For testing!!
+    # return eigfaces
+
+
+    Nfermi, Nqubit = qlattice._Nfermi, qlattice._Nsites
     code_dims = [2]*Nfermi #vertices 
     qub_dims = [2]*Nqubit #vertices&faces
 
@@ -270,7 +361,7 @@ def three_qubit_stabilizer(qLattice, qstabs=None):
 
         face_state = eigfaces[secA, secB, secC] 
 
-        full_state = vertex_state&face_state
+        full_state = vertex_state & face_state
 
         #"stable" eigenstate written in qubit basis
         Uplus[:,k] = full_state.flatten()
