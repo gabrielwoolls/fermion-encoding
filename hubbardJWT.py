@@ -3,25 +3,25 @@ from operator import add
 import functools
 import itertools
 import operator
-import spinlessQubit as sqb
+import denseQubits as dq
 import numpy as np
 
 DEBUG=0
 
 class HubbardSpinlessExact():
     def __init__(self, Lx=2, Ly=3):
-        V_ind, F_ind = sqb.gen_lattice_sites(Lx,Ly)
+        V_ind, F_ind = dq.gen_lattice_sites(Lx,Ly)
 
         self._V_ind = V_ind
         
         self._edgesR = [(i,j) for (i,j,f) in 
-                        sqb.make_right_edges(V_ind, F_ind)]
+                        dq.make_right_edges(V_ind, F_ind)]
         self._edgesL = [(i,j) for (i,j,f) in 
-                        sqb.make_left_edges(V_ind, F_ind)]
+                        dq.make_left_edges(V_ind, F_ind)]
         self._edgesU = [(i,j) for (i,j,f) in 
-                        sqb.make_up_edges(V_ind, F_ind)]
+                        dq.make_up_edges(V_ind, F_ind)]
         self._edgesD = [(i,j) for (i,j,f) in 
-                        sqb.make_down_edges(V_ind, F_ind)]
+                        dq.make_down_edges(V_ind, F_ind)]
 
         self._allEdges = self._edgesU+self._edgesR+self._edgesD+self._edgesL
 
@@ -169,7 +169,7 @@ class HubbardSpinhalfExact():
     
     def __init__(self, Lx, Ly, t, U):
         
-        self.qlattice = sqb.SpinlessQubitLattice(Lx,Ly)
+        self.qlattice = dq.QubitCodeLattice(Lx,Ly)
         
         self._Nverts = self.qlattice._Nfermi
         self._dims = [4] * self._Nverts

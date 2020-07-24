@@ -216,7 +216,7 @@ class QubitCodeLattice():
         #                                     face_inds=face_inds,
         #                                     face_op_str=face_ops)
         
-        loop_op_data = { 'inds':  vert_inds + face_inds,
+        loop_op_data = { 'inds':  tuple(vert_inds + face_inds),
                          'opstring': 'ZZZZ' + face_ops}
         
         return loop_op_data

@@ -209,10 +209,10 @@ class iTimeTEBD:
 
         self._n = 0
         self.iters = [] #iterations
-        self.taus = []
         self.energies=[]
 
         self.compute_energy_every = compute_every
+
         
 
     def _check_energy(self):
@@ -222,7 +222,6 @@ class iTimeTEBD:
         en = self.compute_energy()
         
         self.energies.append(en)
-        self.taus.append(float(self.tau))
         self.iters.append(self._n)
 
         return self.energies[-1]
@@ -233,7 +232,7 @@ class iTimeTEBD:
 
 
     def compute_energy(self):
-        return self.qnet.compute_ham_expec(self.ham) / self.normsq
+        return self.qnet.compute_ham_expec(self.ham, normalize=True)
 
 
     def evolve(self, steps):
@@ -255,7 +254,7 @@ class iTimeTEBD:
                 self.sweep()
 
                 # self.update_norm()
-                self.normsq = self.get_current_normsq()
+                # self.normsq = self.get_current_normsq()
 
                 self._n += 1
 
@@ -263,9 +262,9 @@ class iTimeTEBD:
 
             #compute final energy
             self._check_energy()
-        
+
         except KeyboardInterrupt:
-            # allow the user to interupt early
+            # allow early interrupt
             pass
         
         finally:
@@ -284,6 +283,7 @@ class iTimeTEBD:
         # self.norm = np.real(normsq)
         self.normsq = self.get_current_normsq()
 
+
     def get_current_normsq(self):
         normsq = self.qnet.get_norm_tensor() ^ all
         assert np.isclose(normsq, abs(normsq)) #imag==0
@@ -293,8 +293,6 @@ class iTimeTEBD:
     #     norm = np.sqrt(self.get_current_normsq())
     #     return self.
     
-    
-
 
 
 
@@ -476,6 +474,14 @@ class QubitEncodeNet:
         return psiHpsi / normsq
         
 
+    def dense_inner_product(self, dense_bra):
+
+        dense_bra = qu.qu(dense_bra)/np.linalg.norm(dense_bra)
+        
+        dense_ket = self.net_to_dense(normalize=True)
+
+        return dense_bra.H @ dense_ket
+
 
     # def exact_projector_from_matrix(self, Udag_matrix):
     #     Nfermi, Nqubit = self.num_verts(), self.num_sites()
@@ -494,14 +500,18 @@ class QubitEncodeNet:
 
 
 
-    def net_to_dense(self):
+    def net_to_dense(self, normalize=True):
         '''Return `self._psi` as dense vector, i.e. a qarray with 
         shape (-1, 1)
         '''
         inds_seq = (self._phys_ind_id.format(i) 
                     for i in self.qlattice.all_sites())
         psid = self._psi.to_dense(inds_seq).reshape(-1,1)
-        return psid
+
+        if not normalize:
+            return psid
+        
+        return psid / np.linalg.norm(psid)
 
 
     def apply_gate_(self, G, where):
@@ -710,7 +720,7 @@ class QubitEncodeNet:
         return E_hop + E_int + E_occ
 
     
-    def compute_ham_expec(self, Ham, normalized=False):
+    def compute_ham_expec(self, Ham, normalize=True):
         '''Return <psi|H|psi>
 
         Ham: [SimulatorHam]
@@ -728,7 +738,7 @@ class QubitEncodeNet:
             E += (bra|G_ket) ^ all
 
 
-        if not normalized:
+        if not normalize:
             return E
         
         normsq = self.get_norm_tensor() ^ all
@@ -737,27 +747,27 @@ class QubitEncodeNet:
     
 
     #TODO: DELETE?
-    def compute_stab_expec(self, H_stab, normalized=False):
-        '''Expectation of stabilizers, i.e.
+    # def compute_stab_expec(self, H_stab, normalized=False):
+    #     '''Expectation of stabilizers, i.e.
 
-                multiplier * <psi|S1 + S2 + ... + Sk|psi>, 
+    #             multiplier * <psi|S1 + S2 + ... + Sk|psi>, 
         
-        divided by <psi|psi> if `normalized` is True
-        '''
-        # psi = self._psi
-        bra = self._psi.H
+    #     divided by <psi|psi> if `normalized` is True
+    #     '''
+    #     # psi = self._psi
+    #     bra = self._psi.H
 
-        expec_sum = 0
+    #     expec_sum = 0
 
-        for where, G in H_stab.gen_stabilizer_gates():
-            S_ket = self.apply_gate(G, where)
-            expec_sum += (bra|S_ket) ^ all
+    #     for where, G in H_stab.gen_stabilizer_gates():
+    #         S_ket = self.apply_gate(G, where)
+    #         expec_sum += (bra|S_ket) ^ all
         
-        if not normalized:
-            return expec_sum
+    #     if not normalized:
+    #         return expec_sum
         
-        norm = self.get_norm_tensor() ^ all
-        return expec_sum / norm
+    #     norm = self.get_norm_tensor() ^ all
+    #     return expec_sum / norm
 
 
     def apply_trotter_gates_(self, Ham, tau):
@@ -765,7 +775,7 @@ class QubitEncodeNet:
         for where, exp_gate in Ham.gen_trotter_gates(tau):
             self.apply_gate_(G=exp_gate, where=where)
 
-    
+
     #TODO: RECOMMENT
     def apply_stabilizer_from_data_(self, loop_stab_data):
         '''Inplace application of a stabilizer gate that acts with 
@@ -798,13 +808,13 @@ class QubitEncodeNet:
 
 
 
-    def apply_stabilizer_exp_gates_(self, H_stab, tau):
-        '''In-place apply exp(tau * multiplier * stabilizer), 
-        i.e. the exponential (by `tau`) of the Lagrange-multiplier
-        stabilizer gates.
-        '''
-        for where, expG in H_stab.generate_exp_stab_gates(tau):
-            self.apply_gate_(expG, where)
+    # def apply_stabilizer_exp_gates_(self, H_stab, tau):
+    #     '''In-place apply exp(tau * multiplier * stabilizer), 
+    #     i.e. the exponential (by `tau`) of the Lagrange-multiplier
+    #     stabilizer gates.
+    #     '''
+    #     for where, expG in H_stab.gen_exp_stab_gates(tau):
+    #         self.apply_gate_(expG, where)
 
 
 
@@ -856,6 +866,29 @@ def number_op():
 
 #     TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=['GATE'])
     
+class MasterHam():
+    '''Commodity class that combines a simulator Ham `Hsim`
+    and a stabilizer pseudo-Ham `Hstab` to generate each of 
+    their gates in order.
+
+    Attributes:
+    ----------
+    `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
+
+    `gen_trotter_gates(tau)`: trotter gates of Hsim followed by Hstab
+    '''
+    def __init__(self, Hsim, Hstab):
+        self.Hsim=Hsim
+        self.Hstab = Hstab
+
+
+    def gen_ham_terms(self):
+        return chain(self.Hsim.gen_ham_terms(),
+                     self.Hstab.gen_ham_terms())
+
+    def gen_trotter_gates(self, tau):
+        return chain(self.Hsim.gen_trotter_gates(tau),
+                     self.Hstab.gen_trotter_gates(tau))
 
 
 ### *********************** ###
@@ -910,7 +943,7 @@ class HamStab():
 
         for coo, loop_stab in coo_stab_map.items():
             #tuple e.g. (1,2,4,5,6)
-            inds = loop_stab['inds']
+            inds = tuple(loop_stab['inds'])
             #string e.g. 'ZZZZX'
             opstring = loop_stab['opstring']
             #qarray
@@ -924,13 +957,20 @@ class HamStab():
         return gate_map
 
 
+    def reset_multiplier(self, multiplier):
+        '''Reset multiplier, re-compute stabilizer gates 
+        and erase previous expm(gates)
+        '''
+        self.multiplier = multiplier
+        self._stab_gates = self.make_stab_gate_map(coo_stab_map)
+        self._exp_stab_gates = dict()
+
+
     def gen_ham_terms(self):
-        return self.gen_stabilizer_gates()
-
-
-    def gen_stabilizer_gates(self):
         '''Generate (`where`, `gate`) pairs for acting with 
         the 8-site stabilizer gates on specified sites.
+
+        Note the *keys* in the dictionary are coos and not used!
         '''
         for where, gate in self._stab_gates.values():
             yield (where, gate)
@@ -965,14 +1005,12 @@ class HamStab():
         return self._exp_stab_gates[key]
 
 
-    
-    def gen_exp_stab_gates(self, tau):
+    def gen_trotter_gates(self, tau):
         '''Generate (`where`, `exp(tau*gate)`) pairs for acting
         with exponentiated stabilizers on lattice.
         '''
         for coo in self.empty_face_coos():
             yield self._get_exp_stab_gate(coo, tau)
-
 
 
     def empty_face_coos(self):
@@ -1017,7 +1055,7 @@ class SimulatorHam():
 
     
 
-    def _trotter_gates(self, group, x):
+    def _trotter_gate_group(self, group, x):
         '''Returns mapping of edges (in ``group``) to
         the corresponding exponentiated gates.
         
@@ -1027,6 +1065,7 @@ class SimulatorHam():
         gate_map = {edge : self.get_expm_gate(edge,x) for edge in edges}
         return gate_map
     
+
     #TODO: add _ internal method
     def get_edges(self, which):
         '''Retrieves (selected) edges from internal 
@@ -1084,12 +1123,12 @@ class SpinlessFermiSim(SimulatorHam):
         self._V = V
         self._mu = mu
 
-        terms = self.make_ham_terms(qlattice)
+        terms = self._make_ham_terms(qlattice)
 
         super().__init__(qlattice, terms)
         
 
-    def make_ham_terms(self, qlattice):
+    def _make_ham_terms(self, qlattice):
         '''Get all terms in Ham as two/three-site gates, 
         in a dict() mapping edges to qarrays.
         
@@ -1109,12 +1148,12 @@ class SpinlessFermiSim(SimulatorHam):
                 
                 #two-site
                 if f is None:
-                    terms[(i,j,f)] = sign * t * self.two_site_hop_gate()
+                    terms[(i,j,f)] = sign * t * self._two_site_hop_gate()
                     terms[(i,j,f)] += V * (number_op()&number_op())
                 
                 #three-site
                 else:
-                    terms[(i,j,f)] = sign * t * self.three_site_hop_gate(edge_dir='vertical')
+                    terms[(i,j,f)] = sign * t * self._three_site_hop_gate(edge_dir='vertical')
                     terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
 
 
@@ -1123,12 +1162,12 @@ class SpinlessFermiSim(SimulatorHam):
 
             #two-site 
             if f is None:
-                    terms[(i,j,f)] =  t * self.two_site_hop_gate()
+                    terms[(i,j,f)] =  t * self._two_site_hop_gate()
                     terms[(i,j,f)] += V * (number_op()&number_op())
 
             #three-site    
             else:
-                terms[(i,j,f)] =  t * self.three_site_hop_gate(edge_dir='horizontal')
+                terms[(i,j,f)] =  t * self._three_site_hop_gate(edge_dir='horizontal')
                 terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
 
         
@@ -1171,14 +1210,14 @@ class SpinlessFermiSim(SimulatorHam):
         return terms
 
 
-    def two_site_hop_gate(self):
+    def _two_site_hop_gate(self):
         '''Hopping between two vertices, with no face site.
         '''
         X, Y = (qu.pauli(mu) for mu in ['x','y'])
         return 0.5* ((X&X) + (Y&Y))
 
 
-    def three_site_hop_gate(self, edge_dir):
+    def _three_site_hop_gate(self, edge_dir):
         '''Hop gate acting on two vertices and a face site.
         '''
         X, Y = (qu.pauli(mu) for mu in ['x','y'])
@@ -1218,7 +1257,7 @@ class SpinlessFermiSim(SimulatorHam):
         '''
         for group in ['he', 'ho', 've', 'vo']:
 
-            for edge, exp_gate in self._trotter_gates(group, tau).items():
+            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
                 
                 i,j,f = edge
                 where = (i,j) if f is None else (i,j,f)
@@ -1239,12 +1278,41 @@ class SpinhalfHubbardSim(SimulatorHam):
         self._t = t
         self._U = U
 
-        terms = self.make_ham_terms(qlattice)
+        terms = self._make_ham_terms(qlattice)
 
         super().__init__(qlattice, terms)
     
 
-    def make_ham_terms(self, qlattice):
+    def gen_ham_terms(self):
+        '''Generate (`where`, `gate`) pairs for every location
+        (edge) to be acted on with a Ham term
+        '''
+        for (i,j,f), gate in self._ham_terms.items():
+            where = (i,j) if f is None else (i,j,f)
+            yield where, gate
+
+
+    def gen_trotter_gates(self, tau):
+        '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
+        location (edge) `where` and gate exponentiated by
+        `tau`. 
+
+        Generated in ordered groups of edges:
+        1. Horizontal-even
+        2. Horizontal-odd
+        3. Vertical-even
+        4. Vertical-odd
+        '''
+        for group in ['he', 'ho', 've', 'vo']:
+
+            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
+                
+                i,j,f = edge
+                where = (i,j) if f is None else (i,j,f)
+                yield where, exp_gate
+
+
+    def _make_ham_terms(self, qlattice):
         '''Get all Hamiltonian terms, as two/three-site gates, 
         in a dict() mapping edges to arrays.
         
@@ -1260,8 +1328,8 @@ class SpinhalfHubbardSim(SimulatorHam):
         #vertical edges
         for direction, sign in [('down', 1), ('up', -1)]:
             
-            spin_up_hop = self.two_site_hop_gate(spin=0)
-            spin_down_hop = self.two_site_hop_gate(spin=1)
+            spin_up_hop = self._two_site_hop_gate(spin=0)
+            spin_down_hop = self._two_site_hop_gate(spin=1)
 
             for (i,j,f) in qlattice.get_edges(direction):
                 
@@ -1273,8 +1341,8 @@ class SpinhalfHubbardSim(SimulatorHam):
                 
                 #three-site
                 else:
-                    terms[(i,j,f)] =  sign * t * self.three_site_hop_gate(spin=0, edge_dir='vertical')
-                    terms[(i,j,f)] += sign * t * self.three_site_hop_gate(spin=1, edge_dir='vertical')
+                    terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='vertical')
+                    terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='vertical')
                     # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
 
 
@@ -1283,14 +1351,14 @@ class SpinhalfHubbardSim(SimulatorHam):
             
             #two-site 
             if f is None:
-                    terms[(i,j,f)] =  t * self.two_site_hop_gate(spin=0)
-                    terms[(i,j,f)] += t * self.two_site_hop_gate(spin=1)
+                    terms[(i,j,f)] =  t * self._two_site_hop_gate(spin=0)
+                    terms[(i,j,f)] += t * self._two_site_hop_gate(spin=1)
                     # terms[(i,j,f)] += U * self.onsite_gate()
                 
             #three-site    
             else:
-                terms[(i,j,f)] =  sign * t * self.three_site_hop_gate(spin=0, edge_dir='horizontal')
-                terms[(i,j,f)] += sign * t * self.three_site_hop_gate(spin=1, edge_dir='horizontal')
+                terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='horizontal')
+                terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='horizontal')
                 # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
         
         
@@ -1298,7 +1366,7 @@ class SpinhalfHubbardSim(SimulatorHam):
             return terms
 
 
-        G_onsite = self.onsite_int_gate() #on-site spin-spin interaction
+        G_onsite = self._onsite_int_gate() #on-site spin-spin interaction
 
         #map each vertex to the list of edges where it appears
         self._vertices_to_covering_terms = defaultdict(list)
@@ -1339,7 +1407,7 @@ class SpinhalfHubbardSim(SimulatorHam):
         return (self._t, self._U)
 
 
-    def two_site_hop_gate(self, spin):
+    def _two_site_hop_gate(self, spin):
         '''(Encoded) hopping between two vertex sites, for 
         fermions in the `spin` sector.
         '''
@@ -1364,7 +1432,7 @@ class SpinhalfHubbardSim(SimulatorHam):
         return 0.5* ((X_s & X_s) + (Y_s & Y_s))
     
 
-    def three_site_hop_gate(self, spin, edge_dir):
+    def _three_site_hop_gate(self, spin, edge_dir):
         '''Hop gate acting on two vertices and a face site,
         in `spin` sector. Action on the face site depends
         on `edge_dir`: {'vertical', 'horizontal'}
@@ -1394,7 +1462,7 @@ class SpinhalfHubbardSim(SimulatorHam):
         return 0.5 * ((X_s & X_s & Of_s) + (Y_s & Y_s & Of_s))
 
 
-    def onsite_int_gate(self):
+    def _onsite_int_gate(self):
         '''Spin-spin interaction at a single vertex.
         '''
         return number_op() & number_op()
