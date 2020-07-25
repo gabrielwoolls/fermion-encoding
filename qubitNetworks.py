@@ -87,9 +87,11 @@ def make_skeleton_net(Lx, Ly, phys_dim, chi=5, show_graph=False):
     return vtn
 
 
-def make_random_net(Lx, Ly, phys_dim, chi=5):
-    '''TODO: take phys_dim into account?
+def make_random_net(qlattice, chi=5):
+    '''Make
     '''
+    Lx, Ly = qlattice._lat_shape
+    phys_dim = qlattice._local_dim
 
     #dummy TN, sites to be replaced with random tensors
     tnet = make_skeleton_net(Lx, Ly, phys_dim, chi)
@@ -192,16 +194,13 @@ class iTimeTEBD:
         chi=8,
         tau=0.01,
         progbar=True,
-        compute_every=None
+        compute_every=None,
+        compute_extra_fns=None
     ):
 
         self.psi0 = qnetwork.qbit_state()
         self.qnet = qnetwork
 
-        #set self.norm = sqrt <psi|psi>
-        # self.update_norm()
-        self.normsq = self.get_current_normsq()
-        
         self.ham = ham
         self.tau = tau
         self.progbar = progbar
@@ -213,7 +212,46 @@ class iTimeTEBD:
 
         self.compute_energy_every = compute_every
 
+        self._setup_callback(compute_extra_fns)
+
+
+
+    def _setup_callback(self, fns):
+        '''Setup for any callbacks to be computed during 
+        imag-time evolution.
         
+        `fns`: callable, or dict of callables, or None
+            Callables should take only `qnet` as parameter, i.e.
+            the current `QubitEncodeNetwork` state.
+
+        '''
+
+        if fns is None:
+            self._step_callback = None
+        
+        #fns is callable or dict of callables
+        else:
+
+            if isinstance(fns, dict):
+                self._results = {k: [] for k in fns}
+
+                def step_callback(psi_t):
+                    for k, func in fns.items():
+                        fn_result = func(psi_t)
+                        self._results[k].append(fn_result)
+            
+            #fns is a single callable
+            else:
+                self._results = []
+
+                def step_callback(psi_t):
+                    fn_result = fns(psi_t)
+                    self._results.append(fn_result)
+            
+
+            self._step_callback = step_callback
+            
+
 
     def _check_energy(self):
         if self.iters and (self._n==self.iters[-1]):
@@ -226,9 +264,15 @@ class iTimeTEBD:
 
         return self.energies[-1]
 
+
     def _update_progbar(self, pbar):
         desc = f"n={self._n}, tau={self.tau}, energy~{float(self._check_energy()):.6f}"
         pbar.set_description(desc)
+
+
+    def _compute_extras(self):
+        if self._step_callback is not None:
+            self._step_callback(self.qnet)
 
 
     def compute_energy(self):
@@ -250,6 +294,7 @@ class iTimeTEBD:
                 if should_compute_energy:
                     self._check_energy()
                     self._update_progbar(pbar)
+                    self._compute_extras()
                 
                 self.sweep()
 
@@ -277,28 +322,44 @@ class iTimeTEBD:
         self.qnet._psi.contract(tags=['GATE'], inplace=True)
     
 
-    def update_norm(self):
-        # normsq = self.qnet.get_norm_tensor() ^ all
-        # assert np.isclose(normsq, abs(normsq))
-        # self.norm = np.real(normsq)
-        self.normsq = self.get_current_normsq()
+    def results(self, which=None):
+        if which is None:
+            return self._results
+        
+        elif which == 'energy':
+            return self.energies
+
+        return np.array(self._results[which])
 
 
-    def get_current_normsq(self):
-        normsq = self.qnet.get_norm_tensor() ^ all
-        assert np.isclose(normsq, abs(normsq)) #imag==0
-        return np.real(normsq)
-    
-    # def get_current_state(self):
-    #     norm = np.sqrt(self.get_current_normsq())
-    #     return self.
-    
+    def get_final_data(self, data):
 
+        if data == 'Esim':
+            return np.divide(np.real(self.results('sim')),
+                            np.real(self.results('norm'))
+                            )
+        
+        elif data == 'Estab':
+            return np.divide(np.real(self.results('stab')),
+                            np.real(self.results('norm'))
+                            )
+        
+        
+
+
+
+
+
+def compute_encnet_ham_expec(qnet, ham):
+    return qnet.compute_ham_expec(ham, normalize=False)
+
+def compute_encnet_normsquared(qnet):
+    return np.real(qnet.get_norm_tensor()^all)
 
 
 class QubitEncodeNet:
 
-    def __init__(self, qlattice, psi=None, phys_dim=2, chi=5):
+    def __init__(self, qlattice, psi=None, chi=5):
         '''
 
         _psi: TensorNetwork 
@@ -339,6 +400,10 @@ class QubitEncodeNet:
         
         
         self.qlattice = qlattice
+        self._phys_dim = qlattice._local_dim
+        
+        #simulator wavefunction
+        self._psi = psi if psi is not None else make_random_net(qlattice, chi)
 
         verts = qlattice.vert_array()
         faces = qlattice.face_array()
@@ -348,13 +413,9 @@ class QubitEncodeNet:
         self._face_coo_map = dict(np.ndenumerate(faces))
         
         # tensor_net = make_skeleton_net(Lx, Ly, chi)
-        # wavefn = make_random_net(Lx, Ly, chi)
 
 
-        #simulator wavefunction
-        self._psi = psi if psi is not None else make_random_net(Lx, Ly, phys_dim, chi)
-
-        self._phys_dim = phys_dim
+        
         
         self._site_tag_id = 'Q{}'
         self._phys_ind_id = 'q{}'
@@ -368,10 +429,9 @@ class QubitEncodeNet:
 
 
     @classmethod
-    def rand_network(cls, qlattice, phys_dim, chi=5):
+    def rand_network(cls, qlattice, chi=5):
         
-        Lx, Ly = qlattice._Lx, qlattice._Ly
-        randnet = make_random_net(Lx, Ly, phys_dim, chi)
+        randnet = make_random_net(qlattice, chi)
         return cls(qlattice, randnet, phys_dim, chi)
 
 
@@ -461,13 +521,13 @@ class QubitEncodeNet:
             self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True)
 
 
-    def check_dense_energy(self, Hdense, normalized=True):
+    def check_dense_energy(self, Hdense, normalize=True):
         
         psi_d = self.net_to_dense()
         
         psiHpsi = (psi_d.H @ Hsim @ psi_d).item()
 
-        if not normalized:
+        if not normalize:
             return psiHpsi
         
         normsq = self.get_norm_tensor() ^ all
@@ -747,12 +807,12 @@ class QubitEncodeNet:
     
 
     #TODO: DELETE?
-    # def compute_stab_expec(self, H_stab, normalized=False):
+    # def compute_stab_expec(self, H_stab, normalize=False):
     #     '''Expectation of stabilizers, i.e.
 
     #             multiplier * <psi|S1 + S2 + ... + Sk|psi>, 
         
-    #     divided by <psi|psi> if `normalized` is True
+    #     divided by <psi|psi> if `normalize` is True
     #     '''
     #     # psi = self._psi
     #     bra = self._psi.H
@@ -763,7 +823,7 @@ class QubitEncodeNet:
     #         S_ket = self.apply_gate(G, where)
     #         expec_sum += (bra|S_ket) ^ all
         
-    #     if not normalized:
+    #     if not normalize:
     #         return expec_sum
         
     #     norm = self.get_norm_tensor() ^ all

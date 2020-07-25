@@ -43,6 +43,8 @@ class QubitCodeLattice():
         #codespace dimensions = dim(Fock)
         self._encoded_dims = [local_dim]*(self._Nfermi)
 
+        self._local_dim = local_dim
+
 
 
     def get_edges(self, which):
