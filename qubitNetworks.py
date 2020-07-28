@@ -88,15 +88,21 @@ def make_skeleton_net(Lx, Ly, phys_dim, chi=5, show_graph=False):
 
 
 def make_random_net(qlattice, chi=5):
-    '''Make
+    '''Return a `TensorNetwork` made from random tensors
+    structured like `qlattice` i.e. with the same local 
+    qu(d)it degrees of freedom. 
+    
+    Each site has physical index dimension `d = qlattice._local_dim`,
+    and is connected to its neighbors with a virtual bond of 
+    dimension `chi`.
     '''
     Lx, Ly = qlattice._lat_shape
     phys_dim = qlattice._local_dim
 
-    #dummy TN, sites to be replaced with random tensors
+    #dummy TN, site tensors to be replaced with randomized
     tnet = make_skeleton_net(Lx, Ly, phys_dim, chi)
 
-    #replace vertex tensors
+    #replace vertex tensors with randoms
     for i, j in product(range(Lx), range(Ly)):
         
         tid = tuple(tnet.tag_map[f'Q{i*Ly+j}'])
@@ -117,7 +123,8 @@ def make_random_net(qlattice, chi=5):
         tensor_ij = qtn.Tensor(rand_data, inds, tags)
         tnet |= tensor_ij
     
-    
+
+    #replace face tensors with randoms
     k=0
     for i, j in product(range(Lx-1), range(Ly-1)):
         #replace face tensors
@@ -187,6 +194,24 @@ def make_vertex_net(Lx,Ly, chi=5, show_graph=True):
 
 
 class iTimeTEBD:
+    '''TODO: FIX HAMILTONIAN CLASS
+    Object for TEBD imaginary-time evolution.
+    Params:
+    ------
+    `qnetwork`: QubitEncodeNet
+        The initial state of the qubits. Will be modified
+        in-place.
+    
+    `ham`: `----`
+        Hamiltonian for time-evolving. Should have a
+        `gen_trotter_gates(tau)` method.
+    
+    `compute_extra_fns`: callable or dict of callables, optional
+        If desired, can give extra callables to compute at each
+        step of TEBD. Each function should take only the current 
+        state `qnet` as parameter. Results of the callables will 
+        be stored in `self._results`
+    '''
     def __init__(
         self,
         qnetwork, 
@@ -254,6 +279,9 @@ class iTimeTEBD:
 
 
     def _check_energy(self):
+        '''Compute energy, unless we have already computed
+        it for this time-step.
+        '''
         if self.iters and (self._n==self.iters[-1]):
             return self.energies[-1]
         
@@ -271,17 +299,21 @@ class iTimeTEBD:
 
 
     def _compute_extras(self):
+        '''For any extra functions the TEBD object was 
+        given to compute at each step of evolution, pass
+        them the current state `self.qnet`
+        '''
         if self._step_callback is not None:
             self._step_callback(self.qnet)
 
 
     def compute_energy(self):
+        '''<psi|Ham|psi> / <psi|psi>
+        '''
         return self.qnet.compute_ham_expec(self.ham, normalize=True)
 
 
     def evolve(self, steps):
-        # tau = self.tau
-
         pbar = tqdm.tqdm(total=steps, disable=self.progbar is not True)
 
         try:
@@ -307,6 +339,7 @@ class iTimeTEBD:
 
             #compute final energy
             self._check_energy()
+            self._compute_extras()
 
         except KeyboardInterrupt:
             # allow early interrupt
@@ -316,13 +349,15 @@ class iTimeTEBD:
             pbar.close()
     
     def sweep(self):
-        '''Perform a full sweep, exp(gate)s at every edge.
+        '''Perform a full sweep, apply all `exp(gate)`s
         '''
         self.qnet.apply_trotter_gates_(self.ham, -self.tau)
         self.qnet._psi.contract(tags=['GATE'], inplace=True)
     
 
     def results(self, which=None):
+        '''Convenience property for testing.
+        '''
         if which is None:
             return self._results
         
@@ -333,6 +368,8 @@ class iTimeTEBD:
 
 
     def get_final_data(self, data):
+        '''Convenience method for testing.
+        '''
 
         if data == 'Esim':
             return np.divide(np.real(self.results('sim')),
@@ -351,7 +388,10 @@ class iTimeTEBD:
 
 
 def compute_encnet_ham_expec(qnet, ham):
+    '''Useful callable for TEBD
+    '''
     return qnet.compute_ham_expec(ham, normalize=False)
+
 
 def compute_encnet_normsquared(qnet):
     return np.real(qnet.get_norm_tensor()^all)
@@ -432,7 +472,7 @@ class QubitEncodeNet:
     def rand_network(cls, qlattice, chi=5):
         
         randnet = make_random_net(qlattice, chi)
-        return cls(qlattice, randnet, phys_dim, chi)
+        return cls(qlattice, randnet, chi)
 
 
     def qbit_state(self):
@@ -768,17 +808,6 @@ class QubitEncodeNet:
         return np.sum(nxy_array)            
     
 
-    def compute_energy_deprec(self, t, V, mu):
-        '''Don't use anymore, see `compute_ham_expec`
-        '''
-        E_hop, E_int, E_occ = 0,0,0
-
-        if t!=0.0: E_hop = t  * self.compute_hop_expecs()
-        if V!=0.0: E_int = V  * self.compute_nnint_expecs()
-        if mu!=0.0: E_occ = - mu * self.compute_occs_expecs()
-        
-        return E_hop + E_int + E_occ
-
     
     def compute_ham_expec(self, Ham, normalize=True):
         '''Return <psi|H|psi>
@@ -925,7 +954,8 @@ def number_op():
 #     reindex_map = dict(zip(site_inds, bond_inds))
 
 #     TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=['GATE'])
-    
+
+
 class MasterHam():
     '''Commodity class that combines a simulator Ham `Hsim`
     and a stabilizer pseudo-Ham `Hstab` to generate each of 
@@ -954,9 +984,7 @@ class MasterHam():
 ### *********************** ###
 
 class HamStab():
-
-    def __init__(self, qlattice, multiplier = -1.0):
-        '''TODO: INSTEAD can store lists of 8 1-site gates?
+    '''TODO: INSTEAD can store lists of 8 1-site gates?
 
         Pseudo-Hamiltonian of stabilizers,
         
@@ -969,6 +997,9 @@ class HamStab():
         stabilizer operators, to be added to a simulator
         Hamiltonian `H_sim` for TEBD.
         '''
+
+    def __init__(self, qlattice, multiplier = -1.0):
+        
         
         self.qlattice = qlattice
 
@@ -1158,7 +1189,7 @@ class SimulatorHam():
 # Subclass Hamiltonians
 ## ******************* ##
 
-class SpinlessFermiSim(SimulatorHam):
+class SpinlessSimHam(SimulatorHam):
     '''Encoded Hubbard Hamiltonian for spinless fermions,
     encoded as a qubit simulator Ham.
 
@@ -1325,7 +1356,7 @@ class SpinlessFermiSim(SimulatorHam):
 
 ###
 
-class SpinhalfHubbardSim(SimulatorHam):
+class SpinhalfSimHam(SimulatorHam):
     '''Simulator Hamiltonian, acting on qubit space,
     that encodes the Fermi-Hubbard model Ham for 
     spin-1/2 fermions. Each local site is 4-dimensional.

@@ -224,7 +224,7 @@ class QubitCodeLattice():
         return loop_op_data
 
 
-class SpinlessDense(QubitCodeLattice):
+class SpinlessHub(QubitCodeLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''
@@ -483,8 +483,6 @@ class SpinlessDense(QubitCodeLattice):
         * add a projector onto codespace (see method 2)
         * generalize indices, rotation, reshape, etc
         * always need to round? check always real
-        * strange fix: if remove the "copy()" from Ux
-        in ikron, quimb raises ownership error
         '''
         
         X, Z = (qu.pauli(mu) for mu in ['x','z'])
@@ -498,6 +496,7 @@ class SpinlessDense(QubitCodeLattice):
         
         stab_data = self.loop_stabilizer_data(0,1)
         oplist = [qu.pauli(Q) for Q in stab_data['opstring']]
+        
         stabilizer = qu.ikron(  ops=oplist,
                                 dims=self._sim_dims,
                                 inds=stab_data['inds'] )
@@ -517,7 +516,13 @@ class SpinlessDense(QubitCodeLattice):
         self._Uplus = U_plus #+1 eigenstates written in full qubit basis
         self._HamCode = HamCode # in +1 stabilizer eigenbasis
 
-
+    def stabilizer_at_face(self, fi, fj):
+        stab_data = self.loop_stabilizer_data(fi,fj)
+        oplist = [qu.pauli(Q) for Q in stab_data['opstring']]
+        
+        return qu.ikron(ops=oplist,
+                        dims=self._sim_dims,
+                        inds=stab_data['inds'] )
         
     def operator_to_codespace(self, operator):
         '''
@@ -625,7 +630,7 @@ class SpinlessDense(QubitCodeLattice):
 
 
 
-class DenseSpinhalf(QubitCodeLattice):
+class SpinhalfHub(QubitCodeLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''

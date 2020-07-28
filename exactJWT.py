@@ -8,7 +8,7 @@ import numpy as np
 
 DEBUG=0
 
-class HubbardSpinlessExact():
+class HubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
         V_ind, F_ind = dq.gen_lattice_sites(Lx,Ly)
 
@@ -165,7 +165,7 @@ def number_op():
 
 # ***************************************** #
 
-class HubbardSpinhalfExact():
+class HubbardSpinhalf():
     
     def __init__(self, Lx, Ly, t, U):
         
