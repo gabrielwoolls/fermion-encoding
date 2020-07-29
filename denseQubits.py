@@ -46,6 +46,29 @@ class QubitCodeLattice():
         self._local_dim = local_dim
 
 
+    def active_sites_from_edge(self, edge):
+        '''Return the valid sites in `edge`, i.e. delete
+        the face-site if it's None.
+        '''
+        if len(edge) == 2:
+            return edge
+        
+        elif len(edge) == 3:
+            i,j,f = edge
+            active_sites = (i,j) if f is None else edge
+            return active_sites
+        
+        else:
+            raise ValueError('Edge can only have 2-3 sites!')
+
+    
+    # def edge_from_verts(self, va, vb):
+    #     '''Return the edge (i,j,f), appropriately
+    #     ordered, that has vertices `va, vb` as nodes.
+    #     '''
+
+
+
 
     def get_edges(self, which):
         '''TODO IMPLEMENT
@@ -99,31 +122,45 @@ class QubitCodeLattice():
         return list(range(self._Nsites))
 
 
+    @property
     def vert_array(self):
         '''ndarray of vertex site numbers
         '''
         return self._verts.copy()
     
+
+    @property
     def face_array(self):
         '''ndarray of face site numbers
         '''
         return self._faces.copy()
 
+
     def num_verts(self):
         return self._verts.size
     
+
     def num_faces(self):
         return self._faces[self._faces!=None].size
+
 
     def num_sites(self):
         return self.num_faces()+self.num_verts()
     
 
+    @property
     def codespace_dims(self):
         return self._encoded_dims
     
+
+    @property
     def simspace_dims(self):
         return self._sim_dims
+
+
+    @property
+    def local_site_dim(self):
+        return self._local_dim
 
 
     def make_coo_stabilizer_map(self):
@@ -160,8 +197,8 @@ class QubitCodeLattice():
 
         # X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
         
-        verts = self.vert_array()
-        faces = self.face_array()
+        verts = self.vert_array
+        faces = self.face_array
         
         assert faces[i,j] is None
 

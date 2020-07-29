@@ -10,9 +10,13 @@ from autoray import do, dag
 import tqdm
     
 
-def make_skeleton_net(Lx, Ly, phys_dim, chi=5, show_graph=False):
+def make_skeleton_net(Lx, Ly, phys_dim, 
+                    chi=5, show_graph=False):
     '''
-    TODO: fix ftensor type (change ndarray->list[list])
+    NOTE: uses 'Q{}' already!!
+    
+    TODO:
+    fix ftensor type (change ndarray->list[list])
             change defaults?
             tensor tag id
 
@@ -74,7 +78,8 @@ def make_skeleton_net(Lx, Ly, phys_dim, chi=5, show_graph=False):
 
 
     alltensors = vtensors + [f for f in ftensors.flatten().tolist() if not f is None]
-    vtn = qtn.TensorNetwork(alltensors)
+    
+    vtn = qtn.TensorNetwork(alltensors, structure='Q{}')
 
     if show_graph:
         LAT_CONST = 50 #lattice constant for graph
@@ -352,7 +357,7 @@ class iTimeTEBD:
         '''Perform a full sweep, apply all `exp(gate)`s
         '''
         self.qnet.apply_trotter_gates_(self.ham, -self.tau)
-        self.qnet._psi.contract(tags=['GATE'], inplace=True)
+        self.qnet.contract(tags=['GATE'], inplace=True)
     
 
     def results(self, which=None):
@@ -397,15 +402,30 @@ def compute_encnet_normsquared(qnet):
     return np.real(qnet.get_norm_tensor()^all)
 
 
-class QubitEncodeNet:
+class QubitEncodeNet(qtn.TensorNetwork):
+    '''
+        Params:
+        -------
+        `tn`: TensorNetwork
+            State of the tensors in the lattice.
 
-    def __init__(self, qlattice, psi=None, chi=5):
-        '''
-
-        _psi: TensorNetwork 
-            State of the qubit lattice
+        `qlattice`: QubitCodeLattice
+            Specifies the underlying lattice geometry, in 
+            particular the shape (Lx, Ly) of the lattice
+            and the local dimension of the physical sites,
+            e.g. d=2 (4) for simulating spinless (spin-1/2) 
+            fermions.
         
-        _vert_coo_map: dict[tuple(int) : int]
+        `chi`: int, optional
+            The bond dimension to connect local site tensors.
+            Defaults to 5.
+        
+        
+
+        Attributes:
+        ----------
+
+        `_vert_coo_map`: dict[tuple(int) : int]
             Numbering of the vertex sites, i.e.
             maps each location (i,j) in the vertex lattice
             to an integer.
@@ -423,7 +443,7 @@ class QubitEncodeNet:
             etc
         
 
-        _face_coo_map: dict[tuple(int)-->int]
+        `_face_coo_map`: dict[tuple(int)-->int]
             Numbering of face sites. Assigns an integer
             to each location (i,j) in the *face* array.
 
@@ -436,66 +456,115 @@ class QubitEncodeNet:
             x----x----x----x
             | 19 |    | 20 |
             x----x----x----x
+        
         '''
         
+    def __init__(
+                self, 
+                tn, 
+                qlattice, 
+                chi=5,
+                site_tag_id = 'Q{}',
+                phys_ind_id = 'q{}',
+                 **tn_opts):
         
-        self.qlattice = qlattice
-        self._phys_dim = qlattice._local_dim
+        #shortcut for copying QENs
+        if isinstance(tn, QubitEncodeNet):
+            self._qlattice = tn.qlattice
+            self._vert_coo_map = tn.vert_coo_map
+            self._face_coo_map = tn.face_coo_map
+            self._site_tag_id = tn.site_tag_id
+            self._phys_ind_id = tn.phys_ind_id
+            super().__init__(tn)
+            return
+
+        self._qlattice = qlattice
+
+        self._vert_coo_map = dict(np.ndenumerate(qlattice.vert_array))
+
+        self._face_coo_map = dict(np.ndenumerate(qlattice.face_array))
         
-        #simulator wavefunction
-        self._psi = psi if psi is not None else make_random_net(qlattice, chi)
+        self._site_tag_id = site_tag_id
 
-        verts = qlattice.vert_array()
-        faces = qlattice.face_array()
-        Lx, Ly = qlattice._Lx, qlattice._Ly 
+        self._phys_ind_id = phys_ind_id
 
-        self._vert_coo_map = dict(np.ndenumerate(verts))
-        self._face_coo_map = dict(np.ndenumerate(faces))
-        
-        # tensor_net = make_skeleton_net(Lx, Ly, chi)
+        super().__init__(tn, **tn_opts)
 
 
-        
-        
-        self._site_tag_id = 'Q{}'
-        self._phys_ind_id = 'q{}'
+    @property
+    def qlattice(self):
+        '''Internal qubit lattice object
+        '''
+        return self._qlattice
 
-        self._Hdense = None
-        # self._psi_dense = None
+    @property
+    def phys_dim(self):
+        '''Local physical dimension of qu(d)it sites.
+        '''        
+        return self.qlattice.local_site_dim
 
-        
-        #If we subclass TensorNetwork -- should we?
-        # super().__init__(tensors)
+    @property
+    def site_tag_id(self):
+        '''Format string for the tag identifiers of local sites
+        '''
+        return self._site_tag_id
+
+    @property
+    def phys_ind_id(self):
+        '''Format string for the physical indices
+        '''
+        return self._phys_ind_id
 
 
     @classmethod
-    def rand_network(cls, qlattice, chi=5):
-        
-        randnet = make_random_net(qlattice, chi)
-        return cls(qlattice, randnet, chi)
+    def rand_network(cls, qlattice, chi=5, **tn_opts):
+        '''Make a random QubitEncodeNet
+        '''
+        rand_tn = make_random_net(qlattice, chi)
+        return cls(rand_tn, qlattice, chi)
 
 
-    def qbit_state(self):
-        return self._psi.copy()
+    def copy(self):
+        return self.__class__(self, self.qlattice)
+
+    __copy__ = copy
 
 
-    def vert_coo_map(self, i, j):
+    # def _site_tid(self, k):
+    #     '''Given the site index `k` in {0,...,N},
+    #     return the `tid` of the local tensor
+    #     '''
+    #     #'q{k}'
+    #     index = self._phys_ind_id.format(k)
+    #     return self.ind_map[index]
+
+
+    def vert_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in vertex lattice
         to the corresponding site number.
         '''
-        return self._vert_coo_map[(i,j)]
+        if (i is not None) and (j is not None):
+            return self._vert_coo_map[(i,j)]
+        
+        return self._vert_coo_map
 
 
-    def face_coo_map(self, i, j):
+    def face_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in *face* lattice
         to the corresponding site number.
         '''
-        return self._face_coo_map[(i,j)]
+        if (i is not None) and (j is not None):
+            return self._face_coo_map[(i,j)]
 
-    
+        return self._face_coo_map
+
+
+
+    #TODO: TAKE INTERNAL TAG INTO ACCOUNT
     def vertex_coo_tag(self,i,j):
         return f'Q{self.vert_coo_map(i,j)}'
     
+
     def vertex_coo_ind(self,i,j):
         return f'q{self.vert_coo_map(i,j)}'
 
@@ -525,10 +594,11 @@ class QubitEncodeNet:
         return self.qlattice.get_edges(which)
 
 
+    @property
     def Lx(self):
         return self.qlattice._Lx
     
-
+    @property
     def Ly(self):
         return self.qlattice._Ly
 
@@ -536,29 +606,32 @@ class QubitEncodeNet:
     def num_sites(self):
         return self.qlattice.num_sites()
 
+
     def num_verts(self):
         return self.qlattice.num_verts()
 
+
     def codespace_dims(self):
         return self.qlattice.codespace_dims()
-    
+
+
     def simspace_dims(self):
         return self.qlattice.simspace_dims()
 
 
-    def graph_psi(self, show_tags=False, auto=False, **graph_opts):
+    def graph_lat(self, show_tags=False, auto=False, **graph_opts):
         
         if auto:
-            self._psi.graph(color=['VERT','FACE','GATE'], *graph_opts)
+            self.graph(color=['VERT','FACE','GATE'], *graph_opts)
         
         else:
             LAT_CONST = 50 #lattice constant for graphing
-            Lx,Ly = self.Lx(), self.Ly()
+            Lx,Ly = self.Lx, self.Ly
 
             fix = {
                 **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
                 }
-            self._psi.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True)
+            self.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True, **graph_opts)
 
 
     def check_dense_energy(self, Hdense, normalize=True):
@@ -599,14 +672,14 @@ class QubitEncodeNet:
     #     Udagger = qtn.Tensor()
 
 
-
     def net_to_dense(self, normalize=True):
-        '''Return `self._psi` as dense vector, i.e. a qarray with 
-        shape (-1, 1)
+        '''Return state as dense vector, i.e. a qarray with 
+        shape (-1, 1), in the order assigned to the local sites.
         '''
         inds_seq = (self._phys_ind_id.format(i) 
                     for i in self.qlattice.all_sites())
-        psid = self._psi.to_dense(inds_seq).reshape(-1,1)
+
+        psid = self.to_dense(inds_seq).reshape(-1,1)
 
         if not normalize:
             return psid
@@ -614,26 +687,28 @@ class QubitEncodeNet:
         return psid / np.linalg.norm(psid)
 
 
-    def apply_gate_(self, G, where):
-        '''In-place apply gate `G` to internal
-        wavefunction, i.e. to self._psi
+    def apply_gate_(self, G, where, contract=False):
+        '''In-place apply gate `G` to the TN state
         '''
-        self.apply_gate(psi=self._psi, 
-                        G=G, 
-                        where=where,
-                        inplace=True)
+        return self.apply_gate( G=G, 
+                                where=where,
+                                inplace=True,
+                                contract=contract)
 
 
-    def apply_gate(self, G, where, psi=None, inplace=False):
+    def apply_gate(
+        self,
+        G, 
+        where,
+        inplace=False, 
+        contract=False
+        ):
         '''Apply gate `G` acting at sites `where`,
         preserving physical indices. Note `G` has to be a
         "square" matrix!
 
         Params:
-        ------
-        `psi`: TensorNetwork, optional.
-            If not specified, use internal `self._psi`
-            
+        ------            
         `G` : array
             Gate to apply, should be compatible with 
             shape ([physical_dim] * 2 * len(where))
@@ -642,47 +717,91 @@ class QubitEncodeNet:
             The sites on which to act, using the (default) 
             custom numbering that labels/orders both face 
             and vertex sites.
-        '''
         
-        if psi is None:
-            psi = self._psi
+        `inplace`: bool, optional
+            If False (default), return copy of TN with gate applied
+        
+        `contract`: bool, optional
+            If false (default) leave all gates uncontracted
+            If True, contract gates into one tensor in the lattice
 
-        psi = psi if inplace else psi.copy()
+        '''
+
+        psi = self if inplace else self.copy()
 
         #G can be a one-site gate
         if isinstance(where, Integral): 
             where = (where,)
 
         numsites = len(where) #gate acts on `numsites`
-        dp = self._phys_dim #local physical dimension
+        dp = self.phys_dim #local physical dimension
 
         G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
 
-        #new physical indices
-        # site_inds = [f'q{i}' for i in where] 
+        #new physical indices 'q{i}'
         site_inds = [self._phys_ind_id.format(i) for i in where] 
 
         #old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
+        
         #replace physical inds with gate/bond inds
         reindex_map = dict(zip(site_inds, bond_inds))
 
         TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=['GATE'])
         
-        psi.reindex_(reindex_map)
-        psi |= TG
-        return psi
+        if contract is False:
+            #attach gates w/out contracting any bonds
+            psi.reindex_(reindex_map)
+            psi |= TG
+            return psi
+
+        elif contract is True or numsites==1:
+            #just contract the physical leg(s)
+
+            psi.reindex_(reindex_map)
+            
+            #sites that used to have physical indices
+            site_tids = psi._get_tids_from_inds(bond_inds, which='any')
+           
+            # pop the sites (inplace), contract, then re-add
+            pts = [psi._pop_tensor(tid) for tid in site_tids]
+            psi |= qtn.tensor_contract(*pts, TG)
+
+            return psi
+        
+        elif contract == 'split' and numsites==2:
+    
+            tensor_a, tensor_b = (psi[k] for k in where)
+
+            
+            
+            string = where
+            original_ts = [tensor_a, tensor_b]
+            bonds_along = [next(iter(qtn.bonds(t1, t2)))
+                       for t1, t2 in qu.utils.pairwise(original_ts)]
+            site_ix = site_inds
+            
+            gss_opts = {'TG' : TG,
+                        'where' : where,
+                        'string': string,
+                        'original_ts' : original_ts,
+                        'bonds_along' : bonds_along,
+                        'site_ix' : site_ix,
+                        'reindex_map' : reindex_map,
+                        'info' : None}
+
+            qu.tensor.tensor_2d.gate_string_split_(**gss_opts)
+            return psi                        
 
 
+        else:
+            raise ValueError('Failed to contract')
 
-    def get_norm_tensor(self, psi=None):
-        '''<psi|psi> as a TensorNetwork.
+    def get_norm_tensor(self):
+        '''<psi|psi> as an uncontracted TensorNetwork.
         '''
 
-        if psi is None:
-            psi = self._psi
-
-        ket = psi.copy()
+        ket = self.copy()
         ket.add_tag('KET')
 
         bra = ket.retag({'KET':'BRA'})
@@ -691,23 +810,27 @@ class QubitEncodeNet:
         return ket | bra
     
 
-    # def get_normsq_scalar(self):
-    #     '''<psi|psi> real scalar
-    #     '''
-    #     normsq = self.get_norm_tensor()^all
-
-    #     assert np.isclose(normsq, abs(normsq))
-
-    #     return np.real(normsq)
+    def norm_squared(self):
+        '''Scalar quantity <psi|psi>
+        '''
+        return self.get_norm_tensor()^all
 
 
-    def compute_hop_expecs(self, psi=None):
+    def gate_sandwich(self, G, where, contract):
+        '''Scalar quantity <psi|G|psi>
+        '''
+        bra = self.H
+        Gket = self.apply_gate(G, where, contract)
+        return (bra|Gket) ^ all
+
+
+    def compute_hop_expecs(self):
         '''
         Return <psi|H_hop|psi> expectation for the
         hopping terms in (qubit) Hubbard
         '''
-        if psi is None: 
-            psi = self._psi
+        
+        psi=self
 
         E_hop = 0
         bra = psi.H
@@ -722,11 +845,11 @@ class QubitEncodeNet:
             for (i,j,f) in self.get_edges(direction):
                 if f is None:
                     G = ((X&X) + (Y&Y))/2
-                    G_ket = self.apply_gate(psi, G, where=(i,j))
+                    G_ket = self.apply_gate(G, where=(i,j))
             
                 else:
                     G = ((X&X&Of) + (Y&Y&Of))/2
-                    G_ket = self.apply_gate(psi, G, where=(i,j,f))
+                    G_ket = self.apply_gate(G, where=(i,j,f))
 
                 E_hop += (bra|G_ket) ^ all
 
@@ -739,24 +862,24 @@ class QubitEncodeNet:
             for (i,j,f) in self.get_edges(direction):
                 if f is None:
                     G = ((X&X) + (Y&Y))/2
-                    G_ket = self.apply_gate(psi, G, where=(i,j))
+                    G_ket = self.apply_gate(G, where=(i,j))
             
                 else:
                     G = ((X&X&Of) + (Y&Y&Of))/2
-                    G_ket = self.apply_gate(psi, G, where=(i,j,f))
+                    G_ket = self.apply_gate(G, where=(i,j,f))
 
                 E_hop += sign * (bra|G_ket) ^ all
 
         return E_hop
  
     
-    def compute_nnint_expecs(self, psi=None):
+    def compute_nnint_expecs(self):
         '''
         Return <psi|H_int|psi> for the nearest-neighbor
         repulsion terms in spinless-Hubbard.
         '''
-        if psi is None: 
-            psi = self._psi
+        
+        psi = self
         
         E_int = 0
         bra = psi.H
@@ -765,7 +888,7 @@ class QubitEncodeNet:
             #ignore all faces here
 
             G = number_op() & number_op()
-            G_ket = self.apply_gate(psi, G, where=(i,j))
+            G_ket = self.apply_gate(G, where=(i,j))
 
             E_int += (bra|G_ket)^all
 
@@ -782,11 +905,8 @@ class QubitEncodeNet:
             expectations. Defaults to false, in which case
             only the total sum is returned.
         '''
-        Lx,Ly = self.Lx(), self.Ly()
-
-        if psi is None: 
-            psi = self._psi
-        
+        Lx, Ly = self.Lx, self.Ly
+        psi = self
         bra = psi.H
 
         nxy_array = [[None for y in range(Ly)] for x in range(Lx)]
@@ -797,7 +917,7 @@ class QubitEncodeNet:
         for x,y in product(range(Lx),range(Ly)):
             
             where = self.vert_coo_map(x,y)
-            G_ket = self.apply_gate(psi, G, where=(where,))
+            G_ket = self.apply_gate(G, where=(where,))
 
             nxy_array[x][y] = (bra | G_ket) ^ all
             
@@ -817,13 +937,13 @@ class QubitEncodeNet:
             the lattice (third site if acting on the possible face
             qubit)
         '''
-        psi = self._psi
+        psi = self
         bra = psi.H
 
         E = 0
         
         for where, G in Ham.gen_ham_terms():
-            G_ket = self.apply_gate(G, where, psi)
+            G_ket = self.apply_gate(G, where)
             E += (bra|G_ket) ^ all
 
 
@@ -834,30 +954,6 @@ class QubitEncodeNet:
         return E / normsq
 
     
-
-    #TODO: DELETE?
-    # def compute_stab_expec(self, H_stab, normalize=False):
-    #     '''Expectation of stabilizers, i.e.
-
-    #             multiplier * <psi|S1 + S2 + ... + Sk|psi>, 
-        
-    #     divided by <psi|psi> if `normalize` is True
-    #     '''
-    #     # psi = self._psi
-    #     bra = self._psi.H
-
-    #     expec_sum = 0
-
-    #     for where, G in H_stab.gen_stabilizer_gates():
-    #         S_ket = self.apply_gate(G, where)
-    #         expec_sum += (bra|S_ket) ^ all
-        
-    #     if not normalize:
-    #         return expec_sum
-        
-    #     norm = self.get_norm_tensor() ^ all
-    #     return expec_sum / norm
-
 
     def apply_trotter_gates_(self, Ham, tau):
 
@@ -894,16 +990,6 @@ class QubitEncodeNet:
         '''
         for where, G in H_stab.gen_stabilizer_gates():
             self.apply_gate_(G, where)
-
-
-
-    # def apply_stabilizer_exp_gates_(self, H_stab, tau):
-    #     '''In-place apply exp(tau * multiplier * stabilizer), 
-    #     i.e. the exponential (by `tau`) of the Lagrange-multiplier
-    #     stabilizer gates.
-    #     '''
-    #     for where, expG in H_stab.gen_exp_stab_gates(tau):
-    #         self.apply_gate_(expG, where)
 
 
 
@@ -1287,8 +1373,6 @@ class SpinlessSimHam(SimulatorHam):
             assert num_edges>1 or qlattice.num_faces()==0 #should appear in at least two edge terms!
 
             for (i,j,f) in edges:
-                
-                # ham_term = terms[(i,j,f)]
 
                 v_place = (i,j,f).index(vertex) #vertex is either i or j
 
@@ -1557,3 +1641,80 @@ class SpinhalfSimHam(SimulatorHam):
         '''Spin-spin interaction at a single vertex.
         '''
         return number_op() & number_op()
+    
+    
+
+## ********** ##
+
+
+
+
+def gate_string_split_(TG, where, string, original_ts, bonds_along,
+                       reindex_map, site_ix, **compress_opts):
+
+    # by default this means singuvalues are kept in the string 'blob' tensor
+    compress_opts.setdefault('absorb', 'right')
+
+    # the outer, neighboring indices of each tensor in the string
+    neighb_inds = []
+
+    # tensors we are going to contract in the blob, reindex some to attach gate
+    contract_ts = []
+
+    for t, coo in zip(original_ts, string):
+        neighb_inds.append(tuple(ix for ix in t.inds if ix not in bonds_along))
+        contract_ts.append(t.reindex(reindex_map) if coo in where else t)
+
+    # form the central blob of all sites and gate contracted
+    blob = qtn.tensor_contract(*contract_ts, TG)
+
+    regauged = []
+
+    # one by one extract the site tensors again from each end
+    inner_ts = [None] * len(string)
+    i = 0
+    j = len(string) - 1
+
+    while True:
+        lix = neighb_inds[i]
+        if i > 0:
+            lix += (bonds_along[i - 1],)
+
+        # the original bond we are restoring
+        bix = bonds_along[i]
+
+        # split the blob!
+        inner_ts[i], *maybe_svals, blob = blob.split(
+            left_inds=lix, get='tensors', bond_ind=bix, **compress_opts)
+
+
+        # move inwards along string, terminate if two ends meet
+        i += 1
+        if i == j:
+            inner_ts[i] = blob
+            break
+
+        # extract at end of string
+        lix = neighb_inds[j]
+        if j < len(string) - 1:
+            lix += (bonds_along[j],)
+
+        # the original bond we are restoring
+        bix = bonds_along[j - 1]
+
+        # split the blob!
+        inner_ts[j], *maybe_svals, blob = blob.split(
+            left_inds=lix, get='tensors', bond_ind=bix, **compress_opts)
+
+
+        # move inwards along string, terminate if two ends meet
+        j -= 1
+        if j == i:
+            inner_ts[j] = blob
+            break
+
+
+    # transpose to match original tensors and update original data
+    for to, tn in zip(original_ts, inner_ts):
+        tn.transpose_like_(to)
+        to.modify(data=tn.data)
