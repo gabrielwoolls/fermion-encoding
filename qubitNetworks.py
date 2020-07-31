@@ -8,27 +8,35 @@ from collections import defaultdict
 from numbers import Integral
 from autoray import do, dag
 import tqdm
+import functools
     
 
-def make_skeleton_net(Lx, Ly, phys_dim, 
-                    chi=5, show_graph=False):
+def make_skeleton_net(  Lx, 
+                        Ly,
+                        phys_dim, 
+                        chi=5,
+                        site_tag_id='Q{}',
+                        phys_ind_id='q{}',
+                        add_tags={}
+                    ):
+    '''Makes a product state qubit network, for a lattice with 
+    dimensions `Lx, Ly` and local site dimension `phys_dim`.    
+
+    Currently, every site is initialized to the `up x up x ...`
+    state, i.e. `basis_vec(0)`
+    
+    Vertex tensors are tagged with 'VERT' and face tensors with 'FACE'.
+    In addition, every tensor is tagged with any supplied in ``add_tags``,
+    and with a unique site tag (e.g. `Q{k}` for the kth site)
+
     '''
-    NOTE: uses 'Q{}' already!!
     
-    TODO:
-    fix ftensor type (change ndarray->list[list])
-            change defaults?
-            tensor tag id
+    tag_id = site_tag_id
+    ind_id = phys_ind_id
 
-    Make a qubit TensorNetwork from local states in `arrays`, i.e.
-    the TN will represent a product state.
+    add_tags = set(add_tags) #default is empty {}
 
-    arrays: sequence of arrays, optional
-        Specify local qubit states in vertices, faces
-    '''
-    
-    #default to `up` spin at every site
-    
+    #default to ``up`` spin at every site
     vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
                     for j in range(Ly)]
                     for i in range(Lx)]
@@ -39,27 +47,29 @@ def make_skeleton_net(Lx, Ly, phys_dim,
 
 
     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
-                            inds = [f'q{i*Ly+j}'],
-                            tags = {f'Q{i*Ly+j}', 'VERT'}) 
+                            inds = [ind_id.format(i*Ly+j)],  #[f'q{i*Ly+j}'],f'Q{i*Ly+j}'
+                            tags = {tag_id.format(i*Ly+j), 
+                                    'VERT'} | add_tags) 
                 for j in range(Ly)] 
                 for i in range(Lx)]
 
 
-    ftensors = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
+    # ftensors = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
+    ftensors = [[None for fj in range(Ly-1)]
+                      for fi in range(Lx-1)]
     k=0
     for i, j in product(range(Lx-1), range(Ly-1)):
         if i%2 == j%2:
-            ftensors[i,j] = qtn.Tensor( data=face_array[i][j],
-                                        inds=[f'q{k+Lx*Ly}'],
-                                        tags={f'Q{k+Lx*Ly}','FACE'})
+            ftensors[i][j] = qtn.Tensor(data=face_array[i][j],
+                                        inds=[ind_id.format(k+Lx*Ly)],
+                                        tags={tag_id.format(k+Lx*Ly),
+                                              'FACE'} | add_tags)
             k+=1
 
     
 
     for i,j in product(range(Lx), range(Ly)):
-        # vtensors[i][j].new_ind(f'q{i*Ly+j}',size=2)
-        # vtensors[i][j].add_tag(f'Q{i*Ly+j}')
-
+        
         if i<=Lx-2:
             vtensors[i][j].new_bond(vtensors[i+1][j],size=chi)
         if j<=Ly-2:
@@ -67,50 +77,55 @@ def make_skeleton_net(Lx, Ly, phys_dim,
 
 
     for i, j in product(range(Lx-1), range(Ly-1)):
-        if not ftensors[i,j] is None:
-            # ftensors[i,j].new_ind(f'q{k+Lx*Ly}',size=2)
-            # ftensors[i,j].add_tag(f'Q{k+Lx*Ly}')
-
-            ftensors[i,j].new_bond(vtensors[i][j],size=chi)
-            ftensors[i,j].new_bond(vtensors[i][j+1],size=chi)
-            ftensors[i,j].new_bond(vtensors[i+1][j+1],size=chi)
-            ftensors[i,j].new_bond(vtensors[i+1][j],size=chi)
+        if not ftensors[i][j] is None:
+           
+            ftensors[i][j].new_bond(vtensors[i][j], size=chi)
+            ftensors[i][j].new_bond(vtensors[i][j+1], size=chi)
+            ftensors[i][j].new_bond(vtensors[i+1][j+1], size=chi)
+            ftensors[i][j].new_bond(vtensors[i+1][j], size=chi)
 
 
-    alltensors = vtensors + [f for f in ftensors.flatten().tolist() if not f is None]
+    vtensors = list(chain.from_iterable(vtensors))
+    ftensors = list(chain.from_iterable(ftensors))
     
-    vtn = qtn.TensorNetwork(alltensors, structure='Q{}')
-
-    if show_graph:
-        LAT_CONST = 50 #lattice constant for graph
-
-        fix = {
-            **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
-            }
-        vtn.graph(color=['VERT','FACE'], show_tags=True, fix=fix)
-
-    return vtn
+    alltensors = vtensors + [f for f in ftensors if f]
+    # return alltensors
+    return qtn.TensorNetwork(alltensors, structure=site_tag_id)
+    
 
 
-def make_random_net(qlattice, chi=5):
-    '''Return a `TensorNetwork` made from random tensors
+def make_random_net(qlattice, 
+                    chi=5, 
+                    site_tag_id='Q{}', 
+                    phys_ind_id='q{}',
+                    add_tags={}
+                    ):
+    '''
+    NOTE: can make much simpler with ``Tensor.randomize``?
+
+    Return a `TensorNetwork` made from random tensors
     structured like `qlattice` i.e. with the same local 
     qu(d)it degrees of freedom. 
     
     Each site has physical index dimension `d = qlattice._local_dim`,
     and is connected to its neighbors with a virtual bond of 
-    dimension `chi`.
+    dimension ``chi``.
+
+    Vertex tensors are tagged with 'VERT' and face tensors with 'FACE'.
+    In addition, every tensor is tagged with those supplied in ``add_tags``
+
+
     '''
-    Lx, Ly = qlattice._lat_shape
-    phys_dim = qlattice._local_dim
+    Lx, Ly = qlattice.lattice_shape
+    phys_dim = qlattice.local_site_dim
 
     #dummy TN, site tensors to be replaced with randomized
-    tnet = make_skeleton_net(Lx, Ly, phys_dim, chi)
+    tnet = make_skeleton_net(Lx, Ly, phys_dim, chi, site_tag_id, phys_ind_id, add_tags)
 
     #replace vertex tensors with randoms
     for i, j in product(range(Lx), range(Ly)):
         
-        tid = tuple(tnet.tag_map[f'Q{i*Ly+j}'])
+        tid = tuple(tnet.tag_map[site_tag_id.format(i*Ly+j)])
         assert len(tid)==1
         tid = tid[0]
 
@@ -135,7 +150,7 @@ def make_random_net(qlattice, chi=5):
         #replace face tensors
         if i%2 == j%2:
             
-            tid = tuple(tnet.tag_map[f'Q{k+Lx*Ly}'])
+            tid = tuple(tnet.tag_map[site_tag_id.format(k+Lx*Ly)])
             assert len(tid)==1
             tid = tid[0]
 
@@ -159,48 +174,57 @@ def make_random_net(qlattice, chi=5):
     return tnet
 
 
-def make_vertex_net(Lx,Ly, chi=5, show_graph=True):
+def make_vertex_net(Lx, Ly, 
+                    chi=5, 
+                    site_tag_id='Q{}',
+                    phys_ind_id='q{}',
+                    add_tags={},
+                    qlattice=None,
+                    ):
+    '''Build 2D array of *vertex* tensors, without 
+    face sites (i.e. essentially a PEPS).
+
+    Returns: 
+    -------
+    vtensors: array [ array [qtn.Tensor] ] ]
+        (Lx, Ly)-shaped array of qtn.Tensors connected by
+        bonds of dimension ``chi``. Vertex tensors are tagged 
+        with 'VERT' *and* those supplied in ``add_tags``
+    '''
+
+    if qlattice is not None:
+        Lx, Ly = qlat.lattice_shape
+
+    add_tags = set(add_tags)
+
     vert_array = [[qu.up().reshape(2) 
                     for j in range(Ly)]
                     for i in range(Lx)]
        
 
     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
-                            inds = [f'q{i*Ly+j}'],
-                            tags = {f'Q{i*Ly+j}', 'VERT'}) 
+                            inds = [phys_ind_id.format(i*Ly+j)],
+                            tags = [site_tag_id.format(i*Ly+j),
+                                    'VERT'] | add_tags) 
                 for j in range(Ly)] 
                 for i in range(Lx)]
 
     
 
     for i,j in product(range(Lx), range(Ly)):
-        # vtensors[i][j].new_ind(f'q{i*Ly+j}',size=2)
-        # vtensors[i][j].add_tag(f'Q{i*Ly+j}')
-
         if i<=Lx-2:
             vtensors[i][j].new_bond(vtensors[i+1][j],size=chi)
         if j<=Ly-2:
             vtensors[i][j].new_bond(vtensors[i][j+1],size=chi)
 
-
-    # alltensors = vtensors + [f for f in ftensors.flatten().tolist() if not f is None]
-    vtn = qtn.TensorNetwork(vtensors)
-
-
-    if show_graph:
-        LAT_CONST = 50 #lattice constant for graph
-
-        fix = {
-            **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
-            }
-        vtn.graph(color=['VERT','FACE'], show_tags=False, fix=fix)
-
+    vtn = qtn.TensorNetwork(vtensors, structure=site_tag_id)
     return vtn
 
 
 class iTimeTEBD:
     '''TODO: FIX HAMILTONIAN CLASS
     Object for TEBD imaginary-time evolution.
+
     Params:
     ------
     `qnetwork`: QubitEncodeNet
@@ -208,7 +232,7 @@ class iTimeTEBD:
         in-place.
     
     `ham`: `----`
-        Hamiltonian for time-evolving. Should have a
+        Hamiltonian for i-time evolution. Should have a
         `gen_trotter_gates(tau)` method.
     
     `compute_extra_fns`: callable or dict of callables, optional
@@ -216,33 +240,42 @@ class iTimeTEBD:
         step of TEBD. Each function should take only the current 
         state `qnet` as parameter. Results of the callables will 
         be stored in `self._results`
+    
+    `contract_opts`: 
+        Supplied to 
+        :meth:`~denseQubits.QubitLattice.apply_trotter_gates_`
     '''
     def __init__(
         self,
         qnetwork, 
         ham, 
+        inplace=True,
         chi=8,
         tau=0.01,
         progbar=True,
         compute_every=None,
-        compute_extra_fns=None
+        compute_extra_fns=None,
+        **contract_opts
     ):
 
-        self.psi0 = qnetwork.qbit_state()
-        self.qnet = qnetwork
+        self.qnet = qnetwork if inplace else qnetwork.copy()
 
-        self.ham = ham
-        self.tau = tau
-        self.progbar = progbar
+        self.ham = ham #hamiltonian for i-time evolution
+        self.tau = tau 
+        self.progbar = progbar 
         
+        self._n = 0 #current evolution step
+        self.iters = [] #stored iterations
+        self.energies=[] #stored energies <psi|H|psi>/<psi|psi>
 
-        self._n = 0
-        self.iters = [] #iterations
-        self.energies=[]
-
+        #how often to compute energy (and possibly other observables)
         self.compute_energy_every = compute_every
 
+        #if other observables to be computed
         self._setup_callback(compute_extra_fns)
+
+        #opts for how to contract gates on lattice tensors
+        self._contract_opts = contract_opts
 
 
 
@@ -356,7 +389,10 @@ class iTimeTEBD:
     def sweep(self):
         '''Perform a full sweep, apply all `exp(gate)`s
         '''
-        self.qnet.apply_trotter_gates_(self.ham, -self.tau)
+        self.qnet.apply_trotter_gates_(  self.ham, 
+                                        -self.tau, 
+                                        **self._contract_opts)
+
         self.qnet.contract(tags=['GATE'], inplace=True)
     
 
@@ -402,6 +438,9 @@ def compute_encnet_normsquared(qnet):
     return np.real(qnet.get_norm_tensor()^all)
 
 
+
+
+
 class QubitEncodeNet(qtn.TensorNetwork):
     '''
         Params:
@@ -409,7 +448,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         `tn`: TensorNetwork
             State of the tensors in the lattice.
 
-        `qlattice`: QubitCodeLattice
+        `qlattice`: QubitLattice
             Specifies the underlying lattice geometry, in 
             particular the shape (Lx, Ly) of the lattice
             and the local dimension of the physical sites,
@@ -619,11 +658,12 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self.qlattice.simspace_dims()
 
 
-    def graph_lat(self, show_tags=False, auto=False, **graph_opts):
+    def graph(self, fix_lattice=True, **graph_opts):
         
-        if auto:
-            self.graph(color=['VERT','FACE','GATE'], *graph_opts)
+        if not fix_lattice: 
+            super().graph(color=['VERT','FACE','GATE'], *graph_opts)
         
+
         else:
             LAT_CONST = 50 #lattice constant for graphing
             Lx,Ly = self.Lx, self.Ly
@@ -631,7 +671,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             fix = {
                 **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
                 }
-            self.graph(color=['VERT','FACE','GATE'], show_tags=show_tags, fix=fix, show_inds=True, **graph_opts)
+            super().graph(color=['VERT','FACE','GATE'], fix=fix, show_inds=True, **graph_opts)
 
 
     def check_dense_energy(self, Hdense, normalize=True):
@@ -677,7 +717,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         shape (-1, 1), in the order assigned to the local sites.
         '''
         inds_seq = (self._phys_ind_id.format(i) 
-                    for i in self.qlattice.all_sites())
+                    for i in self.qlattice.all_sites()
+                    )
 
         psid = self.to_dense(inds_seq).reshape(-1,1)
 
@@ -687,15 +728,27 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return psid / np.linalg.norm(psid)
 
 
-    def apply_gate_(self, G, where, contract=False):
-        '''In-place apply gate `G` to the TN state
-        '''
-        return self.apply_gate( G=G, 
-                                where=where,
-                                inplace=True,
-                                contract=contract)
+    # def apply_gate_(self, G, where, contract=False):
+    #     '''In-place apply gate `G` to the TN state
+    #     '''
+    #     return self.apply_gate( G=G, 
+    #                             where=where,
+    #                             inplace=True,
+    #                             contract=contract
+    #                             )
+
+    def apply_mpo(self, G, where, inplace, contract):
+        
+        psi = self if inplace else self.copy()
+        
+        numsites = len(where) #gate acts on `numsites`
+
+        dp = self.phys_dim #local physical dimension
 
 
+
+
+    #TODO: Allow G to be a TensorNetwork (MPO)?
     def apply_gate(
         self,
         G, 
@@ -727,6 +780,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         '''
 
+        # if isinstance(G, qtn.TensorNetwork):
+        #     self.apply_mpo(G, where, inplace, contract)
+
         psi = self if inplace else self.copy()
 
         #G can be a one-site gate
@@ -734,6 +790,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             where = (where,)
 
         numsites = len(where) #gate acts on `numsites`
+
         dp = self.phys_dim #local physical dimension
 
         G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
@@ -755,6 +812,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             psi |= TG
             return psi
 
+
         elif contract is True or numsites==1:
             #just contract the physical leg(s)
 
@@ -765,29 +823,26 @@ class QubitEncodeNet(qtn.TensorNetwork):
            
             # pop the sites (inplace), contract, then re-add
             pts = [psi._pop_tensor(tid) for tid in site_tids]
+
             psi |= qtn.tensor_contract(*pts, TG)
 
             return psi
         
         elif contract == 'split' and numsites==2:
     
-            tensor_a, tensor_b = (psi[k] for k in where)
+            original_ts = [psi[k] for k in where]
 
-            
-            
-            string = where
-            original_ts = [tensor_a, tensor_b]
             bonds_along = [next(iter(qtn.bonds(t1, t2)))
                        for t1, t2 in qu.utils.pairwise(original_ts)]
-            site_ix = site_inds
+
             
             gss_opts = {'TG' : TG,
                         'where' : where,
-                        'string': string,
+                        'string': where,
                         'original_ts' : original_ts,
                         'bonds_along' : bonds_along,
-                        'site_ix' : site_ix,
                         'reindex_map' : reindex_map,
+                        'site_ix' : site_inds,
                         'info' : None}
 
             qu.tensor.tensor_2d.gate_string_split_(**gss_opts)
@@ -796,6 +851,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         else:
             raise ValueError('Failed to contract')
+
+
+    apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
+
 
     def get_norm_tensor(self):
         '''<psi|psi> as an uncontracted TensorNetwork.
@@ -955,10 +1014,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     
 
-    def apply_trotter_gates_(self, Ham, tau):
+    def apply_trotter_gates_(self, Ham, tau, **contract_opts):
 
         for where, exp_gate in Ham.gen_trotter_gates(tau):
-            self.apply_gate_(G=exp_gate, where=where)
+            self.apply_gate_(G=exp_gate, where=where, **contract_opts)
 
 
     #TODO: RECOMMENT
@@ -1286,9 +1345,9 @@ class SpinlessSimHam(SimulatorHam):
 
     def __init__(self, qlattice, t, V, mu):
         '''
-        qlattice: [QubitCodeLattice]
-                The lattice of qubits specifying the geometry
-                and vertex/face sites.
+        qlattice: QubitLattice
+            Lattice of qubits specifying the geometry
+            and vertex/face sites.
         
         t: hopping parameter
         V: nearest-neighbor repulsion

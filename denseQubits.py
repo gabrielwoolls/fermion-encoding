@@ -7,7 +7,7 @@ import itertools
 import operator
 import stabilizers
 
-class QubitCodeLattice():
+class QubitLattice():
     def __init__(self, Lx, Ly, local_dim):
 
         if (Lx-1)*(Ly-1) % 2 == 1:
@@ -121,6 +121,10 @@ class QubitCodeLattice():
         # return self.vertex_sites() + self.face_sites()
         return list(range(self._Nsites))
 
+    @property
+    def lattice_shape(self):
+        return (self._Lx, self._Ly)
+
 
     @property
     def vert_array(self):
@@ -155,12 +159,22 @@ class QubitCodeLattice():
 
     @property
     def simspace_dims(self):
+        '''
+        '''
         return self._sim_dims
 
 
     @property
     def local_site_dim(self):
         return self._local_dim
+
+
+    def gen_vert_coos(self):
+        '''Generate *vertex* coordinates (i,j)
+        '''
+        return product( range(self._Lx),
+                        range(self._Ly))
+
 
 
     def make_coo_stabilizer_map(self):
@@ -261,7 +275,7 @@ class QubitCodeLattice():
         return loop_op_data
 
 
-class SpinlessHub(QubitCodeLattice):
+class SpinlessHub(QubitLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''
@@ -667,7 +681,7 @@ class SpinlessHub(QubitCodeLattice):
 
 
 
-class SpinhalfHub(QubitCodeLattice):
+class SpinhalfHub(QubitLattice):
 
     def __init__(self, Lx=2, Ly=3):
         '''
