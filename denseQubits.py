@@ -102,8 +102,8 @@ class QubitLattice():
     
     def vertex_sites(self):
         '''
-        Indices for vertex qubits,
-        equivalent to range(Lx*Ly)
+        List of indices for vertex qubits,
+        equivalent to list(range(Lx*Ly))
         '''
         return list(self._verts.flatten())
 
@@ -120,6 +120,17 @@ class QubitLattice():
         '''
         # return self.vertex_sites() + self.face_sites()
         return list(range(self._Nsites))
+
+
+    @property
+    def Lx(self):
+        return self._Lx
+
+
+    @property
+    def Ly(self):
+        return self._Ly
+
 
     @property
     def lattice_shape(self):
@@ -139,17 +150,17 @@ class QubitLattice():
         '''
         return self._faces.copy()
 
-
+    @property
     def num_verts(self):
         return self._verts.size
     
-
+    @property
     def num_faces(self):
         return self._faces[self._faces!=None].size
 
-
+    @property
     def num_sites(self):
-        return self.num_faces()+self.num_verts()
+        return self.num_faces + self.num_verts
     
 
     @property
@@ -174,6 +185,18 @@ class QubitLattice():
         '''
         return product( range(self._Lx),
                         range(self._Ly))
+
+
+    def gen_vertex_sites(self):
+        return range(self.num_verts)
+    
+
+    def gen_face_sites(self):
+        return range(self.num_verts, self.num_sites)
+    
+
+    def gen_all_sites(self):
+        return range(self.num_sites)
 
 
 

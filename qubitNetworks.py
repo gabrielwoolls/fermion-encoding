@@ -9,6 +9,7 @@ from numbers import Integral
 from autoray import do, dag
 import tqdm
 import functools
+from quimb.tensor.tensor_core import tags_to_oset
     
 
 def make_skeleton_net(  Lx, 
@@ -17,7 +18,8 @@ def make_skeleton_net(  Lx,
                         chi=5,
                         site_tag_id='Q{}',
                         phys_ind_id='q{}',
-                        add_tags={}
+                        add_tags={},
+                        **tn_opts
                     ):
     '''Makes a product state qubit network, for a lattice with 
     dimensions `Lx, Ly` and local site dimension `phys_dim`.    
@@ -90,7 +92,7 @@ def make_skeleton_net(  Lx,
     
     alltensors = vtensors + [f for f in ftensors if f]
     # return alltensors
-    return qtn.TensorNetwork(alltensors, structure=site_tag_id)
+    return qtn.TensorNetwork(alltensors, structure=site_tag_id, **tn_opts)
     
 
 
@@ -98,7 +100,8 @@ def make_random_net(qlattice,
                     chi=5, 
                     site_tag_id='Q{}', 
                     phys_ind_id='q{}',
-                    add_tags={}
+                    add_tags={},
+                    **tn_opts
                     ):
     '''
     NOTE: can make much simpler with ``Tensor.randomize``?
@@ -120,7 +123,13 @@ def make_random_net(qlattice,
     phys_dim = qlattice.local_site_dim
 
     #dummy TN, site tensors to be replaced with randomized
-    tnet = make_skeleton_net(Lx, Ly, phys_dim, chi, site_tag_id, phys_ind_id, add_tags)
+    tnet = make_skeleton_net(Lx, Ly, 
+                            phys_dim, 
+                            chi, 
+                            site_tag_id, 
+                            phys_ind_id, 
+                            add_tags,
+                            **tn_opts)
 
     #replace vertex tensors with randoms
     for i, j in product(range(Lx), range(Ly)):
@@ -204,8 +213,8 @@ def make_vertex_net(Lx, Ly,
 
     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
                             inds = [phys_ind_id.format(i*Ly+j)],
-                            tags = [site_tag_id.format(i*Ly+j),
-                                    'VERT'] | add_tags) 
+                            tags = {site_tag_id.format(i*Ly+j),
+                                    'VERT'} | add_tags) 
                 for j in range(Ly)] 
                 for i in range(Lx)]
 
@@ -221,206 +230,206 @@ def make_vertex_net(Lx, Ly,
     return vtn
 
 
-class iTimeTEBD:
-    '''TODO: FIX HAMILTONIAN CLASS
-    Object for TEBD imaginary-time evolution.
+# class iTimeTEBD:
+#     '''TODO: FIX HAMILTONIAN CLASS
+#     Object for TEBD imaginary-time evolution.
 
-    Params:
-    ------
-    `qnetwork`: QubitEncodeNet
-        The initial state of the qubits. Will be modified
-        in-place.
+#     Params:
+#     ------
+#     `qnetwork`: QubitEncodeNet
+#         The initial state of the qubits. Will be modified
+#         in-place.
     
-    `ham`: `----`
-        Hamiltonian for i-time evolution. Should have a
-        `gen_trotter_gates(tau)` method.
+#     `ham`: `----`
+#         Hamiltonian for i-time evolution. Should have a
+#         `gen_trotter_gates(tau)` method.
     
-    `compute_extra_fns`: callable or dict of callables, optional
-        If desired, can give extra callables to compute at each
-        step of TEBD. Each function should take only the current 
-        state `qnet` as parameter. Results of the callables will 
-        be stored in `self._results`
+#     `compute_extra_fns`: callable or dict of callables, optional
+#         If desired, can give extra callables to compute at each
+#         step of TEBD. Each function should take only the current 
+#         state `qnet` as parameter. Results of the callables will 
+#         be stored in `self._results`
     
-    `contract_opts`: 
-        Supplied to 
-        :meth:`~denseQubits.QubitLattice.apply_trotter_gates_`
-    '''
-    def __init__(
-        self,
-        qnetwork, 
-        ham, 
-        inplace=True,
-        chi=8,
-        tau=0.01,
-        progbar=True,
-        compute_every=None,
-        compute_extra_fns=None,
-        **contract_opts
-    ):
+#     `contract_opts`: 
+#         Supplied to 
+#         :meth:`~denseQubits.QubitLattice.apply_trotter_gates_`
+#     '''
+#     def __init__(
+#         self,
+#         qnetwork, 
+#         ham, 
+#         inplace=True,
+#         chi=8,
+#         tau=0.01,
+#         progbar=True,
+#         compute_every=None,
+#         compute_extra_fns=None,
+#         **contract_opts
+#     ):
 
-        self.qnet = qnetwork if inplace else qnetwork.copy()
+#         self.qnet = qnetwork if inplace else qnetwork.copy()
 
-        self.ham = ham #hamiltonian for i-time evolution
-        self.tau = tau 
-        self.progbar = progbar 
+#         self.ham = ham #hamiltonian for i-time evolution
+#         self.tau = tau 
+#         self.progbar = progbar 
         
-        self._n = 0 #current evolution step
-        self.iters = [] #stored iterations
-        self.energies=[] #stored energies <psi|H|psi>/<psi|psi>
+#         self._n = 0 #current evolution step
+#         self.iters = [] #stored iterations
+#         self.energies=[] #stored energies <psi|H|psi>/<psi|psi>
 
-        #how often to compute energy (and possibly other observables)
-        self.compute_energy_every = compute_every
+#         #how often to compute energy (and possibly other observables)
+#         self.compute_energy_every = compute_every
 
-        #if other observables to be computed
-        self._setup_callback(compute_extra_fns)
+#         #if other observables to be computed
+#         self._setup_callback(compute_extra_fns)
 
-        #opts for how to contract gates on lattice tensors
-        self._contract_opts = contract_opts
+#         #opts for how to contract gates on lattice tensors
+#         self._contract_opts = contract_opts
 
 
 
-    def _setup_callback(self, fns):
-        '''Setup for any callbacks to be computed during 
-        imag-time evolution.
+#     def _setup_callback(self, fns):
+#         '''Setup for any callbacks to be computed during 
+#         imag-time evolution.
         
-        `fns`: callable, or dict of callables, or None
-            Callables should take only `qnet` as parameter, i.e.
-            the current `QubitEncodeNetwork` state.
+#         `fns`: callable, or dict of callables, or None
+#             Callables should take only `qnet` as parameter, i.e.
+#             the current `QubitEncodeNetwork` state.
 
-        '''
+#         '''
 
-        if fns is None:
-            self._step_callback = None
+#         if fns is None:
+#             self._step_callback = None
         
-        #fns is callable or dict of callables
-        else:
+#         #fns is callable or dict of callables
+#         else:
 
-            if isinstance(fns, dict):
-                self._results = {k: [] for k in fns}
+#             if isinstance(fns, dict):
+#                 self._results = {k: [] for k in fns}
 
-                def step_callback(psi_t):
-                    for k, func in fns.items():
-                        fn_result = func(psi_t)
-                        self._results[k].append(fn_result)
+#                 def step_callback(psi_t):
+#                     for k, func in fns.items():
+#                         fn_result = func(psi_t)
+#                         self._results[k].append(fn_result)
             
-            #fns is a single callable
-            else:
-                self._results = []
+#             #fns is a single callable
+#             else:
+#                 self._results = []
 
-                def step_callback(psi_t):
-                    fn_result = fns(psi_t)
-                    self._results.append(fn_result)
-            
-
-            self._step_callback = step_callback
+#                 def step_callback(psi_t):
+#                     fn_result = fns(psi_t)
+#                     self._results.append(fn_result)
             
 
+#             self._step_callback = step_callback
+            
 
-    def _check_energy(self):
-        '''Compute energy, unless we have already computed
-        it for this time-step.
-        '''
-        if self.iters and (self._n==self.iters[-1]):
-            return self.energies[-1]
+
+#     def _check_energy(self):
+#         '''Compute energy, unless we have already computed
+#         it for this time-step.
+#         '''
+#         if self.iters and (self._n==self.iters[-1]):
+#             return self.energies[-1]
         
-        en = self.compute_energy()
+#         en = self.compute_energy()
         
-        self.energies.append(en)
-        self.iters.append(self._n)
+#         self.energies.append(en)
+#         self.iters.append(self._n)
 
-        return self.energies[-1]
-
-
-    def _update_progbar(self, pbar):
-        desc = f"n={self._n}, tau={self.tau}, energy~{float(self._check_energy()):.6f}"
-        pbar.set_description(desc)
+#         return self.energies[-1]
 
 
-    def _compute_extras(self):
-        '''For any extra functions the TEBD object was 
-        given to compute at each step of evolution, pass
-        them the current state `self.qnet`
-        '''
-        if self._step_callback is not None:
-            self._step_callback(self.qnet)
+#     def _update_progbar(self, pbar):
+#         desc = f"n={self._n}, tau={self.tau}, energy~{float(self._check_energy()):.6f}"
+#         pbar.set_description(desc)
 
 
-    def compute_energy(self):
-        '''<psi|Ham|psi> / <psi|psi>
-        '''
-        return self.qnet.compute_ham_expec(self.ham, normalize=True)
+#     def _compute_extras(self):
+#         '''For any extra functions the TEBD object was 
+#         given to compute at each step of evolution, pass
+#         them the current state `self.qnet`
+#         '''
+#         if self._step_callback is not None:
+#             self._step_callback(self.qnet)
 
 
-    def evolve(self, steps):
-        pbar = tqdm.tqdm(total=steps, disable=self.progbar is not True)
+#     def compute_energy(self):
+#         '''<psi|Ham|psi> / <psi|psi>
+#         '''
+#         return self.qnet.compute_ham_expec(self.ham, normalize=True)
 
-        try:
-            for i in range(steps):
 
-                should_compute_energy = (
-                    bool(self.compute_energy_every) and
-                    (i % self.compute_energy_every == 0))
+#     def evolve(self, steps):
+#         pbar = tqdm.tqdm(total=steps, disable=self.progbar is not True)
+
+#         try:
+#             for i in range(steps):
+
+#                 should_compute_energy = (
+#                     bool(self.compute_energy_every) and
+#                     (i % self.compute_energy_every == 0))
                 
-                if should_compute_energy:
-                    self._check_energy()
-                    self._update_progbar(pbar)
-                    self._compute_extras()
+#                 if should_compute_energy:
+#                     self._check_energy()
+#                     self._update_progbar(pbar)
+#                     self._compute_extras()
                 
-                self.sweep()
+#                 self.sweep()
 
-                # self.update_norm()
-                # self.normsq = self.get_current_normsq()
+#                 # self.update_norm()
+#                 # self.normsq = self.get_current_normsq()
 
-                self._n += 1
+#                 self._n += 1
 
-                pbar.update()
+#                 pbar.update()
 
-            #compute final energy
-            self._check_energy()
-            self._compute_extras()
+#             #compute final energy
+#             self._check_energy()
+#             self._compute_extras()
 
-        except KeyboardInterrupt:
-            # allow early interrupt
-            pass
+#         except KeyboardInterrupt:
+#             # allow early interrupt
+#             pass
         
-        finally:
-            pbar.close()
+#         finally:
+#             pbar.close()
     
-    def sweep(self):
-        '''Perform a full sweep, apply all `exp(gate)`s
-        '''
-        self.qnet.apply_trotter_gates_(  self.ham, 
-                                        -self.tau, 
-                                        **self._contract_opts)
+#     def sweep(self):
+#         '''Perform a full sweep, apply all `exp(gate)`s
+#         '''
+#         self.qnet.apply_trotter_gates_(  self.ham, 
+#                                         -self.tau, 
+#                                         **self._contract_opts)
 
-        self.qnet.contract(tags=['GATE'], inplace=True)
+#         self.qnet.contract(tags=['GATE'], inplace=True)
     
 
-    def results(self, which=None):
-        '''Convenience property for testing.
-        '''
-        if which is None:
-            return self._results
+#     def results(self, which=None):
+#         '''Convenience property for testing.
+#         '''
+#         if which is None:
+#             return self._results
         
-        elif which == 'energy':
-            return self.energies
+#         elif which == 'energy':
+#             return self.energies
 
-        return np.array(self._results[which])
+#         return np.array(self._results[which])
 
 
-    def get_final_data(self, data):
-        '''Convenience method for testing.
-        '''
+#     def get_final_data(self, data):
+#         '''Convenience method for testing.
+#         '''
 
-        if data == 'Esim':
-            return np.divide(np.real(self.results('sim')),
-                            np.real(self.results('norm'))
-                            )
+#         if data == 'Esim':
+#             return np.divide(np.real(self.results('sim')),
+#                             np.real(self.results('norm'))
+#                             )
         
-        elif data == 'Estab':
-            return np.divide(np.real(self.results('stab')),
-                            np.real(self.results('norm'))
-                            )
+#         elif data == 'Estab':
+#             return np.divide(np.real(self.results('stab')),
+#                             np.real(self.results('norm'))
+#                             )
         
         
 
@@ -428,14 +437,14 @@ class iTimeTEBD:
 
 
 
-def compute_encnet_ham_expec(qnet, ham):
-    '''Useful callable for TEBD
-    '''
-    return qnet.compute_ham_expec(ham, normalize=False)
+# def compute_encnet_ham_expec(qnet, ham):
+#     '''Useful callable for TEBD
+#     '''
+#     return qnet.compute_ham_expec(ham, normalize=False)
 
 
-def compute_encnet_normsquared(qnet):
-    return np.real(qnet.get_norm_tensor()^all)
+# def compute_encnet_normsquared(qnet):
+#     return np.real(qnet.make_norm()^all)
 
 
 
@@ -497,42 +506,69 @@ class QubitEncodeNet(qtn.TensorNetwork):
             x----x----x----x
         
         '''
+    _EXTRA_PROPS = (
+        '_qlattice',
+        '_site_tag_id',
+        '_phys_ind_id'
+    )
         
     def __init__(
-                self, 
-                tn, 
-                qlattice, 
-                chi=5,
-                site_tag_id = 'Q{}',
-                phys_ind_id = 'q{}',
-                 **tn_opts):
+            self, 
+            tn, 
+            qlattice, 
+            site_tag_id = 'Q{}',
+            phys_ind_id = 'q{}'
+        ):
         
         #shortcut for copying QENs
         if isinstance(tn, QubitEncodeNet):
             self._qlattice = tn.qlattice
-            self._vert_coo_map = tn.vert_coo_map
-            self._face_coo_map = tn.face_coo_map
             self._site_tag_id = tn.site_tag_id
             self._phys_ind_id = tn.phys_ind_id
             super().__init__(tn)
             return
 
-        self._qlattice = qlattice
-
-        self._vert_coo_map = dict(np.ndenumerate(qlattice.vert_array))
-
-        self._face_coo_map = dict(np.ndenumerate(qlattice.face_array))
-        
+        self._qlattice = qlattice        
         self._site_tag_id = site_tag_id
-
         self._phys_ind_id = phys_ind_id
 
-        super().__init__(tn, **tn_opts)
+        super().__init__(tn)
+
+    def _is_compatible_lattice(self, other):
+        return (
+            isinstance(other, QubitEncodeNet) and
+            all(getattr(self, e)==getattr(other, e)
+                for e in QubitEncodeNet._EXTRA_PROPS)
+            )
+    
+
+
+    def __and__(self, other):
+        new = super().__and__(other)
+        if self._is_compatible_lattice(other):
+            new.view_as_(QubitEncodeNet,
+                        like=self,
+                        qlattice=self.qlattice,
+                        site_tag_id=self.site_tag_id,
+                        phys_ind_id=self.phys_ind_id)
+        return new
+    
+
+    def __or__(self, other):
+        new = super().__or__(other)
+        if self._is_compatible_lattice(other):
+            new.view_as_(QubitEncodeNet,
+                        like=self,
+                        qlattice=self.qlattice,
+                        site_tag_id=self.site_tag_id,
+                        phys_ind_id=self.phys_ind_id)
+        return new
+
 
 
     @property
     def qlattice(self):
-        '''Internal qubit lattice object
+        '''Internal ``QubitLattice`` object
         '''
         return self._qlattice
 
@@ -540,7 +576,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def phys_dim(self):
         '''Local physical dimension of qu(d)it sites.
         '''        
-        return self.qlattice.local_site_dim
+        return self._qlattice.local_site_dim
 
     @property
     def site_tag_id(self):
@@ -559,12 +595,20 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def rand_network(cls, qlattice, chi=5, **tn_opts):
         '''Make a random QubitEncodeNet
         '''
-        rand_tn = make_random_net(qlattice, chi)
-        return cls(rand_tn, qlattice, chi)
+        rand_tn = make_random_net(qlattice=qlattice,
+                                chi=chi,
+                                **tn_opts)
+                                
+        return cls(tn=rand_tn, qlattice=qlattice)
 
 
     def copy(self):
-        return self.__class__(self, self.qlattice)
+        return self.__class__(
+                        tn=self, 
+                        qlattice=self.qlattice,
+                        site_tag_id=self.site_tag_id,
+                        phys_ind_id=self.phys_ind_id
+                        )
 
     __copy__ = copy
 
@@ -582,6 +626,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Maps location (i,j) in vertex lattice
         to the corresponding site number.
         '''
+        if not hasattr(self, '_vert_coo_map'):
+            self._vert_coo_map = dict(np.ndenumerate(
+                            self.qlattice.vert_array))
+
+
         if (i is not None) and (j is not None):
             return self._vert_coo_map[(i,j)]
         
@@ -592,43 +641,104 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Maps location (i,j) in *face* lattice
         to the corresponding site number.
         '''
+        if not hasattr(self, '_face_coo_map'):
+            self._face_coo_map = dict(np.ndenumerate(
+                            self.qlattice.face_array))
+
+
         if (i is not None) and (j is not None):
             return self._face_coo_map[(i,j)]
 
         return self._face_coo_map
 
 
-
-    #TODO: TAKE INTERNAL TAG INTO ACCOUNT
-    def vertex_coo_tag(self,i,j):
-        return f'Q{self.vert_coo_map(i,j)}'
+    def vert_coo_tag(self,i,j):
+        '''Tag for site at vertex-coo (i,j)
+        '''
+        k = self.vert_coo_map(i,j)
+        return self.site_tag_id.format(k)
     
 
-    def vertex_coo_ind(self,i,j):
-        return f'q{self.vert_coo_map(i,j)}'
+    def _vert_coo_ind(self,i,j):
+        '''Index id for site at vertex-coo (i,j)
+        '''
+        k = self.vert_coo_map(i,j)
+        return self.phys_ind_id.format(k)
 
 
 
-    def face_coo_tag(self,i,j):
-        return f'Q{self.face_coo_map(i,j)}'
+    def face_coo_tag(self, fi, fj):
+        '''Tag for site at face-coo (fi,fj)
+        '''
+        k = self.face_coo_map(fi, fj)
 
-    def face_coo_ind(self,i,j):
-        return f'q{self.face_site_map(i,j)}'
+        if k is None:
+            return None
+
+        return self.site_tag_id.format(k)
+
+
+    def _face_coo_ind(self, fi, fj):
+        '''Index id for site at face-coo (fi,fj)
+        '''
+        k = self.face_coo_map(fi, fj)
+        
+        if k is None:
+            return None
+
+        return self.phys_ind_id.format(k)
+        
+    def maybe_convert_face(self, where):
+        '''Returns None if ``where`` is the coo
+        of an empty face.
+        '''
+        # if isinstance(where, Integral):
+        #     return self.site_tag_id.format(where)
+        
+        if not isinstance(where, str):
+            try:
+                fi, fj = map(int, where)
+                return self.face_coo_tag(fi, fj)
+            except (ValueError, TypeError):
+                pass
+        
+        return where
+
+        
+    
+    def gen_vertex_sites(self):
+        ''' Generator, same as ``range(num_vertices)``
+        '''
+        return self.qlattice.gen_vertex_sites()
+
+    
+    def gen_face_sites(self):
+        '''Generator, same as ``range(num_verts, num_sites)``
+        '''
+        return self.qlattice.gen_face_sites()
+    
+
+    def gen_all_sites(self):
+        '''Generator, same as ``range(num_sites)``
+        '''
+        return self.qlattice.gen_all_sites()
 
 
     def get_edges(self, which):
         '''
-        Returns: list[tuple(int or None)]
-            List of (three-tuple) edges, where tuple
-            (i,j,f) denotes the edge with vertices i,j 
+        Returns: 
+        --------
+        edges: list[tuple(int or None)]
+            List of 3-tuples, where (i,j,f) 
+            denotes the edge with vertices i,j 
             and face f (int or None)
 
 
         Param:
-
-        which: {'u', 'd', 'r', 'l',
-                'he', 'ho', 've', 'vo',
-                'horizontal', 'all'}
+        ------
+        which: {'u', 'd', 'r', 'l', 'he', 'ho', 
+                've', 'vo', 'horizontal', 'all'}
+            Key to select the desired edges
         '''
         return self.qlattice.get_edges(which)
 
@@ -641,37 +751,66 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def Ly(self):
         return self.qlattice._Ly
 
-
+    @property
     def num_sites(self):
-        return self.qlattice.num_sites()
+        return self.qlattice.num_sites
 
-
+    @property
     def num_verts(self):
-        return self.qlattice.num_verts()
+        return self.qlattice.num_verts
 
+    @property
+    def num_faces(self):
+        return self.qlattice.num_faces
 
+    @property
     def codespace_dims(self):
-        return self.qlattice.codespace_dims()
+        '''List like [phys_dim] * num_verts,
+        i.e. dimensions for vertex subspace
+        '''
+        return self.qlattice.codespace_dims
 
-
+    @property
     def simspace_dims(self):
-        return self.qlattice.simspace_dims()
+        '''List like [phys_dim] * num_sites,
+        i.e. dimensions for full qubit space
+        '''
+        return self.qlattice.simspace_dims
 
+    def bond(self, site1, site2):
+        '''Get index (should only be one!) of bond connecting 
+        the sites. Can take ints or tags, but not coos.
+        '''
+        bond, = self[site1].bonds(self[site2])
+        return bond
 
-    def graph(self, fix_lattice=True, **graph_opts):
+    def graph(self, fix_lattice=True, fix_tags=[], **graph_opts):
+        '''
+        TODO: DEBUG ``fix_tags`` PARAM
+
+        Overloading TensorNetwork.graph() for convenient
+        lattice-fixing when ``fix_lattice`` is True (default).
+        '''
         
-        if not fix_lattice: 
-            super().graph(color=['VERT','FACE','GATE'], *graph_opts)
+        graph_opts.setdefault('color', ['VERT','FACE','GATE'])
+
+        if fix_lattice == False: 
+            super().graph(**graph_opts)
         
 
         else:
-            LAT_CONST = 50 #lattice constant for graphing
-            Lx,Ly = self.Lx, self.Ly
+            try:                
+                Lx,Ly = self.Lx, self.Ly
+                # fix_tags = set(fix_tags)
 
-            fix = {
-                **{(f'Q{i*Ly+j}'): (LAT_CONST*j, -LAT_CONST*i) for i,j in product(range(Lx),range(Ly))}
-                }
-            super().graph(color=['VERT','FACE','GATE'], fix=fix, show_inds=True, **graph_opts)
+                fix = {
+                    **{(f'Q{i*Ly+j}'): (j, -i) for i,j in product(range(Lx),range(Ly))}
+                    }
+                    
+                super().graph(fix=fix, show_inds=True,**graph_opts)
+            
+            except:
+                super().graph(**graph_opts)
 
 
     def check_dense_energy(self, Hdense, normalize=True):
@@ -683,7 +822,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if not normalize:
             return psiHpsi
         
-        normsq = self.get_norm_tensor() ^ all
+        normsq = self.make_norm() ^ all
         return psiHpsi / normsq
         
 
@@ -713,7 +852,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
     def net_to_dense(self, normalize=True):
-        '''Return state as dense vector, i.e. a qarray with 
+        '''
+        TODO: MOVE TO ``QubitEncodeVector``
+        
+        Return this state as dense vector, i.e. a qarray with 
         shape (-1, 1), in the order assigned to the local sites.
         '''
         inds_seq = (self._phys_ind_id.format(i) 
@@ -856,23 +998,101 @@ class QubitEncodeNet(qtn.TensorNetwork):
     apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
 
 
-    def get_norm_tensor(self):
-        '''<psi|psi> as an uncontracted TensorNetwork.
+    # def add_tags(self, tags, inplace=False):
+
+    #     net = self if inplace else self.copy()
+
+    #     newtags = tags_to_oset(tags)
+
+    #     for T in net.tensors:
+    #         T.modify(tags = newtags | T.tags)
+        
+    #     return net
+    
+    # add_tags_ = functools.partialmethod(add_tags, inplace=True)
+
+
+    def make_norm(self, layer_tags=('KET','BRA')):
+        '''<psi|psi> as an uncontracted ``QubitEncodeNet``.
         '''
 
         ket = self.copy()
-        ket.add_tag('KET')
+        ket.add_tag(layer_tags[0])
 
-        bra = ket.retag({'KET':'BRA'})
-        bra.conj_()
-
+        bra = ket.H.retag({layer_tags[0]: layer_tags[1]})
         return ket | bra
     
 
-    def norm_squared(self):
+    def _norm_scalar(self):
         '''Scalar quantity <psi|psi>
         '''
-        return self.get_norm_tensor()^all
+        return self.make_norm()^all
+
+    def flatten(self, inplace=False, fuse_multibonds=True):
+        '''Contract all tensors corresponding to each site into one
+        '''
+        net = self if inplace else self.copy()
+
+        for k in net.gen_all_sites():
+            net ^= k
+        
+        if fuse_multibonds:
+            net.fuse_multibonds_()
+        
+        return net
+        # return net.view_as_(QubitEncodeNetFlat)
+
+    flatten_ = functools.partialmethod(flatten, inplace=True)
+
+
+    def absorb_face_left(self, face_coo, inplace=False, fuse=True):
+        '''NOTE: CURRENTLY ONLY FOR FLAT NETWORKS
+        Need some way to do one layer at a time for sandwiches.
+        partition? 
+        '''
+        tn = self if inplace else self.copy()
+
+        face_tag = tn.maybe_convert_face(face_coo)
+        
+        fi, fj = face_coo
+
+        #corner vertex tags
+        ul_tag = tn.vert_coo_tag(fi, fj)
+        ur_tag = tn.vert_coo_tag(fi, fj + 1)
+        dl_tag = tn.vert_coo_tag(fi + 1, fj)
+        dr_tag = tn.vert_coo_tag(fi + 1, fj + 1)
+
+        #corner bonds
+        ul_bond = tn.bond(ul_tag, face_tag)
+        ur_bond = tn.bond(ur_tag, face_tag)
+        dl_bond = tn.bond(dl_tag, face_tag)
+        dr_bond = tn.bond(dr_tag, face_tag)
+
+
+        face_tensor = tn[face_tag]
+        
+        tensors = face_tensor.split(
+                    left_inds=(ul_bond, ur_bond),
+                    right_inds=(dl_bond, dr_bond),
+                    get=None,
+                    ltags=['UPPER','SPLIT'],
+                    rtags=['LOWER','SPLIT'])
+
+        tn.delete(face_tag)
+
+        tn |= tensors
+
+        # Absorb split-tensors into the vertices
+        tn.contract_((ul_tag, 'UPPER'))
+        tn.contract_((dl_tag, 'LOWER'))
+
+        tn[ul_tag].drop_tags([face_tag, 'FACE', 'UPPER'])
+        tn[dl_tag].drop_tags([face_tag, 'FACE', 'LOWER'])
+
+        return tn
+
+
+
 
 
     def gate_sandwich(self, G, where, contract):
@@ -1009,7 +1229,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if not normalize:
             return E
         
-        normsq = self.get_norm_tensor() ^ all
+        normsq = self.make_norm() ^ all
         return E / normsq
 
     
