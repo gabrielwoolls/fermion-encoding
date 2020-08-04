@@ -843,19 +843,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
         tn.delete(face_tag)
         tn |= tensors
 
-        return tn
+        # return tn
 
         # Absorb split-tensors into the vertices
-        # tn.contract_((ul_tag, 'UPPER'))
-        # tn.contract_((dl_tag, 'LOWER'))
+        tn.contract_((ul_tag, 'UPPER'))
+        tn.contract_((dl_tag, 'LOWER'))
 
-        # tn[ul_tag].drop_tags([face_tag, 'FACE', 'UPPER'])
-        # tn[dl_tag].drop_tags([face_tag, 'FACE', 'LOWER'])
+        tn[ul_tag].drop_tags([face_tag, 'FACE', 'UPPER'])
+        tn[dl_tag].drop_tags([face_tag, 'FACE', 'LOWER'])
 
-        # if fuse_multibonds:
-        #     tn.fuse_multibonds_()
+        if fuse_multibonds:
+            tn.fuse_multibonds_()
 
-        # return tn
+        return tn
 
 
     absorb_face_left_ = functools.partialmethod(absorb_face_left,
@@ -931,7 +931,8 @@ class QubitEncodeVector(QubitEncodeNet,
             tn, 
             qlattice, 
             site_tag_id = 'Q{}',
-            phys_ind_id = 'q{}'
+            phys_ind_id = 'q{}',
+            **tn_opts
         ):
         
         #shortcut for copying QEN vectors
@@ -947,18 +948,18 @@ class QubitEncodeVector(QubitEncodeNet,
         self._site_tag_id = site_tag_id
         self._phys_ind_id = phys_ind_id
             
-        super().__init__(tn)
+        super().__init__(tn, **tn_opts)
 
     
 
-    def copy(self):
-        return self.__class__(
-                        tn=self, 
-                        qlattice=self.qlattice,
-                        site_tag_id=self.site_tag_id,
-                        phys_ind_id=self.phys_ind_id)
+    # def copy(self):
+    #     return self.__class__(
+    #                     tn=self, 
+    #                     qlattice=self.qlattice,
+    #                     site_tag_id=self.site_tag_id,
+    #                     phys_ind_id=self.phys_ind_id)
 
-    __copy__ = copy
+    # __copy__ = copy
         
 
     @classmethod
@@ -1011,15 +1012,6 @@ class QubitEncodeVector(QubitEncodeNet,
         return psid / np.linalg.norm(psid)
 
 
-    #TODO
-    def apply_mpo(self, G, where, inplace, contract):
-        
-        psi = self if inplace else self.copy()
-        
-        numsites = len(where) #gate acts on `numsites`
-
-        dp = self.phys_dim #local physical dimension
-
 
     def make_norm(self, layer_tags=('KET','BRA')):
         '''<psi|psi> as an uncontracted ``QubitEncodeNet``.
@@ -1038,7 +1030,6 @@ class QubitEncodeVector(QubitEncodeNet,
         return self.make_norm()^all
 
 
-    #TODO: Allow G to be a TensorNetwork (MPO)?
     def apply_gate(
         self,
         G, 
@@ -1046,25 +1037,25 @@ class QubitEncodeVector(QubitEncodeNet,
         inplace=False, 
         contract=False
         ):
-        '''Apply gate `G` acting at sites `where`,
+        '''Apply array `G` acting at sites `where`,
         preserving physical indices. Note `G` has to be a
         "square" matrix!
 
         Params:
         ------            
-        `G` : array
+        G : array
             Gate to apply, should be compatible with 
             shape ([physical_dim] * 2 * len(where))
         
-        `where`: sequence of ints
+        where: sequence of ints
             The sites on which to act, using the (default) 
             custom numbering that labels/orders both face 
             and vertex sites.
         
-        `inplace`: bool, optional
+        inplace: bool, optional
             If False (default), return copy of TN with gate applied
         
-        `contract`: bool, optional
+        contract: bool, optional
             If false (default) leave all gates uncontracted
             If True, contract gates into one tensor in the lattice
 
@@ -1145,7 +1136,73 @@ class QubitEncodeVector(QubitEncodeNet,
 
     apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
 
+
+    def apply_mpo(self, mpo, where, inplace=False, contract=False):
+        '''For now assume mpo and self have same tagging conventions
+        '''
+        psi = self if inplace else self.copy()
+
+        nsites = mpo.nsites
+
+        if len(where) != nsites:
+            raise ValueError("Wrong number of sites!")
+        
+        #reset index id (automatically updates tensors)
+        mpo.lower_ind_id = 'b{}'
+        mpo.upper_ind_id = 'k{}'
+
+        mpo_site_tag = mpo.site_tag_id
+
+        #physical indices like 'q1', 'q4', etc
+        site_inds = [psi._phys_ind_id.format(i) for i in where]
+
+        #old physical indices joined to new gate
+        bond_inds = [qtn.rand_uuid() for _ in range(nsites)]
+        
+        
+        Ts = [None]*nsites
+        for j in range(nsites):
+            Ts[j] = mpo[j].reindex({f'k{j}': site_inds[j],
+                                    f'b{j}': bond_inds[j]})
+            Ts[j].retag_({mpo_site_tag.format(j): 'GATE'})
+        
+
+        #replace physical inds with gate/bond inds
+        reindex_map = dict(zip(site_inds, bond_inds))
+        
+
+        if contract == False:
+                
+            psi.reindex_(reindex_map)
+            for T in Ts:
+                psi |= T
+            
+            return psi            
+
+        
+        elif contract == True:
+            #just contract the physical leg(s)
+            psi.reindex_(reindex_map)
+            
+            #sites that used to have physical indices
+            site_tids = psi._get_tids_from_inds(bond_inds, which='any')
+           
+            # pop the sites (inplace), contract, then re-add
+            pts = [psi._pop_tensor(tid) for tid in site_tids]
+
+            #contract physical indices ~ MPO|psi
+            for k in range(nsites):
+                psi |= qtn.tensor_contract(pts[k], Ts[k])
+
+            return psi
+
+        else:
+            raise NotImplementedError('Approx. contraction for MPO gates')
+        
+
+    apply_mpo_ = functools.partialmethod(apply_mpo, inplace=True)
     
+
     def _exact_gate_sandwich(self, G, where, contract):
         '''Scalar quantity <psi|G|psi>
         '''
@@ -1225,7 +1282,7 @@ class QubitEncodeVector(QubitEncodeNet,
         return E_int
 
 
-    def compute_occs_expecs(self, psi=None, return_array=False):
+    def compute_occs_expecs(self, return_array=False):
         '''
         Compute local occupation/number expectations,
         <psi|n_xy|psi>
@@ -1236,8 +1293,7 @@ class QubitEncodeVector(QubitEncodeNet,
             only the total sum is returned.
         '''
         Lx, Ly = self.Lx, self.Ly
-        psi = self
-        bra = psi.H
+        bra = self.H
 
         nxy_array = [[None for y in range(Ly)] for x in range(Lx)]
 
@@ -1270,7 +1326,7 @@ class QubitEncodeVector(QubitEncodeNet,
         bra = self.H
 
         E = 0
-        
+
         for where, G in Ham.gen_ham_terms():
             G_ket = self.apply_gate(G, where)
             E += (bra|G_ket) ^ all
@@ -1282,7 +1338,22 @@ class QubitEncodeVector(QubitEncodeNet,
         normsq = self.make_norm() ^ all
         return E / normsq
 
-    
+
+    def compute_mpo_ham_expec(self, Hmpo, normalize=True):
+        '''Same as ``compute_ham_expec`` but for Hamiltonian 
+        made from a sum of MPOs rather than raw qarrays.
+        '''
+        bra = self.H
+
+        E = 0
+        for where, mpo in Hmpo.gen_ham_terms():
+            E += (bra|self.apply_mpo(mpo, where, contract=True))^all
+        
+        if not normalize:
+            return E
+        
+        normsquared = self.make_norm()^all
+        return E / normsquared
 
     def apply_trotter_gates_(self, Ham, tau, **contract_opts):
 
@@ -1620,6 +1691,53 @@ class SpinlessSimHam(SimulatorHam):
 
         super().__init__(qlattice, terms)
         
+    
+    def get_term_at(self, i, j, f=None):
+        '''Array acting on edge `(i,j,f)`.
+        `i,j` are vertex sites, optional `f` is 
+        the face site.
+        '''
+        return self._ham_terms[(i,j,f)]
+
+
+    def ham_params(self):
+        '''Ham coupling constants
+
+        t: hopping parameter,
+        V: nearest-neighbor repulsion,
+        mu: chemical potential
+        '''
+        return (self._t, self._V, self._mu)
+
+
+    def gen_ham_terms(self):
+        '''Generate (`where`, `gate`) pairs for every location
+        (edge) to be acted on with a Ham term
+        '''
+        for (i,j,f), gate in self._ham_terms.items():
+            where = (i,j) if f is None else (i,j,f)
+            yield where, gate
+
+
+    def gen_trotter_gates(self, tau):
+        '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
+        location (edge) `where` and gate exponentiated by
+        `tau`. 
+
+        Generated in ordered groups of edges:
+        1. Horizontal-even
+        2. Horizontal-odd
+        3. Vertical-even
+        4. Vertical-odd
+        '''
+        for group in ['he', 'ho', 've', 'vo']:
+
+            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
+                
+                i,j,f = edge
+                where = (i,j) if f is None else (i,j,f)
+                yield where, exp_gate
+
 
     def _make_ham_terms(self, qlattice):
         '''Get all terms in Ham as two/three-site gates, 
@@ -1717,42 +1835,6 @@ class SpinlessSimHam(SimulatorHam):
         return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
         
 
-    def ham_params(self):
-        '''Gets Ham coupling constants
-       (t: hopping parameter,
-        V: nearest-neighbor repulsion,
-        mu: chemical potential)
-        '''
-        return (self._t, self._V, self._mu)
-
-
-    def gen_ham_terms(self):
-        '''Generate (`where`, `gate`) pairs for every location
-        (edge) to be acted on with a Ham term
-        '''
-        for (i,j,f), gate in self._ham_terms.items():
-            where = (i,j) if f is None else (i,j,f)
-            yield where, gate
-
-
-    def gen_trotter_gates(self, tau):
-        '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
-        location (edge) `where` and gate exponentiated by
-        `tau`. 
-
-        Generated in ordered groups of edges:
-        1. Horizontal-even
-        2. Horizontal-odd
-        3. Vertical-even
-        4. Vertical-odd
-        '''
-        for group in ['he', 'ho', 've', 'vo']:
-
-            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
-                
-                i,j,f = edge
-                where = (i,j) if f is None else (i,j,f)
-                yield where, exp_gate
 
 ################################
 
@@ -1764,16 +1846,25 @@ class MPOSpinlessHam():
         self._V = V
         self._mu = mu
 
+        self._site_tag_id = 'Q{}'
         self._ham_terms = self._make_ham_terms(qlattice)
 
 
     def ham_params(self):
         return (self._t, self._V, self._mu)
     
+
+    def get_term_at(self, i, j, f=None):
+        '''MPO acting on edge `(i,j,f)`.
+        `i,j` are vertex sites, optional `f` is 
+        the face site.
+        '''
+        return self._ham_terms[(i,j,f)]
     
+
     def gen_ham_terms(self):
         '''Generate (`where`, `gate`) pairs for every location
-        (edge) to be acted on with a Ham term
+        (i.e. edge) to be acted on with a Ham term
         '''
         for (i,j,f), mpo in self._ham_terms.items():
             where = (i,j) if f is None else (i,j,f)
@@ -1782,6 +1873,7 @@ class MPOSpinlessHam():
 
     def _make_ham_terms(self, qlattice):
         
+        site_tag = self._site_tag_id
         t, V, mu = self.ham_params()
 
         terms = dict()
@@ -1837,23 +1929,27 @@ class MPOSpinlessHam():
         
         mpo_NI = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
                                                   Ident.reshape(1,2,2)],
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
         mpo_IN = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
                                                    n_op.reshape(1,2,2)],
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
 
         mpo_NII = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
                                                     Ident.reshape(1,2,2,1),
                                                     Ident.reshape(1,2,2)],
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
 
         mpo_INI = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
                                                    n_op.reshape(1,2,2,1),
                                                    Ident.reshape(1,2,2)],
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
 
         two_site_mpos = (mpo_NI, mpo_IN)
@@ -1888,19 +1984,21 @@ class MPOSpinlessHam():
         return terms
 
 
-
     def _two_site_hop_mpo(self):
         ''' 0.5 * (XX + YY)
         '''
         X, Y = (qu.pauli(q) for q in ['x','y'])
+        site_tag = self._site_tag_id
     
         mpoXX = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
                                                   X.reshape(1,2,2)], 
-                                        shape='ludr')
+                                        shape='ludr',
+                                        site_tag_id=site_tag)
         
         mpoYY = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
                                                   Y.reshape(1,2,2)], 
-                                        shape='ludr')
+                                        shape='ludr',
+                                        site_tag_id=site_tag)
         
         return (mpoXX + mpoYY) / 2
 
@@ -1910,16 +2008,19 @@ class MPOSpinlessHam():
         '''
         X, Y = (qu.pauli(q) for q in ['x','y'])
         O = {'vertical': X, 'horizontal':Y} [edge_dir]
+        site_tag = self._site_tag_id
 
         mpo_XXO = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
                                                     X.reshape(1,2,2,1),
                                                     O.reshape(1,2,2)], 
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
         mpo_YYO = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
                                                     Y.reshape(1,2,2,1),
                                                     O.reshape(1,2,2)], 
-                                            shape='ludr')
+                                            shape='ludr',
+                                            site_tag_id=site_tag)
 
         return (mpo_XXO + mpo_YYO) / 2                                                    
 
@@ -1929,6 +2030,7 @@ class MPOSpinlessHam():
         with an identity to act on a third site.
         '''
         Nop = number_op()
+        site_tag = self._site_tag_id
 
         if third_site_identity:
             oplist = [Nop.reshape(2,2,1), 
@@ -1941,7 +2043,8 @@ class MPOSpinlessHam():
 
 
         return qtn.MatrixProductOperator(arrays=oplist,
-                                        shape='ludr')
+                                        shape='ludr',
+                                        site_tag_id=site_tag)
     
 
     _three_site_nnint_mpo = functools.partialmethod(_two_site_nnint_mpo,
