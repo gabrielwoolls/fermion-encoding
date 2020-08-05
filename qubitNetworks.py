@@ -10,17 +10,126 @@ from autoray import do, dag
 import tqdm
 import functools
 from quimb.tensor.tensor_core import tags_to_oset
+
+
+
+def make_auxcon_net(
+    Lx,
+    Ly,
+    phys_dim=2,
+    bond_dim=3,
+    site_tag_id='Q{}',
+    phys_ind_id='q{}',
+    aux_tag_id='X{}',
+    add_tags={},
+    **tn_opts
+):
+    tag_id = site_tag_id
+    ind_id = phys_ind_id
+    D = bond_dim
+    # add_tags = tags_to_oset(add_tags)
+
+    added_tensors = []
+
+    dummy = np.random.rand(D,D,D,D)
+
+    vertex_net = make_vertex_net(
+        Lx=Lx, Ly=Ly, phys_dim=phys_dim,
+        bond_dim=bond_dim, site_tag_id=site_tag_id,
+        phys_ind_id=phys_ind_id, add_tags=add_tags,
+        **tn_opts)
+    
+    k=0
+    for fi, fj in product(range(Lx-1), range(Ly-1)):
+
+        if fi % 2 == fj % 2: #add face site & splitting tensors
+            
+            face_bonds = [phys_ind_id.format(Lx*Ly + k)] + [qtn.rand_uuid()
+                                                            for _ in range(2)]
+            
+            face_tensor = qtn.rand_tensor(
+                            shape=[phys_dim, D, D],
+                            inds=face_bonds,
+                            tags=['FACE', tag_id.format(Lx*Ly + k)]
+            )
+            
+            up_left_corner = fi * Ly + fj
+            T1 = vertex_net[up_left_corner]
+            T2 = vertex_net[up_left_corner+1]
+            
+            tensor_upper_split = get_rand_split_tensor(
+                T1=T1, T2=T2, face_ind=face_bonds[1],
+                Tf=face_tensor, tags=['AUX', 'UPPER',
+                aux_tag_id.format(up_left_corner)]
+            )
+
+            down_left_corner = (fi + 1) * Ly + fj
+            T1 = vertex_net[down_left_corner]
+            T2 = vertex_net[down_left_corner + 1]
+
+            tensor_lower_split = get_rand_split_tensor(
+                T1=T1, T2=T2, face_ind=face_bonds[2],
+                Tf=face_tensor, tags=['AUX', 'LOWER', 
+                aux_tag_id.format(down_left_corner)]
+            )
+            
+
+            added_tensors.append([face_tensor, 
+                                tensor_upper_split,
+                                tensor_lower_split])
+            k+=1
+    
+    vertex_net |= added_tensors
+    return qtn.TensorNetwork(vertex_net.tensors, 
+                            structure=site_tag_id)
+
+
+
+
+    
+def get_rand_split_tensor(T1, T2, face_ind, Tf, tags=None):
+    '''Assuming `T1---T2` are connected by one bond, insert a random
+    3-legged tensor U between T1 and T2 that connects to the (face)
+    tensor `Tf` through the `face_ind` bond.
+
+    T1-----U------T2
+           |
+           | (face_ind)
+           Tf
+    
+    In-place modifies the tensor T2, and returns U.
+    '''
+    
+    #current vertex---vertex bond
+    bond, = qtn.bonds(T1, T2)
+
+    Dv = T1.ind_size(bond) #size of v---v bond
+    Df = Tf.ind_size(face_ind) #size of face-bond    
+    
+    newbond = qtn.rand_uuid()
+    T2.reindex_({bond: newbond})
+
+    
+    return qtn.rand_tensor( shape=(Dv, Dv, Df),
+                            inds=(bond, newbond, face_ind),
+                            tags=tags_to_oset(tags))
+
     
 
-def make_skeleton_net(  Lx, 
-                        Ly,
-                        phys_dim, 
-                        bond_dim=3,
-                        site_tag_id='Q{}',
-                        phys_ind_id='q{}',
-                        add_tags={},
-                        **tn_opts
-                    ):
+
+
+
+
+def make_skeleton_net(
+    Lx, 
+    Ly,
+    phys_dim, 
+    bond_dim=3,
+    site_tag_id='Q{}',
+    phys_ind_id='q{}',
+    add_tags={},
+    **tn_opts
+):
     '''Makes a product state qubit network, for a lattice with 
     dimensions `Lx, Ly` and local site dimension `phys_dim`.    
 
@@ -36,7 +145,7 @@ def make_skeleton_net(  Lx,
     tag_id = site_tag_id
     ind_id = phys_ind_id
 
-    add_tags = set(add_tags) #default is empty {}
+    add_tags = set(tags) #none by default
 
     #default to ``up`` spin at every site
     vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
@@ -177,19 +286,21 @@ def make_random_net(qlattice,
             tensor_ij = qtn.Tensor(rand_data, inds, tags)
             tnet |= tensor_ij
 
-
-        else: pass
     
     return tnet
 
 
-def make_vertex_net(Lx, Ly, 
-                    bond_dim=3, 
-                    site_tag_id='Q{}',
-                    phys_ind_id='q{}',
-                    add_tags={},
-                    qlattice=None,
-                    ):
+def make_vertex_net(
+    Lx,
+    Ly, 
+    phys_dim=2,
+    bond_dim=3, 
+    site_tag_id='Q{}',
+    phys_ind_id='q{}',
+    add_tags={},
+    qlattice=None,
+    return_arrays=False
+):
     '''Build 2D array of *vertex* tensors, without 
     face sites (i.e. essentially a PEPS).
 
@@ -206,7 +317,7 @@ def make_vertex_net(Lx, Ly,
 
     add_tags = set(add_tags)
 
-    vert_array = [[qu.up().reshape(2) 
+    vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim) 
                     for j in range(Ly)]
                     for i in range(Lx)]
        
@@ -221,9 +332,9 @@ def make_vertex_net(Lx, Ly,
     
 
     for i,j in product(range(Lx), range(Ly)):
-        if i<=Lx-2:
+        if i < Lx-1:
             vtensors[i][j].new_bond(vtensors[i+1][j],size=bond_dim)
-        if j<=Ly-2:
+        if j < Ly-1:
             vtensors[i][j].new_bond(vtensors[i][j+1],size=bond_dim)
 
     vtn = qtn.TensorNetwork(vtensors, structure=site_tag_id)
@@ -562,13 +673,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self._site_tag_id
 
 
-    def copy(self):
-        return self.__class__(
-                        tn=self, 
-                        qlattice=self.qlattice,
-                        site_tag_id=self.site_tag_id)
+    # def copy(self):
+    #     return self.__class__(
+    #                     self, 
+    #                     qlattice=self.qlattice,
+    #                     site_tag_id=self.site_tag_id)
 
-    __copy__ = copy
+    # __copy__ = copy
 
 
     # def _site_tid(self, k):
@@ -744,12 +855,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
         else:
             try:                
                 Lx,Ly = self.Lx, self.Ly
-                # fix_tags = set(fix_tags)
+                
+                LATCX, LATCY = 1.5, 2
 
-                fix = {
-                    **{(f'Q{i*Ly+j}'): (j, -i) 
-                    for i,j in product(range(Lx),range(Ly))}
-                    }
+                # fix_tags = set(fix_tags)
+                fix_verts = {(f'Q{i*Ly+j}'): (LATCY*j, -LATCX*i) 
+                            for i,j in product(range(Lx),range(Ly))}
+                
+                fix_faces, k = dict(), 0
+                for i,j in product(range(Lx), range(Ly)):
+                    if i%2 == j%2:
+                        fix_faces.update({f'Q{k+Lx*Ly}': (LATCY*(j-0.5), -LATCX*(i-0.5)) })
+
+                fix = {**fix_verts, **fix_faces}
                     
                 super().graph(fix=fix, show_inds=True,**graph_opts)
             
@@ -952,14 +1070,14 @@ class QubitEncodeVector(QubitEncodeNet,
 
     
 
-    # def copy(self):
-    #     return self.__class__(
-    #                     tn=self, 
-    #                     qlattice=self.qlattice,
-    #                     site_tag_id=self.site_tag_id,
-    #                     phys_ind_id=self.phys_ind_id)
+    def copy(self):
+        return self.__class__(
+                        tn=self, 
+                        qlattice=self.qlattice,
+                        site_tag_id=self.site_tag_id,
+                        phys_ind_id=self.phys_ind_id)
 
-    # __copy__ = copy
+    __copy__ = copy
         
 
     @classmethod
@@ -1355,21 +1473,17 @@ class QubitEncodeVector(QubitEncodeNet,
         normsquared = self.make_norm()^all
         return E / normsquared
 
+
     def apply_trotter_gates_(self, Ham, tau, **contract_opts):
 
         for where, exp_gate in Ham.gen_trotter_gates(tau):
             self.apply_gate_(G=exp_gate, where=where, **contract_opts)
 
 
+
     #TODO: RECOMMENT
     def apply_stabilizer_from_data_(self, loop_stab_data):
-        '''Inplace application of a stabilizer gate that acts with 
-        'ZZZZ' on `vert_inds`, and acts on `face_inds` with the operators
-        specified in `face_ops`, e.g. 'YXY'.
-
-        vert_inds: sequence of ints (length 4)
-        face_ops: string 
-        face_inds: sequence of ints (len face_inds==len face_ops)
+        '''Inplace application of a stabilizer gate.
         '''
         # X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
         # opmap = {'X': X, 'Y':Y, 'Z':Z}

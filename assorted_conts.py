@@ -59,6 +59,8 @@ class PEPS(qtn.TensorNetwork):
 
     @classmethod
     def random_peps(cls, Lx, Ly, chi=5):
+        '''Make a vector (PEPS shape) w/ random tensors
+        '''
         vtn = qubitNetworks.make_vertex_net(Lx, Ly, chi, site_tag_id=PEPS._site_tag_id)
         vtn.retag({'VERT':'KET'}, inplace=True)
         vtn.randomize(inplace=True)
@@ -100,7 +102,7 @@ class PEPS(qtn.TensorNetwork):
         return the `tag` label of the site e.g. `Q{k}`
 
         site: int or tuple(int, int)
-            If site is neither of these, return unchanged.
+            If site is neither, return it unchanged.
         '''
         if isinstance(site, Integral):
                 return PEPS._site_tag_id.format(site)
@@ -120,6 +122,7 @@ class PEPS(qtn.TensorNetwork):
     def copy(self):
         return self.__class__(self, self._Lx, self._Ly, self._chi)
     
+
     __copy__ = copy
 
 
@@ -178,7 +181,7 @@ class PEPS(qtn.TensorNetwork):
                 self.canonize_between((i, j), (i, j-1), **canonize_opts)
     
 
-    def canonize_col(self, j, sweep, xrange=None, **canonize_opts):
+    def canonize_column(self, j, sweep, xrange=None, **canonize_opts):
         check_opt('sweep', sweep, ('up','down'))
 
         if xrange is None:
@@ -209,7 +212,7 @@ class PEPS(qtn.TensorNetwork):
                 self.compress_between((i, j), (i, j-1), **compress_opts)
         
 
-    def compress_col(self, j, sweep, xrange=None, **compress_opts):
+    def compress_column(self, j, sweep, xrange=None, **compress_opts):
         check_opt('sweep', sweep, ('up', 'down'))
 
         if xrange is None:
@@ -220,8 +223,6 @@ class PEPS(qtn.TensorNetwork):
             for i in range(min(xrange), max(xrange), +1):
                 self.compress_between((i, j), (i + 1, j), **compress_opts)
         
-        #NOTE: WHY NOT JUST REVERSE TENSOR ORDER IN `compress_between`
-        #SHOULD TEST THIS
         else:
             compress_opts.setdefault('absorb', 'left')
             for i in range(max(xrange), min(xrange), -1):
@@ -245,6 +246,7 @@ class PEPS(qtn.TensorNetwork):
             'left':'right',
             'right':'left'
         }[compress_sweep]
+        
         print(xrange)
 
 
@@ -302,6 +304,7 @@ class PEPS(qtn.TensorNetwork):
                     if len(self.tag_map[inner_tag]) > 1:
                         self[i, j].drop_tags(inner_tag)
 
+
     def contract_boundary_from_top(
         self,
         xrange, 
@@ -317,6 +320,8 @@ class PEPS(qtn.TensorNetwork):
         if yrange is None:
             yrange = (0, self._Ly - 1)
         
+
+
         if layer_tags is None:
             tn._contract_boundary_from_top_single(
                 xrange, yrange, canonize=canonize,
@@ -331,6 +336,372 @@ class PEPS(qtn.TensorNetwork):
     
     contract_boundary_from_top_ = functools.partialmethod(
         contract_boundary_from_top, inplace=True)
+
+
+    def _contract_boundary_from_bottom_single(
+        self,
+        xrange,
+        yrange,
+        canonize=True,
+        compress_sweep='left',
+        layer_tag=None,
+        **compress_opts
+        ):
+            canonize_sweep = {
+                'left': 'right',
+                'right': 'left'
+            }[compress_sweep]
+
+            for i in range(max(xrange), min(xrange), -1):
+
+                for j in range(min(yrange), max(yrange)+1):
+                    tag1 = self.coo_to_tag(i, j)
+                    tag2 = self.coo_to_tag(i-1, j)
+                    if layer_tag is None:
+                        #contract any tensors with these coordinates
+                        self.contract_((tag1,tag2), which='any')
+                
+                    else:
+                        #method only exists in `tensor_2d` branch!
+                        self.contract_between(tag1, (tag2, layer_tag))
+                
+                if canonize:
+                    self.canonize_row(i, sweep=canonize_sweep, yrange=yrange)
+
+                self.compress_row(i, sweep=compress_sweep, 
+                                yrange=yrange, **compress_opts)
+
+
+
+    def _contract_boundary_from_bottom_multilayer(
+        self, 
+        xrange,
+        yrange,
+        layer_tags=None,
+        canonize=True,
+        compress_sweep='left',
+        **compress_opts
+        ):
+            canonize_sweep = {
+                'left': 'right',
+                'right': 'left'
+            }[compress_sweep]
+
+            for i in range(max(xrange), min(xrange), -1):
+                
+                #make sure exterior sites are a single tensor
+                for j in range(min(yrange), max(yrange)+1):
+                    self ^= (i,j)
+                
+                for tag in layer_tags:
+                    
+                    self._contract_boundary_from_bottom_single(
+                        xrange=(i, i-1), yrange=yrange, canonize=canonize,
+                        compress_sweep=compress_sweep, layer_tag=tag,
+                        **compress_opts)
+
+                    for j in range(min(yrange), max(yrange)+1):
+                        inner_tag = self.coo_to_tag(i-1, j)
+
+                        #leave the tag on *last* tensor (len==1)
+                        if len(self.tag_map[inner_tag]) > 1:
+                            self[i,j].drop_tags(inner_tag)
+
+
+    def contract_boundary_from_bottom(
+        self,
+        xrange,
+        yrange=None,
+        canonize=True,
+        compress_sweep='right',
+        layer_tags=None,
+        inplace=False,
+        **compress_opts
+    ):
+        tn = self if inplace else self.copy()
+
+        if yrange is None:
+            yrange = (0, self._Ly-1)
+        
+
+        if layer_tags is None:
+            tn._contract_boundary_from_bottom_single(
+                xrange, yrange, canonize=canonize, 
+                compress_sweep=compress_sweep, **compress_opts)
+        
+        else:
+            tn._contract_boundary_from_top_multilayer(
+                xrange, yrange, layer_tags, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+        
+        return tn
+
+
+    contract_boundary_from_bottom_ = functools.partialmethod(
+        contract_boundary_from_bottom, inplace=True)
+
+## FROM LEFT
+
+    def _contract_boundary_from_left_single(
+        self,
+        yrange,
+        xrange,
+        canonize=True,
+        compress_sweep='up',
+        layer_tag=None,
+        **compress_opts
+    ):
+        canonize_sweep = {
+            'up': 'down',
+            'down': 'up',
+        }[compress_sweep]
+
+
+        for j in range(min(yrange), max(yrange)):
+            #
+            #     ●──●──       ●──
+            #     │  │         ║
+            #     ●──●──  ==>  ●──
+            #     │  │         ║
+            #     ●──●──       ●──
+            #
+            for i in range(min(xrange), max(xrange) + 1):
+                tag1 = self.coo_to_tag(i, j)
+                tag2 = self.coo_to_tag(i, j + 1)
+                if layer_tag is None:
+                    # contract any tensors with coordinates (i, j), (i, j + 1)
+                    self.contract_((tag1, tag2), which='any')
+                else:
+                    # contract a specific pair
+                    self.contract_between(tag1, (tag2, layer_tag))
+            
+            if canonize:
+                #
+                #     ●──       v──
+                #     ║         ║
+                #     ●──  ==>  v──
+                #     ║         ║
+                #     ●──       ●──
+                #
+                self.canonize_column(j, sweep=canonize_sweep, xrange=xrange)
+            #
+            #     v──       ●──
+            #     ║         │
+            #     v──  ==>  ^──
+            #     ║         │
+            #     ●──       ^──
+            #
+            self.compress_column(j, sweep=compress_sweep,
+                                 xrange=xrange, **compress_opts)        
+    
+    def _contract_boundary_from_left_multilayer(
+        self,
+        yrange,
+        xrange,
+        layer_tags,
+        canonize=True,
+        compress_sweep='up',
+        **compress_opts
+    ):
+        for j in range(min(yrange), max(yrange)):
+            # make sure the exterior sites are a single tensor
+            #
+            #     ○──○──           ●──○──
+            #     │╲ │╲            │╲ │╲       (for two layer tags)
+            #     ●─○──○──         ╰─●──○──
+            #      ╲│╲╲│╲     ==>    │╲╲│╲
+            #       ●─○──○──         ╰─●──○──
+            #        ╲│ ╲│             │ ╲│
+            #         ●──●──           ╰──●──
+            #
+            for i in range(min(xrange), max(xrange)+1):
+                self ^= (i, j)
+
+            for tag in layer_tags:
+                # contract interior sites from layer ``tag``
+                #
+                #        ○──
+                #      ╱╱ ╲        (first contraction if there are two tags)
+                #     ●─── ○──
+                #      ╲ ╱╱ ╲
+                #       ^─── ○──
+                #        ╲ ╱╱
+                #         ^─────
+                #
+                self._contract_boundary_from_left_single(
+                    yrange=(j, j + 1), xrange=xrange, canonize=canonize,
+                    compress_sweep=compress_sweep, layer_tag=tag,
+                    **compress_opts)
+
+                # so we can still uniqely identify 'inner' tensors, drop inner
+                #     site tag merged into outer tensor for all but last tensor
+                for i in range(min(xrange), max(xrange) + 1):
+                    inner_tag = self.coo_to_tag(i, j + 1)
+                    if len(self.tag_map[inner_tag]) > 1:
+                        self[i, j].drop_tags(inner_tag)
+
+
+    def contract_boundary_from_left(
+        self,
+        yrange,
+        xrange=None,
+        canonize=True,
+        compress_sweep='up',
+        layer_tags=None,
+        inplace=False,
+        **compress_opts
+    ):
+        tn = self if inplace else self.copy()
+
+        if xrange is None:
+            xrange = (0, self.Lx - 1)
+
+        if layer_tags is None:
+            tn._contract_boundary_from_left_single(
+                yrange, xrange, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+        else:
+            tn._contract_boundary_from_left_multilayer(
+                yrange, xrange, layer_tags, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+
+        return tn
+
+    contract_boundary_from_left_ = functools.partialmethod(
+        contract_boundary_from_left, inplace=True)
+    
+
+    def _contract_boundary_from_right_single(
+        self,
+        yrange,
+        xrange,
+        canonize=True,
+        compress_sweep='down',
+        layer_tag=None,
+        **compress_opts
+    ):
+        canonize_sweep = {
+            'up': 'down',
+            'down': 'up',
+        }[compress_sweep]
+
+        for j in range(max(yrange), min(yrange), -1):
+            #
+            #     ──●──●       ──●
+            #       │  │         ║
+            #     ──●──●  ==>  ──●
+            #       │  │         ║
+            #     ──●──●       ──●
+            #
+            for i in range(min(xrange), max(xrange) + 1):
+                tag1, tag2 = self.coo_to_tag(i, j), self.coo_to_tag(i, j - 1)
+                if layer_tag is None:
+                    # contract any tensors with coordinates (i, j), (i, j - 1)
+                    self.contract_((tag1, tag2), which='any')
+                else:
+                    # contract a specific pair
+                    self.contract_between(tag1, (tag2, layer_tag))
+            
+            if canonize:
+                #
+                #   ──●       ──v
+                #     ║         ║
+                #   ──●  ==>  ──v
+                #     ║         ║
+                #   ──●       ──●
+                #
+                self.canonize_column(j, sweep=canonize_sweep, xrange=xrange)
+            #
+            #   ──v       ──●
+            #     ║         │
+            #   ──v  ==>  ──^
+            #     ║         │
+            #   ──●       ──^
+            #
+            self.compress_column(j, sweep=compress_sweep,
+                                 xrange=xrange, **compress_opts)
+
+    def _contract_boundary_from_right_multilayer(
+        self,
+        yrange,
+        xrange,
+        layer_tags,
+        canonize=True,
+        compress_sweep='down',
+        **compress_opts
+    ):
+        for j in range(max(yrange), min(yrange), -1):
+            # make sure the exterior sites are a single tensor
+            #
+            #         ──○──○           ──○──●
+            #          ╱│ ╱│            ╱│ ╱│    (for two layer tags)
+            #       ──○──○─●         ──○──●─╯
+            #        ╱│╱╱│╱   ==>     ╱│╱╱│
+            #     ──○──○─●         ──○──●─╯
+            #       │╱ │╱            │╱ │
+            #     ──●──●           ──●──╯
+            #
+            for i in range(min(xrange), max(xrange) + 1):
+                self ^= (i, j)
+
+            for tag in layer_tags:
+                # contract interior sites from layer ``tag``
+                #
+                #         ──○
+                #          ╱ ╲╲     (first contraction if there are two tags)
+                #       ──○────v
+                #        ╱ ╲╲ ╱
+                #     ──○────v
+                #        ╲╲ ╱
+                #     ─────●
+                #
+                self._contract_boundary_from_right_single(
+                    yrange=(j, j - 1), xrange=xrange, canonize=canonize,
+                    compress_sweep=compress_sweep, layer_tag=tag,
+                    **compress_opts)
+
+                # so we can still uniqely identify 'inner' tensors, drop inner
+                #     site tag merged into outer tensor for all but last tensor
+                for i in range(min(xrange), max(xrange) + 1):
+                    inner_tag = self.coo_to_tag(i, j - 1)
+                    if len(self.tag_map[inner_tag]) > 1:
+                        self[i, j].drop_tags(inner_tag)
+    
+    def contract_boundary_from_right(
+        self,
+        yrange,
+        xrange=None,
+        canonize=True,
+        compress_sweep='down',
+        layer_tags=None,
+        inplace=False,
+        **compress_opts
+    ):
+        """Contract a 2D tensor network inwards from the left, canonizing and
+        compressing (top to bottom) along the way.
+
+        compress_opts
+            Supplied to
+            :meth:`~compress_column`.
+        """
+        tn = self if inplace else self.copy()
+
+        if xrange is None:
+            xrange = (0, self.Lx - 1)
+
+        if layer_tags is None:
+            tn._contract_boundary_from_right_single(
+                yrange, xrange, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+        else:
+            tn._contract_boundary_from_right_multilayer(
+                yrange, xrange, layer_tags, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+
+        return tn
+
+    contract_boundary_from_right_ = functools.partialmethod(
+        contract_boundary_from_right, inplace=True)
 
 
     def contract_boundary(
@@ -350,6 +721,14 @@ class PEPS(qtn.TensorNetwork):
         NOTE: minor changes from Johnnie's code e.g. lattice site conventions 
         change s.t. *upper left* corner is now (0, 0).
 
+        
+            ●──●──●──●       ●──●──●──●       ●──●──●
+            │  │  │  │       │  │  │  │       ║  │  │
+            ●──●──●──●       ●──●──●──●       ^──●──●       >══>══●       >──v
+            │  │ij│  │  ==>  │  │ij│  │  ==>  ║ij│  │  ==>  │ij│  │  ==>  │ij║
+            ●──●──●──●       ●══<══<══<       ^──<──<       ^──<──<       ^──<
+            │  │  │  │
+            ●──●──●──●
 
         Contract boundary inwards, optionally from any or all of the
         boundary, in multiple layers, and/or stopping around a region.
@@ -410,6 +789,7 @@ class PEPS(qtn.TensorNetwork):
             stop_i_max = max(x[0] for x in around)
             stop_j_max = max(x[1] for x in around)
             stop_j_max = max(x[1] for x in around)
+        
         elif sequence is None:
             #contract inwards along short dimension
             if self._Lx >= self._Ly:
@@ -417,6 +797,81 @@ class PEPS(qtn.TensorNetwork):
             else:
                 sequence='l'
         
+        # keep track of whether we have hit the ``around`` region.
+        reached_stop = {direction: False for direction in sequence}
 
+        for direction in cycle(sequence):
+
+            if direction=='b':
+                #check if we have reached 'stop' region
+                if (around is None) or (bottom - 1 > stop_i_max):
+                    tn.contract_boundary_from_bottom_(
+                        xrange=(bottom, bottom - 1),
+                        yrange=(left, right),
+                        compress_sweep='left',
+                        **boundary_contract_opts,
+                    )
+                    bottom -= 1
+            
+                else:
+                    reached_stop[direction]=True
+            
+            elif direction == 'l':
+                if (around is None) or (left + 1 < stop_j_min):
+                    tn.contract_boundary_from_left_(
+                        xrange=(bottom, top),
+                        yrange=(left, left + 1),
+                        compress_sweep='up',
+                        **boundary_contract_opts,
+                    )
+                    left += 1
+                else:
+                    reached_stop[direction]=True
+            
+            elif direction == 't':
+                if (around is None) or (top + 1 < stop_i_min):
+                    tn.contract_boundary_from_top_(
+                        xrange=(top, top + 1),
+                        yrange=(left, right),
+                        compress_sweep='right',
+                        **boundary_contract_opts
+                    )
+                    top -= 1
+                else:
+                    reached_stop[direction] = True
+            
+            elif direction == 'r':
+                if (around is None) or (right - 1 > stop_j_max):
+                    tn.contract_boundary_from_right_(
+                        xrange=(bottom, top),
+                        yrange=(right, right - 1),
+                        compress_sweep='down',
+                        **boundary_contract_opts,
+                    )
+                    right -= 1
+                else:
+                    reached_stop[direction] = True
+            
+            else:
+                raise ValueError("Sequence can only be from bltr")
+            
+            if around is None:
+                # check if TN is thin enough to just contract
+                thin_strip = (
+                    (top - bottom <= max_separation) or
+                    (right - left <= max_separation)
+                )
+                if thin_strip:
+                    return tn.contract(all, optimize='auto-hq')
+            
+            elif all(reached_stop.values()):
+                break
+        
+
+        return tn
+        
+        contract_boundary_ = functools.partialmethod(
+            contract_boundary, inplace=True)
+        
         
         

@@ -8,7 +8,7 @@ import operator
 import stabilizers
 
 class QubitLattice():
-    def __init__(self, Lx, Ly, local_dim):
+    def __init__(self, Lx, Ly, local_dim=2):
 
         if (Lx-1)*(Ly-1) % 2 == 1:
             raise NotImplementedError('Need even number of faces!')
@@ -1209,6 +1209,7 @@ def edges_commute(edges):
         vertices.extend([i,j])
 
     return len(vertices)==len(set(vertices))
+
 
 
 def is_diagonal(a):
