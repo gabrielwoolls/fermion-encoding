@@ -1,6 +1,6 @@
 import quimb as qu
 import numpy as np
-from itertools import product, chain
+from itertools import product, chain, starmap
 import quimb.tensor as qtn
 import denseQubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
@@ -10,6 +10,7 @@ from autoray import do, dag
 import tqdm
 import functools
 from quimb.tensor.tensor_core import tags_to_oset
+from quimb.utils import pairwise, check_opt
 
 
 
@@ -27,7 +28,7 @@ def make_auxcon_net(
     tag_id = site_tag_id
     ind_id = phys_ind_id
     D = bond_dim
-    # add_tags = tags_to_oset(add_tags)
+    add_tags = tags_to_oset(add_tags)
 
     added_tensors = []
 
@@ -50,27 +51,27 @@ def make_auxcon_net(
             face_tensor = qtn.rand_tensor(
                             shape=[phys_dim, D, D],
                             inds=face_bonds,
-                            tags=['FACE', tag_id.format(Lx*Ly + k)]
+                            tags=('FACE', tag_id.format(Lx*Ly + k), *add_tags)
             )
             
             up_left_corner = fi * Ly + fj
             T1 = vertex_net[up_left_corner]
             T2 = vertex_net[up_left_corner+1]
             
-            tensor_upper_split = get_rand_split_tensor(
+            tensor_upper_split = insert_split_tensor(
                 T1=T1, T2=T2, face_ind=face_bonds[1],
-                Tf=face_tensor, tags=['AUX', 'UPPER',
-                aux_tag_id.format(up_left_corner)]
+                Tf=face_tensor, add_tags=['AUX', 'UPPER',
+                aux_tag_id.format(up_left_corner), *add_tags]
             )
 
             down_left_corner = (fi + 1) * Ly + fj
             T1 = vertex_net[down_left_corner]
             T2 = vertex_net[down_left_corner + 1]
 
-            tensor_lower_split = get_rand_split_tensor(
+            tensor_lower_split = insert_split_tensor(
                 T1=T1, T2=T2, face_ind=face_bonds[2],
-                Tf=face_tensor, tags=['AUX', 'LOWER', 
-                aux_tag_id.format(down_left_corner)]
+                Tf=face_tensor, add_tags=['AUX', 'LOWER', 
+                aux_tag_id.format(down_left_corner), *add_tags]
             )
             
 
@@ -87,17 +88,18 @@ def make_auxcon_net(
 
 
     
-def get_rand_split_tensor(T1, T2, face_ind, Tf, tags=None):
-    '''Assuming `T1---T2` are connected by one bond, insert a random
-    3-legged tensor U between T1 and T2 that connects to the (face)
-    tensor `Tf` through the `face_ind` bond.
+def insert_split_tensor(T1, T2, face_ind, Tf, add_tags=None):
+    '''Assuming `T1---T2` are connected by one bond, insert a 
+    3-legged tensor `U` between T1 and T2 that connects to the 
+    (face) tensor `Tf` through the `face_ind` bond.
 
     T1-----U------T2
            |
            | (face_ind)
            Tf
     
-    In-place modifies the tensor T2, and returns U.
+    In-place modifies the tensor T2, and returns the (random)
+    tensor U.
     '''
     
     #current vertex---vertex bond
@@ -109,16 +111,34 @@ def get_rand_split_tensor(T1, T2, face_ind, Tf, tags=None):
     newbond = qtn.rand_uuid()
     T2.reindex_({bond: newbond})
 
-    
     return qtn.rand_tensor( shape=(Dv, Dv, Df),
                             inds=(bond, newbond, face_ind),
-                            tags=tags_to_oset(tags))
-
+                            tags=add_tags)
     
 
+def insert_identity_between_tensors(T1, T2, add_tags=None):
+    '''Assuming T1---T2 share one bond, replace the bond
+    and connect the tensors with an identity matrix.
+
+    Modifies `T1, T2` in place and returns the identity tensor.
+    '''
+    bond, = qtn.bonds(T1, T2)
+    D = T1.ind_size(bond)
+
+    newbond = qtn.rand_uuid()
+    T2.reindex_({bond: newbond})
+
+    return qtn.Tensor(data=qu.eye(D),
+                      inds=(bond, newbond),
+                      tags=add_tags)
 
 
 
+def get_halfcoo_between(coo1, coo2):
+    i1, j1 = coo1
+    i2, j2 = coo2
+
+    return ((i1+i2)/2, (j1+j2)/2)
 
 def make_skeleton_net(
     Lx, 
@@ -145,7 +165,7 @@ def make_skeleton_net(
     tag_id = site_tag_id
     ind_id = phys_ind_id
 
-    add_tags = set(tags) #none by default
+    add_tags = set(add_tags) #none by default
 
     #default to ``up`` spin at every site
     vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
@@ -402,9 +422,11 @@ class iTimeTEBD:
 
     def _setup_callback(self, fns):
         '''Setup for any callbacks to be computed during 
-        imag-time evolution.
+        imag-time evolution. Defines a function `self._step_callback`
+        that computes desired quantities, to be called at each timestep
+        (or at whatever steps the energy is evaluated).
         
-        `fns`: callable, or dict of callables, or None
+        fns: callable, or dict of callables, or None
             Callables should take only `qnet` as parameter, i.e.
             the current `QubitEncodeNetwork` state.
 
@@ -587,7 +609,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         Attributes:
         ----------
 
-        `_vert_coo_map`: dict[tuple(int) : int]
+        _vert_coo_map: dict[tuple(int) : int]
             Numbering of the vertex sites, i.e.
             maps each location (i,j) in the vertex lattice
             to an integer.
@@ -605,9 +627,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
             etc
         
 
-        `_face_coo_map`: dict[tuple(int)-->int]
+        _face_coo_map: dict[tuple(int): int or None]
             Numbering of face sites. Assigns an integer
-            to each location (i,j) in the *face* array.
+            to each location (i,j) in the *face* array,
+            and `None` to the empty faces, i.e. lattice
+            faces with no physical qubit.
 
             e.g. for 4x4 vertices (3x3 faces)
 
@@ -619,6 +643,20 @@ class QubitEncodeNet(qtn.TensorNetwork):
             | 19 |    | 20 |
             x----x----x----x
         
+
+        _supergrid: list[ list[ str or None ]], shape (2*Lx-1, 2*Ly-1)
+            Array storing tag `tij` if there is a tensor at location
+            (i,j), `None` otherwise. The supergrid has coordinates
+            for both vertex and face sites -- effectively the vertices
+            and faces live only at 'even' coos in the supergrid, while 
+            'odd' supergrid coos connect physical sites.
+
+
+        _face_coo_map_nonempty: dict[tuple(int): int]
+            Like `_face_coo_map` but only contains face
+            (coo, site) pairs that have a physical qubit
+            associated, i.e. drops all (coo, None) pairs.
+
         '''
     _EXTRA_PROPS = (
         '_qlattice',
@@ -690,7 +728,33 @@ class QubitEncodeNet(qtn.TensorNetwork):
     #     index = self._phys_ind_id.format(k)
     #     return self.ind_map[index]
 
+    
+    def _build_supergrid(self):
+        '''Sets up the 'bare' supergrid, with unique tags
+        for all the vertex- and face-qubits.
+        '''
+        Lx, Ly = self.Lx, self.Ly
 
+        supergrid = [[None for _ in range(2*Ly - 1)] 
+                           for _ in range(2*Lx - 1)]
+
+        # supergrid = dict()
+
+        for i, j in product(range(Lx), range(Ly)):
+            
+            vertex_tag = self.vert_coo_tag(i, j)
+            supergrid[2 * i][2 * j] = set([vertex_tag])
+
+        for i, j in product(range(Lx-1), range(Ly-1)):
+            
+            if i%2==j%2:
+                face_tag = self.face_coo_tag(i, j)
+                supergrid[i + 1][j + 1] = set([face_tag])
+
+        return supergrid
+
+    #Depend on lattice geometry
+    
     def vert_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in vertex lattice
         to the corresponding site number.
@@ -706,6 +770,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self._vert_coo_map
 
 
+
     def face_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in *face* lattice
         to the corresponding site number.
@@ -719,6 +784,35 @@ class QubitEncodeNet(qtn.TensorNetwork):
             return self._face_coo_map[(i,j)]
 
         return self._face_coo_map
+
+
+
+    def supergrid(self, x=None, y=None):
+        '''Returns the set of tags corresponding
+        to supercoo `x, y`. If no coo is specified,
+        returns the whole dictionary.
+        '''
+        if not hasattr(self, '_supergrid'):
+            self._supergrid = self._build_supergrid()
+        
+        if (x is not None) and (y is not None):
+            return self._supergrid[x][y]
+        
+        return self._supergrid
+
+
+    def update_supergrid_(self, x, y, tag):
+        '''Add `tag` to the set of tags at supergrid 
+        coordinate `x, y`. Does not complain if the
+        tag was already there.
+        '''
+        if not hasattr(self, '_supergrid'):
+            self._supergrid = self._build_supergrid()
+        
+        if self._supergrid[x][y] is None:
+            self._supergrid[x][y] = [tag]
+        else:
+            self._supergrid[x][y].add(tag)
 
 
     def vert_coo_tag(self,i,j):
@@ -738,6 +832,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         return self.site_tag_id.format(k)
 
+        
 
     def maybe_convert_face(self, where):
         '''Returns None if ``where`` is the coo
@@ -769,6 +864,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Generator, same as ``range(num_verts, num_sites)``
         '''
         return self.qlattice.gen_face_sites()
+        # return product(range(self.Lx-1), range(self.Ly-1))
     
 
     def gen_all_sites(self):
@@ -777,21 +873,300 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self.qlattice.gen_all_sites()
 
 
+    def gen_vertex_coos(self):
+        '''Generate the (i,j) coordinates for all 
+        vertices in the lattice.
+        '''
+        return product(range(self.Lx), range(self.Ly))
+    
+    
+    def gen_face_coos(self):
+        '''Generate the (i,j) coordinates for not-None
+        (non-empty) face sites in the lattice
+        '''
+        for coo, site in self._face_coo_map.items():
+            if site is not None:
+                yield coo
+    
+    def gen_supergrid_coos(self):
+        return product(range(-1 + 2*self.Lx), range(-1 + 2*self.Ly))
+
+
+
+    def _canonize_supergrid_row(self, x, sweep, yrange=None, **canonize_opts):
+        '''Canonize all bonds between tensors in the xth row
+        of the supergrid.
+
+        Automatically ignores the 'empty' coos in supergrid,
+        i.e. picks only the nodes occupied by tensors.
+        '''
+        check_opt('sweep',sweep,('right','left'))
+        
+        if yrange is None:
+            yrange = (0, 2 * self.Ly - 2)
+
+        ordered_row_tags = self._supergrid_row_slice(x, yrange, sweep)
+
+        for tag1, tag2 in pairwise(ordered_row_tags):
+            self.canonize_between(tag1, tag2, **canonize_opts)
+
+
+
+    def _canonize_supergrid_column(self, y, sweep, xrange=None, **canonize_opts):
+        check_opt('sweep',sweep,('up','down'))
+
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+        
+        ordered_col_tags = self._supergrid_column_slice(y, xrange, sweep)
+
+        for tag1, tag2 in pairwise(ordered_col_tags):
+            self.canonize_between(tag1, tag2, **canonize_opts)
+
+    
+
+    def _canonize_supergrid_row_around(self, x, around=(0,1)):
+        #sweep to the right
+        self._canonize_supergrid_row(x, sweep='right', yrange=(0, min(around)))
+        #sweep to the left
+        self._canonize_supergrid_row(x, sweep='left', yrange=(max(around), 2*self.Ly-2))
+    
+    
+
+
+    def _compress_supergrid_row(self, x, sweep, yrange=None, **compress_opts):
+        check_opt('sweep', sweep, ('right', 'left'))
+        compress_opts.setdefault('absorb', 'right')
+
+        if yrange is None:
+            yrange = (0, 2 * self.Ly - 2)
+        
+        ordered_row_tags = self._supergrid_row_slice(x, yrange, sweep) 
+
+        for tag1, tag2 in pairwise(ordered_row_tags):
+            self.compress_between(tag1, tag2, **compress_opts)
+
+
+
+    def _compress_supergrid_column(self, y, sweep, xrange=None, **compress_opts):
+        check_opt('sweep', sweep, ('up', 'down'))
+        compress_opts.setdefault('absorb', 'right')
+
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+
+        ordered_column_tags = self._supergrid_column_slice(y, xrange, sweep)
+
+        for tag1, tag2 in pairwise(ordered_column_tags):
+            self.compress_between(tag1, tag2, **compress_opts)
+
+
+    # def _fill_column_with_identities(self, y, xrange=None):
+    #     if xrange is None:
+    #         xrange = (0, 2*self.Lx - 2)
+        
+    #     column_nodes = self._supergrid_column_slice(y, xrange, get='row', sweep='down')
+
+    #     for row1, row2 in pairwise(column_nodes):
+    #         where1, where2 = grid(row1, y), grid(row2, y)
+            
+    #         if row2 - row1 > 1 and bool(self.list_bonds_between(where1, where2)):
+                
+    #             midcoo = 
+    #             self.insert_identity_between_(where1, where2, tags=[f''])
+
+
+    def _shift_tensor_to_right(self, left_coo):
+        x, yleft = left_coo
+
+        yright = yleft + 1
+
+        grid = self.supergrid
+        
+        if self.supergrid(x, yright) is not None:
+            raise ValueError(f"Supercoo {x},{yright} is already occupied!")
+
+        
+        elif (x > 0) and (x < 2*self.Lx-2):
+            #in the bulk, check for a bond to 'merge' with
+            try:
+                bond, = self.bond(grid(x-1, yright), grid(x+1, yright))
+                newid_tag = f'IX{x},Y{yright}'
+
+                self.insert_identity_between_(where1=grid(x-1, yright), 
+                                            where2=grid(x+1, yright),
+                                            tags=[newid_tag])
+
+                self.update_supergrid_(x=x, y=yright, tag=newid_tag)
+
+                self.contract_((grid(x, yleft), grid(x, yright)), which='any')
+
+            except ValueError:
+                #there was no bond, just move right
+                self.update_supergrid_(x=x, y=yright, tag=grid(x, yleft))
+
+            
+        else:
+            #add tensor's tag to location on the right
+            self.update_supergrid_(x=x, y=yright, tag=grid(x, yleft))
+
+
+
+
+
+    def _supergrid_row_slice(self, x, yrange, sweep, get='tag'):
+        '''Inclusive, 'directed' slice of self._supergrid, where 
+        `yrange` is INCLUSIVE. Automatically drops the `None` tags.
+
+        Params:
+        ------
+        x: int
+            The supergrid row, from {0, 1, ..., 2*Lx-2}
+        
+        yrange: tuple(int, int)
+            Inclusive range of columns to select, max yrange
+            is (0, 2*Ly-2)
+        
+        sweep: {'left', 'right'}
+            Direction of the slice.
+        
+        get: {'tag', 'col'}
+            What to generate. TODO:Get rid of this?
+        
+        Returns:
+        -------
+        Generator of non-None tags/supercolumn labels
+        '''
+
+        if sweep == 'right':
+            for y in range(min(yrange), max(yrange)+1):
+                tag = self.supergrid(x,y)
+                
+                if tag is not None:
+                    yield {'tag': tag, 'col': y}[get]
+
+
+        elif sweep == 'left':
+            for y in range(max(yrange), min(yrange)-1, -1):
+                tag = self.supergrid(x, y)
+                
+                if tag is not None:
+                    yield {'tag': tag, 'col': y}[get]
+    
+
+
+    def _supergrid_column_slice(self, y, xrange, sweep, get='tag'):
+        '''Inclusive, 'directed' slice of self._supergrid, where 
+        `xrange` is INCLUSIVE. Automatically drops the `None` tags.
+
+        y: int
+            The supergrid column
+        
+        xrange: tuple(int, int)
+            Inclusive range of rows to select. Max
+            xrange is (0, 2*self.Lx - 2)
+        
+        sweep: {'up', 'down'}
+            Direction/order of the slice.
+        
+        get: {'tag', 'row'}
+            Whether to generate the str `tag` or the integer `row`.
+            TODO: Get rid of this?
+        '''
+
+        if sweep == 'down':
+            for x in range(min(xrange), max(xrange) + 1):
+                tag = self.supergrid(x, y)
+                if tag is not None:
+                    yield {'tag': tag, 'row': x}[get]
+        
+        elif sweep == 'up':
+            for x in range(max(xrange), min(xrange) - 1, -1):
+                tag = self.supergrid(x, y)
+                if tag is not None:
+                    yield {'tag': tag, 'row': x}[get]
+
+
+    def _contract_boundary_from_left_single(
+        self,
+        yrange,
+        xrange,
+        canonize=True,
+        compress_sweep='up',
+        layer_tag=None,
+        **compress_opts
+    ):
+        canonize_sweep = {
+            'up': 'down',
+            'down': 'up',
+        }[compress_sweep]
+
+
+        grid = self.supergrid
+
+
+        for y in range(min(yrange), max(yrange)):
+            #
+            #     ●──●──       ●──
+            #     │  │         ║
+            #     I  ●──  ==>  ●──
+            #     │  │         ║
+            #     ●──●──       ●──
+            #
+            left_col = list(self._supergrid_column_slice(y, xrange, sweep='down', get='row'))
+            right_col = list(self._supergrid_column_slice(y + 1, xrange, sweep='down', get='row'))
+            
+            for x in range(min(xrange), max(xrange)+1):
+                
+                occupation = (x in left_col, x in right_col)
+
+
+                if occupation == (True, True):
+                    #     │  │         ║
+                    #     ●──●──       ●──
+                    #     │  │         ║
+                    self.contract_((grid(x, y), grid(x, y+1)), which='any')
+                    # self.update_supergrid_(x, y+1, grid(x,y))
+
+                elif occupation == (True, False):
+                    #     │  │         │
+                    #     ●  │         ●──
+                    #     │  │         │
+                    # no contraction, but shift tensor rightward
+                    # so that it doesn't 'fall behind'
+                    self._shift_tensor_to_right(left_coo=(x,y))
+                    
+                    
+                elif occupation == (False, True):
+                    #     │  │         │
+                    #     |  ●──       ●──
+                    #     │  │         │
+                    self.insert_identity_between_(where1=grid(x, y), 
+                                                  where2=grid(x+1, y), 
+                                                  tags=[f'IX{x},Y{y}'])
+
+                    self.update_supergrid_(x, y, f'IX{x},Y{y}')
+                    
+                    self.contract_(grid(x, y), grid(x, y+1))
+
+                else: # no tensor on either column
+                    continue
+    
+    
+
     def get_edges(self, which):
         '''
         Returns: 
         --------
-        edges: list[tuple(int or None)]
+        edges: list[ tuple(int or None)]
             List of 3-tuples, where (i,j,f) 
-            denotes the edge with vertices i,j 
-            and face f (int or None)
-
+            denotes vertices i,j and face f
+            (int or None)
 
         Param:
         ------
         which: {'u', 'd', 'r', 'l', 'he', 'ho', 
                 've', 'vo', 'horizontal', 'all'}
-            Key to select the desired edges
         '''
         return self.qlattice.get_edges(which)
 
@@ -831,12 +1206,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self.qlattice.simspace_dims
 
 
-    def bond(self, site1, site2):
+    def bond(self, where1, where2):
         '''Get index (should only be one!) of bond connecting 
         the sites. Can take ints or tags, but not coos.
         '''
-        bond, = self[site1].bonds(self[site2])
+        bond, = self[where1].bonds(self[where2])
         return bond
+
+
+    def list_bonds_between(self, where1, where2):
+        return list(self[where1].bonds(self[where2]))
 
 
     def graph(self, fix_lattice=True, fix_tags=[], **graph_opts):
@@ -848,31 +1227,33 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         
         graph_opts.setdefault('color', ['VERT','FACE','GATE'])
+        graph_opts.setdefault('show_tags', False)
 
         if fix_lattice == False: 
             super().graph(**graph_opts)
         
         else:
-            try:                
-                Lx,Ly = self.Lx, self.Ly
-                
-                LATCX, LATCY = 1.5, 2
-
-                # fix_tags = set(fix_tags)
-                fix_verts = {(f'Q{i*Ly+j}'): (LATCY*j, -LATCX*i) 
-                            for i,j in product(range(Lx),range(Ly))}
-                
-                fix_faces, k = dict(), 0
-                for i,j in product(range(Lx), range(Ly)):
-                    if i%2 == j%2:
-                        fix_faces.update({f'Q{k+Lx*Ly}': (LATCY*(j-0.5), -LATCX*(i-0.5)) })
-
-                fix = {**fix_verts, **fix_faces}
-                    
-                super().graph(fix=fix, show_inds=True,**graph_opts)
+            # try:                
+            Lx,Ly = self.Lx, self.Ly
             
-            except:
-                super().graph(**graph_opts)
+            LATCX, LATCY = 1.5, 2
+
+            fix_verts = {(f'Q{i*Ly+j}', *fix_tags): (LATCY*j, -LATCX*i) 
+                        for i,j in product(range(Lx),range(Ly))}
+            
+            fix_faces, k = dict(), 0
+            for i,j in product(range(Lx-1), range(Ly-1)):
+                if i%2 == j%2:
+                    fix_faces.update({(f'Q{k+(Lx*Ly)}', *fix_tags): 
+                                      (LATCY*(j+0.5), -LATCX*(i+0.5)) })
+                    k+=1
+
+            fix = {**fix_verts, **fix_faces}
+                
+            super().graph(fix=fix, show_inds=True,**graph_opts)
+            
+            # except:
+            #     super().graph(**graph_opts)
 
 
     # def exact_projector_from_matrix(self, Udag_matrix):
@@ -979,6 +1360,107 @@ class QubitEncodeNet(qtn.TensorNetwork):
     absorb_face_left_ = functools.partialmethod(absorb_face_left,
                                                 inplace=True)
 
+    def reshape_face_to_cross(self, i, j, inplace=False):
+        tn = self if inplace else self.copy()
+
+        face_tag = tn.face_coo_tag(i, j)
+    
+        corner_coos = tn.corner_coos_around_face(i, j)
+        corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))
+        # corner_tags = [tn.vert_coo_tag(x, y) for (x, y) in
+        #                 tn.corner_coos_around_face(i, j)]
+        
+
+        for k, ctag in enumerate(corner_tags):
+            
+            tn.insert_identity_between_(face_tag, ctag, tags=[f'ID{k}'])
+            
+            next_ctag = corner_tags[0] if k==3 else corner_tags[k+1]
+            #insert I between this and 'next' corner in the square
+            tn.insert_identity_between_(ctag, next_ctag, tags=[f'ID{k}'])        
+
+
+        for k, ccoo in enumerate(corner_coos):
+            tn ^= f'ID{k}'
+
+            next_ccoo = corner_coos[0] if k==3 else corner_coos[k+1]
+
+            mid_supercoo = tn.supergrid_coo_between_verts(ij1=ccoo, ij2=next_ccoo)
+            
+            # v1 = tn.vert_coo_map(*ccoo)
+            # v2 = tn.vert_coo_map(*next_ccoo)
+
+            mid_tag = 'IX{},Y{}'.format(*mid_supercoo)
+
+            tn.retag_({f'ID{k}': mid_tag})
+            tn.update_supergrid_(*mid_supercoo, tag=mid_tag)
+
+        return tn
+
+
+
+
+    def insert_identity_between(self, where1, where2, tags=None, inplace=False):
+        '''Inserts an identity tensor at the bond between tags `where1, where2`.
+
+        The new identity is tagged with the given `ident_tags`.
+        '''
+        tn = self if inplace else self.copy()
+
+        T1, T2 = tn[where1], tn[where2]
+        I = insert_identity_between_tensors(T1, T2, add_tags=tags)
+        tn |= I
+
+
+    insert_identity_between_ = functools.partialmethod(insert_identity_between, 
+                                                       inplace=True)
+    
+    def corner_coos_around_face(self, i, j, order='clockwise'):
+        '''For a face-site ij (in the *face* array),
+        return the *vertex* coos of the corners bounding
+        the face, generated starting in the upper-left.
+
+        e.g. (if clockwise:)
+
+        (i, j) ------> (i, j+1)
+          |               |
+          ^     [i,j]     v
+          |               |
+        (i+1, j) <--- (i+1, j+1)
+        '''
+        return {'clockwise': [(i,j), (i, j+1), (i+1, j+1), (i+1, j)],
+                'countwise': [(i,j), (i+1, j), (i+1, j+1), (i, j+1)]
+            }[order]
+
+
+    def supergrid_coo_between_verts(self, ij1, ij2):
+        '''Returns the *supergrid* coordinates lying halfway between
+        the two given *vertex* coordinates.
+        '''
+        i1, j1 = ij1 #supercoo = (2i, 2j)
+        i2, j2 = ij2
+
+        x = i1 + i2
+        y = j1 + j2
+        #supercoo in-between is (2i1+2i2)/2, (2j1+2j2)/2
+        return (x, y)
+
+
+    # def canonize_superrow(self, i, sweep, yrange=None, **canonize_opts):
+    #     check_opt('sweep',sweep,('right','left'))
+
+    #     if yrange is None:
+    #         yrange = (0, self._Ly-1)
+        
+    #     if sweep == 'right':
+    #         for y in range(min(yrange), max(yrange), +1):
+    #             # if 
+    #             self.canonize_between((i, j), (i, j+1), **canonize_opts)
+        
+    #     else:
+    #         for j in range(max(yrange), min(yrange),-1):
+    #             self.canonize_between((i, j), (i, j-1), **canonize_opts)
+
 
 ## ********************* ##
 ## End QubitEncodeNet class
@@ -1065,6 +1547,12 @@ class QubitEncodeVector(QubitEncodeNet,
         self._qlattice = qlattice
         self._site_tag_id = site_tag_id
         self._phys_ind_id = phys_ind_id
+
+        
+        self._vert_coo_map = self.vert_coo_map()
+        self._face_coo_map = self.face_coo_map()
+
+        # self._face_coo_map_nonempty = self.face_coo_map_nonempty()
             
         super().__init__(tn, **tn_opts)
 
@@ -1081,14 +1569,32 @@ class QubitEncodeVector(QubitEncodeNet,
         
 
     @classmethod
-    def rand(cls, qlattice, bond_dim=3, **tn_opts):
-        '''Make a random QubitEncodeNet
+    def rand_from_qlattice(cls, qlattice, bond_dim=3, **tn_opts):
+        '''Make a random QubitEncodeVector from specified `qlattice`.
+
+        Params:
+        -------
+        qlattice: QubitLattice
+            Specify lattice geometry and local site dimension
+        
+        bond_dim: int
+            Size of lattice bonds (like D in PEPS)
         '''
         rand_tn = make_random_net(qlattice=qlattice,
                                 bond_dim=bond_dim,
                                 **tn_opts)
                                 
         return cls(tn=rand_tn, qlattice=qlattice)
+
+
+    @classmethod
+    def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, **tn_opts):
+        qlat = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=phys_dim)
+        rand_tn = make_random_net(qlattice=qlat,
+                                bond_dim=bond_dim,
+                                **tn_opts)
+        return cls(tn=rand_tn, qlattice=qlat)                                
+
 
 
 
@@ -1156,8 +1662,9 @@ class QubitEncodeVector(QubitEncodeNet,
         contract=False
         ):
         '''Apply array `G` acting at sites `where`,
-        preserving physical indices. Note `G` has to be a
-        "square" matrix!
+        preserving physical indices. Uses `self._phys_ind_id`
+        and the integer(s) `where` to apply `G` at the
+        correct sites.
 
         Params:
         ------            
@@ -1167,15 +1674,16 @@ class QubitEncodeVector(QubitEncodeNet,
         
         where: sequence of ints
             The sites on which to act, using the (default) 
-            custom numbering that labels/orders both face 
-            and vertex sites.
+            custom numbering that labels both face and vertex
+            sites.
         
         inplace: bool, optional
             If False (default), return copy of TN with gate applied
         
-        contract: bool, optional
-            If false (default) leave all gates uncontracted
-            If True, contract gates into one tensor in the lattice
+        contract: {False, True, 'split'}, optional
+            False (default) leave all gates uncontracted
+            True contract gates into one tensor in the lattice
+            'split' uses tensor_2d.gate_split method for two-site gates
 
         '''
 
@@ -1195,7 +1703,7 @@ class QubitEncodeVector(QubitEncodeNet,
         G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
 
         #new physical indices 'q{i}'
-        site_inds = [self._phys_ind_id.format(i) for i in where] 
+        site_inds = [self.phys_ind_id.format(i) for i in where] 
 
         #old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
@@ -1214,7 +1722,6 @@ class QubitEncodeVector(QubitEncodeNet,
 
         elif contract is True or numsites==1:
             #just contract the physical leg(s)
-
             psi.reindex_(reindex_map)
             
             #sites that used to have physical indices
@@ -1249,7 +1756,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
         else:
-            raise ValueError('Failed to contract')
+            raise ValueError('Unknown contraction requested')
 
 
     apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
@@ -1272,7 +1779,7 @@ class QubitEncodeVector(QubitEncodeNet,
         mpo_site_tag = mpo.site_tag_id
 
         #physical indices like 'q1', 'q4', etc
-        site_inds = [psi._phys_ind_id.format(i) for i in where]
+        site_inds = [psi.phys_ind_id.format(i) for i in where]
 
         #old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(nsites)]
@@ -1321,8 +1828,8 @@ class QubitEncodeVector(QubitEncodeNet,
     apply_mpo_ = functools.partialmethod(apply_mpo, inplace=True)
     
 
-    def _exact_gate_sandwich(self, G, where, contract):
-        '''Scalar quantity <psi|G|psi>
+    def _exact_local_gate_sandwich(self, G, where, contract):
+        '''Exactly contract <psi|G|psi>
         '''
         bra = self.H
         Gket = self.apply_gate(G, where, contract)
@@ -1413,17 +1920,17 @@ class QubitEncodeVector(QubitEncodeNet,
         Lx, Ly = self.Lx, self.Ly
         bra = self.H
 
-        nxy_array = [[None for y in range(Ly)] for x in range(Lx)]
+        nxy_array = [[None for _ in range(Ly)] for _ in range(Lx)]
 
         G = number_op()
 
-        #only finds occupations at *vertices*!
-        for x,y in product(range(Lx),range(Ly)):
+        #only finds occupations at *vertices*
+        for i,j in product(range(Lx), range(Ly)):
             
-            where = self.vert_coo_map(x,y)
+            where = self.vert_coo_map(i,j)
             G_ket = self.apply_gate(G, where=(where,))
 
-            nxy_array[x][y] = (bra | G_ket) ^ all
+            nxy_array[i][j] = (bra | G_ket) ^ all
             
 
         if return_array: 
@@ -1528,6 +2035,81 @@ class QubitEncodeVector(QubitEncodeNet,
         return dense_bra.H @ dense_ket
 
 
+####################################################
+
+class QubitEncodeVectorAUX(QubitEncodeVector,
+                            QubitEncodeNet,
+                            qtn.TensorNetwork):
+    
+    _EXTRA_PROPS = (
+        '_qlattice',
+        '_site_tag_id',
+        '_phys_ind_id',
+        '_aux_tag_id'
+    )
+    
+    def __init__(
+            self, 
+            tn, 
+            qlattice, 
+            site_tag_id='Q{}',
+            phys_ind_id='q{}',
+            aux_tag_id='X{}',
+            **tn_opts
+        ):
+        
+        #shortcut for copying QEN vectors
+        if isinstance(tn, QubitEncodeVectorAUX):
+            self._aux_tag_id = tn.aux_tag_id
+            super().__init__(tn)
+            return
+
+        self._aux_tag_id = aux_tag_id
+        
+        self._aux_tensor_tags = self._find_aux_tensors()
+
+        super().__init__(tn=tn, qlattice=qlattice,
+                        site_tag_id=site_tag_id, 
+                        phys_ind_id=phys_ind_id, 
+                        **tn_opts)
+
+    @property
+    def aux_tag_id(self):
+        return self._aux_tag_id
+
+    @property
+    def aux_tensor_tags(self):
+        return self._aux_tensor_tags
+    
+
+
+    def aux_coo_map(self, x=None, y=None):
+        '''Maps coordinates like (i, j + 1/2) to a
+        tag 'X{k}' if there is an auxiliary tensor
+        there.
+        '''
+        if not hasattr(self, '_aux_coo_map'):
+
+            aux_coos = dict()
+
+            #check every vertex for an associated aux-tensor
+            for vcoo, vsite in self.vert_coo_map().items():
+                
+                maybe_aux_tag = self.aux_tag_id.format(vsite)
+
+                if maybe_aux_tag in self.tags:
+                    i,j = vcoo
+                    aux_coos.update({(i, j + 0.5): maybe_aux_tag})
+
+
+            self._aux_coo_map = aux_coos
+
+
+        if (x is not None) and (y is not None):
+            return self._aux_coo_map[(x, y)]
+        
+        return self._aux_coo_map
+        
 
 
 
@@ -1535,10 +2117,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
 
-
-
-
-###############################################
+####################################################
 
 
 class MasterHam():

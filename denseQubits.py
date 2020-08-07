@@ -47,8 +47,8 @@ class QubitLattice():
 
 
     def active_sites_from_edge(self, edge):
-        '''Return the valid sites in `edge`, i.e. delete
-        the face-site if it's None.
+        '''Return the valid sites in `edge`, i.e. drop
+        the face-site if it is `None`.
         '''
         if len(edge) == 2:
             return edge
@@ -59,13 +59,7 @@ class QubitLattice():
             return active_sites
         
         else:
-            raise ValueError('Edge can only have 2-3 sites!')
-
-    
-    # def edge_from_verts(self, va, vb):
-    #     '''Return the edge (i,j,f), appropriately
-    #     ordered, that has vertices `va, vb` as nodes.
-    #     '''
+            raise ValueError('Edge can only have 2 or 3 sites!')
 
 
 
@@ -107,6 +101,7 @@ class QubitLattice():
         '''
         return list(self._verts.flatten())
 
+
     def face_sites(self):
         '''
         Indices of face-qubits 
@@ -114,6 +109,7 @@ class QubitLattice():
         F = self._faces.flatten()
         return list(F[F!=None])
     
+
     def all_sites(self):
         '''
         All qubit indices (vertex and face)
@@ -160,7 +156,7 @@ class QubitLattice():
 
     @property
     def num_sites(self):
-        return self.num_faces + self.num_verts
+        return self._Nsites
     
 
     @property
@@ -183,8 +179,7 @@ class QubitLattice():
     def gen_vert_coos(self):
         '''Generate *vertex* coordinates (i,j)
         '''
-        return product( range(self._Lx),
-                        range(self._Ly))
+        return product(range(self.Lx), range(self.Ly))
 
 
     def gen_vertex_sites(self):
@@ -194,10 +189,9 @@ class QubitLattice():
     def gen_face_sites(self):
         return range(self.num_verts, self.num_sites)
     
-
+    #NOTE: may need to change if include splitting tensors?
     def gen_all_sites(self):
         return range(self.num_sites)
-
 
 
     def make_coo_stabilizer_map(self):
@@ -212,47 +206,48 @@ class QubitLattice():
         return stab_map
 
     
-    def loop_stabilizer_data(self, i, j, verbose=False):
+    def loop_stabilizer_data(self, i, j, show_stab=False):
         '''
-        Returns `loop_op_data`, corresponding to face
-        at location (i,j) in face array, which maps
-        
-        {'inds' : (indices),
-         'opstring' : (string)}
+        Returns:
+        loop_op_data: dict[str: tuple or str]
+            Contains data of the stabilizer corresponding to
+            face at location (i,j) in face lattice.
+            {'inds' : (indices),
+            'opstring' : (string)}
 
+        Example: for the face at (i,j) below,
               u
            1-----2
          l |(i,j)| r   ==>  S = Z1*Z2*Z3*Z4*Yu*Xr*Yd*Xl
            4-----3
               d
+        
+        loop_op_data = {'inds': (1, 2, 3, 4, u, r, d, l),
+                        'opstring': 'ZZZZYXYX'}
+
 
         Note clockwise = ccwise, i.e.
         (E12)(E23)(E34)(E41) = (E14)(E43)(E32)(E21)
-        
-        TODO: test!
         '''
-
-        # X, Y, Z = (qu.pauli(mu) for mu in ['x','y','z'])
         
         verts = self.vert_array
         faces = self.face_array
         
-        assert faces[i,j] is None
+        # assert faces[i,j] is None
 
-        #corner vertex sites, 1=upper-left --> clockwise
+
+        #corner vertex sites, 1=upper-left, 2=u-r, 3=d-r, 4=l-r
         v1 = verts[i, j]
         v2 = verts[i, j+1]
         v3 = verts[i+1, j+1]
         v4 = verts[i+1, j]
 
-        
         u_face = find_face_up_down(row=i, cols=(j,j+1), Vs=verts, Fs=faces)
         d_face = find_face_up_down(row=i+1, cols=(j,j+1), Vs=verts, Fs=faces)
         l_face = find_face_right_left(rows=(i,i+1), col=j, Vs=verts, Fs=faces)
         r_face = find_face_right_left(rows=(i,i+1), col=j+1, Vs=verts, Fs=faces)
 
-
-        if verbose:
+        if show_stab:
             print('Stabilizer:')
             print('{}-----{}\n|     |\n{}-----{}'.format(v1,v2,v4,v3))
             print(f'u: {u_face}, d: {d_face}, l: {l_face}, r: {r_face}', end='\n\n')
@@ -261,11 +256,12 @@ class QubitLattice():
         # vert_ops = [Z, Z, Z, Z]
         vert_inds = [v1, v2, v3, v4]
 
-        face_inds, face_ops = [], ''
+        face_inds = []
+        face_ops = ''
         if u_face is not None:
             face_inds.append(u_face)
             face_ops += 'Y'
-        
+
         if d_face is not None:
             face_inds.append(d_face)
             face_ops += 'Y'
@@ -412,10 +408,8 @@ class SpinlessHub(QubitLattice):
 
         def interactions(): #pairwise neighbor repulsion terms
            
-            # allEdges = self._edgesR + self._edgesU + self._edgesL + self._edgesD
-            
             for (i,j,f) in self.get_edges('all'): 
-                #doesn't require face qbit!
+                #doesn't require face qubit!
                 yield V * self.H_nn_int(i,j)
 
         def occs(): #occupation at each vertex
