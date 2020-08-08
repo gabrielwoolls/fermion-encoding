@@ -10,7 +10,7 @@ from autoray import do, dag
 import tqdm
 import functools
 from quimb.tensor.tensor_core import tags_to_oset
-from quimb.utils import pairwise, check_opt
+from quimb.utils import pairwise, check_opt, oset
 
 
 
@@ -738,18 +738,17 @@ class QubitEncodeNet(qtn.TensorNetwork):
         supergrid = [[None for _ in range(2*Ly - 1)] 
                            for _ in range(2*Lx - 1)]
 
-        # supergrid = dict()
-
         for i, j in product(range(Lx), range(Ly)):
             
             vertex_tag = self.vert_coo_tag(i, j)
-            supergrid[2 * i][2 * j] = set([vertex_tag])
+            supergrid[2 * i][2 * j] = oset((vertex_tag,))
+
 
         for i, j in product(range(Lx-1), range(Ly-1)):
             
             if i%2==j%2:
                 face_tag = self.face_coo_tag(i, j)
-                supergrid[i + 1][j + 1] = set([face_tag])
+                supergrid[i + 1][j + 1] = oset((face_tag,))
 
         return supergrid
 
@@ -788,7 +787,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
     def supergrid(self, x=None, y=None):
-        '''Returns the set of tags corresponding
+        '''Returns ``oset`` of tags corresponding
         to supercoo `x, y`. If no coo is specified,
         returns the whole dictionary.
         '''
@@ -796,12 +795,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
             self._supergrid = self._build_supergrid()
         
         if (x is not None) and (y is not None):
-            return self._supergrid[x][y]
+            tags = self._supergrid[x][y]
+            
+            if tags is None:
+                return None
+            
+            else:
+                return tuple(tags)
+            
         
         return self._supergrid
 
 
-    def update_supergrid_(self, x, y, tag):
+    def _update_supergrid(self, x, y, tag):
         '''Add `tag` to the set of tags at supergrid 
         coordinate `x, y`. Does not complain if the
         tag was already there.
@@ -809,10 +815,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if not hasattr(self, '_supergrid'):
             self._supergrid = self._build_supergrid()
         
+        tag = tags_to_oset(tag)
+
         if self._supergrid[x][y] is None:
-            self._supergrid[x][y] = [tag]
+            self._supergrid[x][y] = tag
+        
         else:
-            self._supergrid[x][y].add(tag)
+            self._supergrid[x][y].update(tag)
 
 
     def vert_coo_tag(self,i,j):
@@ -969,8 +978,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     #     for row1, row2 in pairwise(column_nodes):
     #         where1, where2 = grid(row1, y), grid(row2, y)
-            
-    #         if row2 - row1 > 1 and bool(self.list_bonds_between(where1, where2)):
+            # where--> tags
+    #         if row2 - row1 > 1 and bool(self.find_bonds_between(where1, where2)):
                 
     #             midcoo = 
     #             self.insert_identity_between_(where1, where2, tags=[f''])
@@ -983,7 +992,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         grid = self.supergrid
         
-        if self.supergrid(x, yright) is not None:
+        if grid(x, yright) is not None:
             raise ValueError(f"Supercoo {x},{yright} is already occupied!")
 
         
@@ -997,18 +1006,18 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                             where2=grid(x+1, yright),
                                             tags=[newid_tag])
 
-                self.update_supergrid_(x=x, y=yright, tag=newid_tag)
+                self._update_supergrid(x=x, y=yright, tag=newid_tag)
 
                 self.contract_((grid(x, yleft), grid(x, yright)), which='any')
 
             except ValueError:
                 #there was no bond, just move right
-                self.update_supergrid_(x=x, y=yright, tag=grid(x, yleft))
+                self._update_supergrid(x=x, y=yright, tag=grid(x, yleft))
 
             
         else:
             #add tensor's tag to location on the right
-            self.update_supergrid_(x=x, y=yright, tag=grid(x, yleft))
+            self._update_supergrid(x=x, y=yright, tag=grid(x, yleft))
 
 
 
@@ -1080,6 +1089,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 if tag is not None:
                     yield {'tag': tag, 'row': x}[get]
         
+
         elif sweep == 'up':
             for x in range(max(xrange), min(xrange) - 1, -1):
                 tag = self.supergrid(x, y)
@@ -1101,15 +1111,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
             'down': 'up',
         }[compress_sweep]
 
-
+        #bound method, maps (x,y) to list[tags of tensors living there]
         grid = self.supergrid
-
 
         for y in range(min(yrange), max(yrange)):
             #
             #     ●──●──       ●──
             #     │  │         ║
-            #     I  ●──  ==>  ●──
+            #     ●  ●──  ==>  ●──
             #     │  │         ║
             #     ●──●──       ●──
             #
@@ -1118,40 +1127,127 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             for x in range(min(xrange), max(xrange)+1):
                 
-                occupation = (x in left_col, x in right_col)
+                #check whether there are tensors to contract
+                tensors_here = (x in left_col, x in right_col)
+
+                #check if there is a bond 'floating' over the supergrid locations
+                bonds_here = tuple(starmap(self.check_for_vertical_bond_across, 
+                                            [(x, y), (x, y+1)]))
 
 
-                if occupation == (True, True):
-                    #     │  │         ║
-                    #     ●──●──       ●──
-                    #     │  │         ║
-                    self.contract_((grid(x, y), grid(x, y+1)), which='any')
-                    # self.update_supergrid_(x, y+1, grid(x,y))
-
-                elif occupation == (True, False):
-                    #     │  │         │
-                    #     ●  │         ●──
-                    #     │  │         │
-                    # no contraction, but shift tensor rightward
-                    # so that it doesn't 'fall behind'
-                    self._shift_tensor_to_right(left_coo=(x,y))
+                if tensors_here == (True, True):
+                    # 
+                    #     │  │           ║
+                    #     ●──●──   ==>   ●──
+                    #     │  │           ║
+                    # 
+                    print(grid(x,y))
+                    print(grid(x,y+1))
+                    self.contract_((*grid(x, y), *grid(x, y+1)), which='any')
                     
-                    
-                elif occupation == (False, True):
-                    #     │  │         │
-                    #     |  ●──       ●──
-                    #     │  │         │
-                    self.insert_identity_between_(where1=grid(x, y), 
-                                                  where2=grid(x+1, y), 
-                                                  tags=[f'IX{x},Y{y}'])
+                    self._update_supergrid(x, y+1, grid(x,y))
 
-                    self.update_supergrid_(x, y, f'IX{x},Y{y}')
-                    
-                    self.contract_(grid(x, y), grid(x, y+1))
 
-                else: # no tensor on either column
+                elif tensors_here == (True, False):
+                    
+                    if bonds_here[1] == True:
+                        # 
+                        #     ●──●──     ●──●──      ●──
+                        #     │  │       │  │        ║
+                        #     ●  │  ==>  ●--i  ==>   ●  
+                        #     │  │       │  │        ║
+                        #     ●──●──     ●──●──      ●──
+                        # 
+                        # no right-tensor, but need to absorb a bond
+                        # Insert a dummy identity and contract with left-tensor
+                        
+                        dummytag = f'IX{x},Y{y+1}'
+                        
+                        self.insert_identity_between_(where1=grid(x-1, y+1), 
+                                                      where2=grid(x+1, y+1),
+                                                      tags=[dummytag])
+
+                        self._update_supergrid(x, y+1, dummytag)       
+
+                        # should be same as contract_(grid(x,y), dummytag)
+                        self.contract_(*grid(x, y), *grid(x, y+1))                                               
+                    
+                    else: 
+                        # 
+                        #     ●──●──       ●──
+                        #     │            │
+                        #     ●      ==>   ●  
+                        #     │            │
+                        #     ●──●──       ●──
+                        # 
+                        # no bond to absorb, just shift left-tensor
+                        # rightward so we have it on the 'next' column
+                        self._update_supergrid(x, y+1, tag=grid(x, y))
+
+                
+                elif tensors_here == (False, True):
+                    
+                    if bonds_here[0] == True:
+                        # 
+                        #     ●──●──        ●──●──         ●──
+                        #     │  │          │  │           ║
+                        #     |  ●──   ==>  i--●──   ==>   ●──
+                        #     │  │          │  │           ║
+                        #     ●──●──        ●──●──         ●──     
+                        # 
+                        # No left-tensor, but there is a bond to absorb rightwards
+                        # Insert a dummy identity to contract to the right
+                        
+                        dummytag = f'IX{x},Y{y}'
+                        
+                        self.insert_identity_between_(where1=grid(x, y), 
+                                                      where2=grid(x + 1, y), 
+                                                      tags=[dummytag])
+
+                        self._update_supergrid(x, y, dummytag)
+                        
+                        self.contract_(*grid(x, y), *grid(x, y+1))
+
+
+                    else:
+                        # 
+                        #     ●──●──         ●──
+                        #        │           │
+                        #        ●──   ==>   ●──
+                        #        │           │
+                        #     ●──●──         ●──     
+                        #
+                        # no bond or tensor to push rightward
+                        continue
+
+                
+                elif tensors_here == (False, False): 
+                    # no tensor on either side
                     continue
-    
+                
+
+                else:
+                    raise ValueError('Missed a case!')
+
+
+            if canonize:
+                #
+                #     ●──       v──
+                #     ║         ║
+                #     ●──  ==>  v──
+                #     ║         ║
+                #     ●──       ●──
+                #
+                self._canonize_supergrid_column(y, canonize_sweep, xrange)
+            #
+            #     v──       ●──
+            #     ║         │
+            #     v──  ==>  ^──
+            #     ║         │
+            #     ●──       ^──
+            #
+            self._compress_supergrid_column(y, compress_sweep, 
+                                    xrange, **compress_opts)
     
 
     def get_edges(self, which):
@@ -1214,8 +1310,23 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return bond
 
 
-    def list_bonds_between(self, where1, where2):
-        return list(self[where1].bonds(self[where2]))
+    def find_bonds_between(self, tags1, tags2):
+        '''List of bonds between tensors with given tags.
+        Returns empty [] if tensors are not connected.
+        '''
+        return list(self[tags1].bonds(self[tags2]))
+
+
+    def check_for_vertical_bond_across(self, x, y):
+        '''Check if there is a vertical bond crossing supergrid
+        coordinate `x,y`, i.e. whether there are connected tensors 
+        above and below. Assumes there is no bond at the supergrid edges!
+        '''
+        if x == 0 or x == 2 * self.Lx - 2: #
+            return False
+        
+        return bool(self.find_bonds_between(tags1=self.supergrid(x-1, y),
+                                            tags2=self.supergrid(x+1, y)))
 
 
     def graph(self, fix_lattice=True, fix_tags=[], **graph_opts):
@@ -1272,22 +1383,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
     #     Udagger = qtn.Tensor()
 
 
-
-    # def add_tags(self, tags, inplace=False):
-
-    #     net = self if inplace else self.copy()
-
-    #     newtags = tags_to_oset(tags)
-
-    #     for T in net.tensors:
-    #         T.modify(tags = newtags | T.tags)
-        
-    #     return net
-    
-    # add_tags_ = functools.partialmethod(add_tags, inplace=True)
-
-
-
     def flatten(self, inplace=False, fuse_multibonds=True):
         '''Contract all tensors corresponding to each site into one
         '''
@@ -1342,8 +1437,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         tn.delete(face_tag)
         tn |= tensors
 
-        # return tn
-
         # Absorb split-tensors into the vertices
         tn.contract_((ul_tag, 'UPPER'))
         tn.contract_((dl_tag, 'LOWER'))
@@ -1366,22 +1459,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
         face_tag = tn.face_coo_tag(i, j)
     
         corner_coos = tn.corner_coos_around_face(i, j)
-        corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))
-        # corner_tags = [tn.vert_coo_tag(x, y) for (x, y) in
-        #                 tn.corner_coos_around_face(i, j)]
-        
+        corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))        
 
         for k, ctag in enumerate(corner_tags):
             
-            tn.insert_identity_between_(face_tag, ctag, tags=[f'ID{k}'])
+            tn.insert_identity_between_(face_tag, ctag, tags=[f'TEMP{k}'])
             
             next_ctag = corner_tags[0] if k==3 else corner_tags[k+1]
             #insert I between this and 'next' corner in the square
-            tn.insert_identity_between_(ctag, next_ctag, tags=[f'ID{k}'])        
+            tn.insert_identity_between_(ctag, next_ctag, tags=[f'TEMP{k}'])        
 
 
         for k, ccoo in enumerate(corner_coos):
-            tn ^= f'ID{k}'
+            tn ^= f'TEMP{k}'
 
             next_ccoo = corner_coos[0] if k==3 else corner_coos[k+1]
 
@@ -1390,10 +1480,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
             # v1 = tn.vert_coo_map(*ccoo)
             # v2 = tn.vert_coo_map(*next_ccoo)
 
-            mid_tag = 'IX{},Y{}'.format(*mid_supercoo)
+            new_id_tag = 'IX{},Y{}'.format(*mid_supercoo)
 
-            tn.retag_({f'ID{k}': mid_tag})
-            tn.update_supergrid_(*mid_supercoo, tag=mid_tag)
+            tn.retag_({f'TEMP{k}': new_id_tag})
+
+            tn._update_supergrid(*mid_supercoo, tag=new_id_tag)
 
         return tn
 
@@ -1410,6 +1501,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         T1, T2 = tn[where1], tn[where2]
         I = insert_identity_between_tensors(T1, T2, add_tags=tags)
         tn |= I
+
+        return tn
 
 
     insert_identity_between_ = functools.partialmethod(insert_identity_between, 
@@ -1445,21 +1538,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         #supercoo in-between is (2i1+2i2)/2, (2j1+2j2)/2
         return (x, y)
 
-
-    # def canonize_superrow(self, i, sweep, yrange=None, **canonize_opts):
-    #     check_opt('sweep',sweep,('right','left'))
-
-    #     if yrange is None:
-    #         yrange = (0, self._Ly-1)
-        
-    #     if sweep == 'right':
-    #         for y in range(min(yrange), max(yrange), +1):
-    #             # if 
-    #             self.canonize_between((i, j), (i, j+1), **canonize_opts)
-        
-    #     else:
-    #         for j in range(max(yrange), min(yrange),-1):
-    #             self.canonize_between((i, j), (i, j-1), **canonize_opts)
 
 
 ## ********************* ##
@@ -1591,8 +1669,8 @@ class QubitEncodeVector(QubitEncodeNet,
     def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, **tn_opts):
         qlat = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=phys_dim)
         rand_tn = make_random_net(qlattice=qlat,
-                                bond_dim=bond_dim,
-                                **tn_opts)
+                                  bond_dim=bond_dim,
+                                  **tn_opts)
         return cls(tn=rand_tn, qlattice=qlat)                                
 
 
