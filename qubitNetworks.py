@@ -1,6 +1,6 @@
 import quimb as qu
 import numpy as np
-from itertools import product, chain, starmap
+from itertools import product, chain, starmap, cycle
 import quimb.tensor as qtn
 import denseQubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
@@ -740,26 +740,26 @@ class QubitEncodeNet(qtn.TensorNetwork):
     
     def _build_supergrid(self):
         '''Sets up the 'bare' supergrid, with unique tags
-        for all the vertex- and face-qubits.
+        for all the vertex- and face-sites, and any auxiliary
+        identities that can be found.
         '''
         Lx, Ly = self.Lx, self.Ly
 
         supergrid = [[None for _ in range(2*Ly - 1)] 
                            for _ in range(2*Lx - 1)]
-
+        
+        # vertex sites
         for i, j in product(range(Lx), range(Ly)):
-            
             vertex_tag = self.vert_coo_tag(i, j)
             supergrid[2 * i][2 * j] = oset((vertex_tag,))
 
-
+        # face sites
         for i, j in product(range(Lx-1), range(Ly-1)):
-            
             if i%2==j%2:
                 face_tag = self.face_coo_tag(i, j)
-                supergrid[i + 1][j + 1] = oset((face_tag,))
+                supergrid[2*i + 1][2*j + 1] = oset((face_tag,))
 
-
+        # look for extra identities
         for x, y in self.gen_supergrid_coos():
             aux_tag = self.aux_tensor_tag(x, y)
             if aux_tag in self.tags:
@@ -971,8 +971,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         for x, y in product(range(2*self.Lx -1), range(2*self.Ly -1)):
             if self.supergrid(x, y) is not None:
                 yield(self.supergrid(x, y))
-            else:
-                print(f'None at {x},{y}')
+            
 
 
     def _canonize_supergrid_row(self, x, sweep, yrange=None, **canonize_opts):
@@ -987,7 +986,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if yrange is None:
             yrange = (0, 2 * self.Ly - 2)
 
-        ordered_row_tags = self._supergrid_row_slice(x, yrange, sweep=sweep)
+        ordered_row_tags = self.supergrid_row_slice(x, yrange, sweep=sweep)
 
         for tag1, tag2 in pairwise(ordered_row_tags):
             self.canonize_between(tag1, tag2, **canonize_opts)
@@ -1000,7 +999,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if xrange is None:
             xrange = (0, 2 * self.Lx - 2)
         
-        ordered_col_tags = self._supergrid_column_slice(y, xrange, sweep=sweep)
+        ordered_col_tags = self.supergrid_column_slice(y, xrange, sweep=sweep)
 
         for tag1, tag2 in pairwise(ordered_col_tags):
             self.canonize_between(tag1, tag2, **canonize_opts)
@@ -1023,7 +1022,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if yrange is None:
             yrange = (0, 2 * self.Ly - 2)
         
-        ordered_row_tags = self._supergrid_row_slice(x, yrange, sweep=sweep) 
+        ordered_row_tags = self.supergrid_row_slice(x, yrange, sweep=sweep) 
 
         for tag1, tag2 in pairwise(ordered_row_tags):
             self.compress_between(tag1, tag2, **compress_opts)
@@ -1037,7 +1036,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if xrange is None:
             xrange = (0, 2 * self.Lx - 2)
 
-        ordered_column_tags = self._supergrid_column_slice(y, xrange, sweep=sweep)
+        ordered_column_tags = self.supergrid_column_slice(y, xrange, sweep=sweep)
 
         for tag1, tag2 in pairwise(ordered_column_tags):
             self.compress_between(tag1, tag2, **compress_opts)
@@ -1047,7 +1046,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
     #     if xrange is None:
     #         xrange = (0, 2*self.Lx - 2)
         
-    #     column_nodes = self._supergrid_column_slice(y, xrange, get='row', sweep='down')
+    #     column_nodes = self.supergrid_column_slice(y, xrange, get='row', sweep='down')
 
     #     for row1, row2 in pairwise(column_nodes):
     #         where1, where2 = grid(row1, y), grid(row2, y)
@@ -1096,7 +1095,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def _supergrid_row_slice(self, x, yrange, sweep='right', get='tag'):
+    def supergrid_row_slice(self, x, yrange, sweep='right', get='tag'):
         '''Inclusive, 'directed' slice of self._supergrid, where 
         `yrange` is INCLUSIVE. Automatically drops the `None` tags.
 
@@ -1139,7 +1138,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             raise ValueError('No direction given for slice')
 
 
-    def _supergrid_column_slice(self, y, xrange, sweep='down', get='tag'):
+    def supergrid_column_slice(self, y, xrange, sweep='down', get='tag'):
         '''Inclusive, 'directed' slice of self._supergrid, where 
         `xrange` is INCLUSIVE. Automatically drops the `None` tags.
 
@@ -1172,7 +1171,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     yield {'tag': tag, 'row': x}[get]
 
         else:
-            raise ValueError('No direction given for slice')
+            raise ValueError('Bad direction given for slice')
+
+
 
     def _contract_boundary_from_left_single(
         self,
@@ -1224,8 +1225,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #
 
             #list of 'nonempty' row indices in each column
-            left_col = list(self._supergrid_column_slice(y, xrange, get='row'))
-            right_col = list(self._supergrid_column_slice(y + 1, xrange, get='row'))
+            left_col = list(self.supergrid_column_slice(y, xrange, get='row'))
+            right_col = list(self.supergrid_column_slice(y + 1, xrange, get='row'))
             
             tag_updates = dict() #keep track of tags to move around
 
@@ -1318,7 +1319,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         self._update_supergrid(x, y, dummytag)
                         
-                        contract_step(grid(x, y), grid(x, y+1))
+                        contract_step(grid(x, y+1), grid(x, y))
+                        # shifted order bc ``layer_tag`` will be on right-tensor
 
                         # self._move_supergrid_tags(from_coo=(x, y), to_coo=(x, y+1))
 
@@ -1428,8 +1430,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #
 
             #list of 'nonempty' row indices in each column
-            left_col = list(self._supergrid_column_slice(y-1, xrange, get='row'))
-            right_col = list(self._supergrid_column_slice(y, xrange, get='row'))
+            left_col = list(self.supergrid_column_slice(y-1, xrange, get='row'))
+            right_col = list(self.supergrid_column_slice(y, xrange, get='row'))
             
             for x in range(min(xrange), max(xrange)+1):
                 
@@ -1508,7 +1510,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         self._update_supergrid(x, y, dummy_tag)
 
-                        contract_step(grid(x, y-1), grid(x,y))                                                      
+                        contract_step(grid(x,y), grid(x, y-1))                                                      
 
                     else:
                         # 
@@ -1554,7 +1556,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             # move tags in supergrid[:][y] to the left (--> y-1)
             for x in range(min(xrange), max(xrange)+1):                
-                self._move_supergrid_tags(from_coo=(x, y), to_coo=(x, y+1))
+                self._move_supergrid_tags(from_coo=(x, y), to_coo=(x, y-1))
                         
             # move to next column
         
@@ -1612,8 +1614,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #     |  |  |  |  |
             #
 
-            upper_row = list(self._supergrid_row_slice(x, yrange, get='col'))
-            lower_row = list(self._supergrid_row_slice(x + 1, yrange, get='col'))
+            upper_row = list(self.supergrid_row_slice(x, yrange, get='col'))
+            lower_row = list(self.supergrid_row_slice(x + 1, yrange, get='col'))
 
             for y in range(min(yrange), max(yrange) + 1):
 
@@ -1687,7 +1689,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         self._update_supergrid(x, y, dummy_tag)
 
-                        contract_step(grid(x, y), grid(x+1, y))
+                        contract_step(grid(x+1, y), grid(x, y))
+                        # flip order of args, ``layer_tag`` will be on lower-tensor
 
                     else:
                         #
@@ -1715,15 +1718,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 #     ●══●══<══<══<
                 #     |  |  |  |  |
                 #
-                self._canonize_supergrid_row(x, canonize_sweep, xrange)
+                self._canonize_supergrid_row(x, sweep=canonize_sweep, yrange=yrange)
             
             #
             #     >──●══●══●══●  -->  >──>──●══●══●  -->  >──>──>──●══●
             #     |  |  |  |  |  -->  |  |  |  |  |  -->  |  |  |  |  |
             #     .  .           -->     .  .        -->        .  .
             #
-            self._compress_supergrid_row(x, compress_sweep, 
-                                        yrange, **compress_opts)
+            self._compress_supergrid_row(x, sweep=compress_sweep, 
+                                        yrange=yrange, **compress_opts)
 
             #move the tags in supergrid[x][:] down by one (--> x+1)
             for y in range(min(yrange), max(yrange)+1):
@@ -1782,8 +1785,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #     │  │  │  │  │  ==>  ●══●══●══●══●
             #     ●──●──●──●──●
             #
-            upper_row = list(self._supergrid_row_slice(x-1, yrange, get='col'))
-            lower_row = list(self._supergrid_row_slice(x, yrange, get='col'))
+            upper_row = list(self.supergrid_row_slice(x-1, yrange, get='col'))
+            lower_row = list(self.supergrid_row_slice(x, yrange, get='col'))
 
             for y in range(min(yrange), max(yrange)+1):
 
@@ -1841,7 +1844,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 
                 elif tensors_here == (True, False):
                     
-                    #TODO: FIX LAYER_TAG PROCEDURE. (Dummy identity will not have layer_tag)
+                    
                     if bonds_here[1] == True:
                         #
                         #     │  │  │       │  │  │
@@ -1860,7 +1863,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         self._update_supergrid(x, y, dummy_tag)
 
-                        contract_step(grid(x-1, y), grid(x, y))
+                        contract_step(grid(x, y), grid(x-1, y))
+                        # ``layer_tag`` will be on upper-tensor
 
                     else:
                         #
@@ -1873,6 +1877,12 @@ class QubitEncodeNet(qtn.TensorNetwork):
                         continue
 
                 elif tensors_here == (False, False):
+                    
+                    #     │     │       
+                    #     ●─────●       │     │
+                    #     │     │  ==>  ●═════●
+                    #     ●─────●       
+                    #
                     # no tensor either above or below
                     continue
 
@@ -1883,29 +1893,250 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             self.fuse_multibonds_()
 
+
             if canonize:
                 #
                 #     │  │  │  │  │
                 #     ●══●══<══<══<
                 #
-                self._canonize_supergrid_row(x, canonize_sweep, xrange)
+                self._canonize_supergrid_row(x, sweep=canonize_sweep, yrange=yrange)
             
             #
             #     │  │  │  │  │  -->  │  │  │  │  │  -->  │  │  │  │  │
             #     >──●══●══●══●  -->  >──>──●══●══●  -->  >──>──>──●══●
             #     .  .           -->     .  .        -->        .  .
             #
-            self._canonize_supergrid_row(x, compress_sweep,
-                                        yrange, **compress_opts)
+            self._compress_supergrid_row(x, sweep=compress_sweep,
+                                        yrange=yrange, **compress_opts)
 
-            #move the tags in supergrid[x][:] up by one (--> x-1)
+
             for y in range(min(yrange), max(yrange)+1):
+                #move the tags in supergrid[x][:] up by one (--> x-1)
                 self._move_supergrid_tags(from_coo=(x, y), to_coo=(x-1, y))
 
-            # on to next row        
+            # go to next row        
         
         # end loop over rows                                            
+        
+    def _contract_boundary_from_bottom_multi(
+        self, 
+        xrange,
+        yrange,
+        layer_tags,
+        canonize=True,
+        compress_sweep='left',
+        **compress_opts        
+    ):
+        for x in range(max(xrange), min(xrange), -1):
+            # first ensure the exterior sites are a single tensor
+            #
+            #    │ ││ ││ ││ ││ │       │ ││ ││ ││ ││ │   (for two layer tags)
+            #    ●─○●─○●─○●─○●─○       ●─○●─○●─○●─○●─○
+            #    │ ││ ││ ││ ││ │  ==>   ╲│ ╲│ ╲│ ╲│ ╲│
+            #    ●─○●─○●─○●─○●─○         ●══●══●══●══●
+            #
+            
+            for bottom_tag in self.supergrid_row_slice(x, yrange, get='tag'):
+                self ^= bottom_tag
+            
+            for tag in layer_tags:
+                # contract interior sites from layer ``tag``
+                #
+                #    │ ││ ││ ││ ││ │  (first contraction if there are two tags)
+                #    │ ○──○──○──○──○
+                #    │╱ │╱ │╱ │╱ │╱
+                #    ●══<══<══<══<
+                #
+                self._contract_boundary_from_bottom_single(
+                    yrange=yrange, xrange=(x, x-1), canonize=canonize,
+                    compress_sweep=compress_sweep, layer_tag=tag,
+                    **compress_opts)
                 
+                for y in range(min(yrange), max(yrange)+1):
+                    inner_tag = self.supergri
+
+
+    # def contract_from_bottom(
+    #     self, 
+    #     xrange, 
+    #     yrange, 
+    #     canonize=True,
+    #     compress_sweep='left',
+    #     layer_tags=None,
+    #     inplace=False,
+    #     **compress_opts
+    # ):
+
+    #TODO: IMPLEMENT MULTI-LAYER CONTRACTION
+    # Currently only works for a 'flat' TN
+    def contract_boundary(
+        self,
+        around=None,
+        layer_tags=None,
+        max_separation=1,
+        sequence=None,
+        bottom=None,
+        top=None,
+        left=None,
+        right=None,
+        inplace=False,
+        **boundary_contract_opts,
+    ):
+        """Contract boundary inwards::
+            ●──●──●──●       ●──●──●──●       ●──●──●
+            │  │  │  │       │  │  │  │       ║  │  │
+            ●──●──●──●       ●──●──●──●       ^──●──●       >══>══●       >──v
+            │  │ij│  │  ==>  │  │ij│  │  ==>  ║ij│  │  ==>  │ij│  │  ==>  │ij║
+            ●──●──●──●       ●══<══<══<       ^──<──<       ^──<──<       ^──<
+            │  │  │  │
+            ●──●──●──●
+            
+        Optionally from any or all of the boundary, in multiple layers, and
+        stopping around a region.
+
+        Parameters
+        ----------
+        around : None or sequence of (int, int), optional
+            If given, don't contract the square of sites bounding these
+            coordinates.
+        layer_tags : None or sequence of str, optional
+        # NOTE currently doesn't do anything
+            If given, perform a multilayer contraction, contracting the inner
+            sites in each layer into the boundary individually.
+        max_separation : int, optional
+            If ``around is None``, when any two sides become this far apart
+            simply contract the remaining tensor network.
+        sequence : sequence of {'b', 'l', 't', 'r'}, optional
+            Which directions to cycle throught when performing the inwards
+            contractions: 'b', 'l', 't', 'r' corresponding to *from the*
+            bottom, left, top and right respectively. If ``around`` is
+            specified you will likely need all of these!
+        bottom : int, optional
+            The initial bottom boundary row, defaults to ``2 Lx - 2.
+        top : int, optional
+            The initial top boundary row, defaults to 0.
+        left : int, optional
+            The initial left boundary column, defaults to 0.
+        right : int, optional
+            The initial right boundary column, defaults to ``2 Ly - 2``..
+        inplace : bool, optional
+            Whether to perform the contraction in place.
+        boundary_contract_opts
+            Supplied to
+            :meth:`~QubitEncodeNetwork._contract_boundary_from_bottom`,
+            :meth:`~QubitEncodeNetwork._contract_boundary_from_left`,
+            :meth:`~QubitEncodeNetwork._contract_boundary_from_top`,
+            or
+            :meth:`~QubitEncodeNetwork._contract_boundary_from_right`,
+            including compression and canonization options.
+        """
+        
+        tn = self if inplace else self.copy()
+
+        # boundary_contract_opts['layer_tags'] = layer_tags
+
+        # starting borders (default to *supergrid* dimensions!)
+        if bottom is None:
+            bottom = 2 * tn.Lx - 2
+        if top is None:
+            top = 0
+        if left is None:
+            left = 0
+        if right is None:
+            right = 2 * tn.Ly - 2
+        
+        # setting contraction sequence
+        if around is not None:
+            if sequence is None:
+                sequence = 'bltr'
+            stop_i_min = min(x[0] for x in around)
+            stop_i_max = max(x[0] for x in around)
+            stop_j_min = min(x[1] for x in around)
+            stop_j_max = max(x[1] for x in around)
+        
+        elif sequence is None:
+            # contract in along short dimension
+            if self.Lx >= self.Ly:
+                sequence = 'b'
+            else:
+                sequence = 'l'
+
+
+        # keep track of whether we have hit the ``around`` region.
+        reached_stop = {direction: False for direction in sequence}
+
+        for direction in cycle(sequence):
+
+            if direction == 'b':
+                # check if we have reached the 'stop' region
+                if (around is None) or (bottom - 1 > stop_i_max):
+                    tn._contract_boundary_from_bottom_single(
+                        xrange=(bottom, bottom - 1),
+                        yrange=(left, right),
+                        compress_sweep='left',
+                        **boundary_contract_opts
+                    )
+                    bottom -= 1
+                else:
+                    reached_stop[direction] = True
+            
+            elif direction == 'l':
+                if (around is None) or (left + 1 < stop_j_min):
+                    tn._contract_boundary_from_left_single(
+                        yrange=(left, left + 1),
+                        xrange=(bottom, top),
+                        compress_sweep='up',
+                        **boundary_contract_opts
+                    )
+                    left += 1
+                else:
+                    reached_stop[direction] = True
+            
+            elif direction == 't':
+                if (around is None) or (top + 1 < stop_i_min):
+                    tn._contract_boundary_from_top_single(
+                        xrange=(top, top + 1),
+                        yrange=(left, right),
+                        compress_sweep='right',
+                        **boundary_contract_opts
+                        )
+                    top += 1
+                else:
+                    reached_stop[direction] = True
+            
+            elif direction == 'r':
+                if (around is None) or (right - 1 > stop_j_max):
+                    tn._contract_boundary_from_right_single(
+                        yrange=(right, right - 1),
+                        xrange=(bottom, top),
+                        compress_sweep='down',
+                        **boundary_contract_opts
+                    )
+                    right -= 1
+                else:
+                    reached_stop[direction] = True
+            
+            else:
+                raise ValueError("Sequence can only be from bltr")
+
+
+            if around is None:
+                # check whether TN is thin enough to just contract
+                thin_strip = (
+                    (bottom - top <= max_separation) or
+                    (right - left <= max_separation)
+                )
+                if thin_strip:
+                    return tn.contract(all, optimize='auto-hq')
+            
+            elif all(reached_stop.values()):
+                break
+
+        return tn
+
+    contract_boundary_ = functools.partialmethod(
+            contract_boundary, inplace=True)
+                    
                 
 
 
@@ -2042,7 +2273,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def graph(self, fix_lattice=True, fix_tags=[], **graph_opts):
+    def graph(self, fix_lattice=True, extra_tags=None, **graph_opts):
         '''
         TODO: DEBUG ``fix_tags`` PARAM
 
@@ -2052,35 +2283,56 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
         graph_opts.setdefault('color', ['VERT','FACE','GATE'])
         graph_opts.setdefault('show_tags', False)
+        graph_opts.setdefault('show_inds', True)
 
-        if fix_lattice == False: 
-            super().graph(**graph_opts)
-        
-        # elif from_supergrid:
+
+
+        if fix_lattice == True:
+            try:
+                LATX, LATY = 3, 4
+                extra_tags = tags_to_oset(extra_tags)
+
+                fix_tags = dict()
+                for x, y in self.gen_supergrid_coos():
+                    tags = self.supergrid(x, y)
+                    
+                    if tags is not None:
+                        tags = tags_to_oset(tags)
+                        fix_tags.update({tuple(tags|extra_tags): (LATY * y, -LATX * x)})
             
+                
+                super().graph(fix=fix_tags, **graph_opts)
+            
+            except ValueError as e:
+                print(e)
+                super().graph(**graph_opts)
 
         else:
-            try:                
-                Lx,Ly = self.Lx, self.Ly
-                
-                LATCX, LATCY = 1.5, 2
+            super().graph(**graph_opts)
 
-                fix_verts = {(f'Q{i*Ly+j}', *fix_tags): (LATCY*j, -LATCX*i) 
-                            for i,j in product(range(Lx),range(Ly))}
-                
-                fix_faces, k = dict(), 0
-                for i,j in product(range(Lx-1), range(Ly-1)):
-                    if i%2 == j%2:
-                        fix_faces.update({(f'Q{k+(Lx*Ly)}', *fix_tags): 
-                                        (LATCY*(j+0.5), -LATCX*(i+0.5)) })
-                        k+=1
-
-                fix = {**fix_verts, **fix_faces}
-                    
-                super().graph(fix=fix, show_inds=True,**graph_opts)
             
-            except:
-                super().graph(**graph_opts)
+        # else:
+        #     try:                
+        #         Lx,Ly = self.Lx, self.Ly
+                
+        #         LATCX, LATCY = 1.5, 2
+
+        #         fix_verts = {(f'Q{i*Ly+j}', *fix_tags): (LATCY*j, -LATCX*i) 
+        #                     for i,j in product(range(Lx),range(Ly))}
+                
+        #         fix_faces, k = dict(), 0
+        #         for i,j in product(range(Lx-1), range(Ly-1)):
+        #             if i%2 == j%2:
+        #                 fix_faces.update({(f'Q{k+(Lx*Ly)}', *fix_tags): 
+        #                                 (LATCY*(j+0.5), -LATCX*(i+0.5)) })
+        #                 k+=1
+
+        #         fix = {**fix_verts, **fix_faces}
+                    
+        #         super().graph(fix=fix, **graph_opts)
+            
+        #     except:
+        #         super().graph(**graph_opts)
 
 
     # def exact_projector_from_matrix(self, Udag_matrix):
@@ -3854,6 +4106,10 @@ def gate_string_split_(TG, where, string, original_ts, bonds_along,
 
 if __name__ == '__main__':
     knet = QubitEncodeVector.rand(Lx=2,Ly=3, add_tags=[])
-    cross = knet.reshape_face_to_cross(0,0)
-    cross.fuse_multibonds_()
-    cross._contract_boundary_from_left_single(yrange=(0,4), xrange=(0,2))
+    knet.graph()
+    # knet.reshape_face_to_cross_(0,0)
+    # norm = knet.make_norm()
+    # norm.flatten_()
+    # norm.reshape_face_to_cross_(0,0)
+    
+    # bmps = norm.contract_boundary(max_bond=4, sequence='r', max_separation=0)

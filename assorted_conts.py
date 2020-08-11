@@ -836,7 +836,7 @@ class PEPS(qtn.TensorNetwork):
                         compress_sweep='right',
                         **boundary_contract_opts
                     )
-                    top -= 1
+                    top += 1
                 else:
                     reached_stop[direction] = True
             
