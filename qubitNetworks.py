@@ -140,6 +140,7 @@ def get_halfcoo_between(coo1, coo2):
 
     return ((i1+i2)/2, (j1+j2)/2)
 
+
 def make_skeleton_net(
     Lx, 
     Ly,
@@ -147,7 +148,7 @@ def make_skeleton_net(
     bond_dim=3,
     site_tag_id='Q{}',
     phys_ind_id='q{}',
-    add_tags={},
+    add_tags=None,
     **tn_opts
 ):
     '''Makes a product state qubit network, for a lattice with 
@@ -165,7 +166,7 @@ def make_skeleton_net(
     tag_id = site_tag_id
     ind_id = phys_ind_id
 
-    add_tags = set(add_tags) #none by default
+    add_tags = tags_to_oset(add_tags) #none by default
 
     #default to ``up`` spin at every site
     vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
@@ -179,8 +180,8 @@ def make_skeleton_net(
 
     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
                             inds = [ind_id.format(i*Ly+j)],  #[f'q{i*Ly+j}'],f'Q{i*Ly+j}'
-                            tags = {tag_id.format(i*Ly+j), 
-                                    'VERT'} | add_tags) 
+                            tags = (tag_id.format(i*Ly+j), 
+                                    'VERT', *add_tags)) 
                 for j in range(Ly)] 
                 for i in range(Lx)]
 
@@ -193,8 +194,8 @@ def make_skeleton_net(
         if i%2 == j%2:
             ftensors[i][j] = qtn.Tensor(data=face_array[i][j],
                                         inds=[ind_id.format(k+Lx*Ly)],
-                                        tags={tag_id.format(k+Lx*Ly),
-                                              'FACE'} | add_tags)
+                                        tags=(tag_id.format(k+Lx*Ly),
+                                            'FACE', *add_tags))
             k+=1
 
     
@@ -225,11 +226,11 @@ def make_skeleton_net(
     
 
 
-def make_random_net(qlattice, 
+def make_random_net(Lx, Ly, phys_dim, 
                     bond_dim=3, 
                     site_tag_id='Q{}', 
                     phys_ind_id='q{}',
-                    add_tags={},
+                    add_tags=None,
                     **tn_opts
                     ):
     '''
@@ -248,8 +249,8 @@ def make_random_net(qlattice,
 
 
     '''
-    Lx, Ly = qlattice.lattice_shape
-    phys_dim = qlattice.local_site_dim
+    # Lx, Ly = qlattice.lattice_shape
+    # phys_dim = qlattice.local_site_dim
 
     #dummy TN, site tensors to be replaced with randomized
     tnet = make_skeleton_net(Lx, Ly, 
@@ -591,14 +592,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
         Params:
         -------
         `tn`: TensorNetwork
-            State of the tensors in the lattice.
+            Initial tensors of the lattice.
 
-        `qlattice`: QubitLattice
-            Specifies the underlying lattice geometry, in 
-            particular the shape (Lx, Ly) of the lattice
-            and the local dimension of the physical sites,
-            e.g. d=2 (4) for simulating spinless (spin-1/2) 
-            fermions.
+        
         
         `bond_dim`: int, optional
             The bond dimension to connect local site tensors.
@@ -608,6 +604,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         Attributes:
         ----------
+
+        `qlattice`: QubitLattice
+            Specifies underlying lattice geometry, in 
+            particular the shape (Lx, Ly) of the qu(d)it
+            lattice and the local dimension of the physical 
+            sites, e.g. d=2 (4) for simulating spinless 
+            (spin-1/2) fermions.
+
 
         _vert_coo_map: dict[tuple(int) : int]
             Numbering of the vertex sites, i.e.
@@ -659,7 +663,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         '''
     _EXTRA_PROPS = (
-        '_qlattice',
+        '_Lx',
+        '_Ly',
+        '_phys_dim',
         '_site_tag_id',
         '_aux_tag_id'
     )
@@ -676,9 +682,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
         new = super().__and__(other)
         if self._is_compatible_lattice(other):
             new.view_as_(QubitEncodeNet,
-                        like=self,
-                        qlattice=self.qlattice,
-                        site_tag_id=self.site_tag_id)
+                        like=self) #,
+                        # qlattice=self.qlattice,
+                        # site_tag_id=self.site_tag_id)
         return new
     
 
@@ -686,24 +692,47 @@ class QubitEncodeNet(qtn.TensorNetwork):
         new = super().__or__(other)
         if self._is_compatible_lattice(other):
             new.view_as_(QubitEncodeNet,
-                        like=self,
-                        qlattice=self.qlattice,
-                        site_tag_id=self.site_tag_id)
+                        like=self)#,
+                        # qlattice=self.qlattice,
+                        # site_tag_id=self.site_tag_id)
         return new
 
 
+    @classmethod
+    def random_flat(cls, Lx, Ly, bond_dim=3, **tn_opts):
+
+        rand_net = QubitEncodeVector.rand(Lx=Lx, Ly=Ly, phys_dim=1,
+                    bond_dim=bond_dim, **tn_opts)
+
+        rand_net.squeeze_()
+        
+        return rand_net.view_as(cls, inplace=True)
+ 
 
     @property
-    def qlattice(self):
-        '''Internal ``QubitLattice`` object
-        '''
-        return self._qlattice
+    def Lx(self):
+        return self._Lx
+
+    @property
+    def Ly(self):
+        return self._Ly
 
     @property
     def phys_dim(self):
         '''Local physical dimension of qu(d)it sites.
         '''        
-        return self._qlattice.local_site_dim
+        return self._phys_dim
+
+
+    def qlattice(self):
+        '''Internal ``QubitLattice`` object
+        '''
+        if not hasattr(self, '_qlattice'):
+            self._qlattice = denseQubits.QubitLattice(
+                            Lx=self.Lx,
+                            Ly=self.Ly,
+                            local_dim=self.phys_dim)
+        return self._qlattice
 
     @property
     def site_tag_id(self):
@@ -720,11 +749,12 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self._aux_tag_id
 
 
-    # def copy(self):
+    # def copy(self, virtual=False, deep=False):
     #     return self.__class__(
-    #                     self, 
-    #                     qlattice=self.qlattice,
-    #                     site_tag_id=self.site_tag_id)
+    #                     self,
+    #                     virtual=virtual)
+    #                     # qlattice=self.qlattice,
+    #                     # site_tag_id=self.site_tag_id)
 
     # __copy__ = copy
 
@@ -832,7 +862,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         if not hasattr(self, '_vert_coo_map'):
             self._vert_coo_map = dict(np.ndenumerate(
-                            self.qlattice.vert_array))
+                            self.qlattice().vert_array))
 
 
         if (i is not None) and (j is not None):
@@ -848,7 +878,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         if not hasattr(self, '_face_coo_map'):
             self._face_coo_map = dict(np.ndenumerate(
-                            self.qlattice.face_array))
+                            self.qlattice().face_array))
 
 
         if (i is not None) and (j is not None):
@@ -928,20 +958,20 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def gen_vertex_sites(self):
         ''' Generator, same as ``range(num_vertices)``
         '''
-        return self.qlattice.gen_vertex_sites()
+        return self.qlattice().gen_vertex_sites()
 
     
     def gen_face_sites(self):
         '''Generator, same as ``range(num_verts, num_sites)``
         '''
-        return self.qlattice.gen_face_sites()
+        return self.qlattice().gen_face_sites()
     
 
     def gen_all_sites(self):
         '''Generator, same as ``range(num_sites)``.
         Only includes vertices and faces, not 'aux' tensors.
         '''
-        return self.qlattice.gen_all_sites()
+        return self.qlattice().gen_all_sites()
 
 
     def gen_vertex_coos(self):
@@ -966,11 +996,22 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def gen_supergrid_coos(self):
         return product(range(-1 + 2*self.Lx), range(-1 + 2*self.Ly))
 
-    def gen_supergrid_tags(self):
+
+    def gen_supergrid_tags(self, with_coo=False):
+        '''Generate the supergrid tags, corresponding to locations
+        occupied by tensors. If ``with_coo == True``, also yield
+        the coordinate pair (x,y) together with the tags.
+        '''
     
         for x, y in product(range(2*self.Lx -1), range(2*self.Ly -1)):
+    
             if self.supergrid(x, y) is not None:
-                yield(self.supergrid(x, y))
+
+                if with_coo:
+                    yield ((x, y), self.supergrid(x,y))
+
+                else:
+                    yield(self.supergrid(x, y))
             
 
 
@@ -1040,57 +1081,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         for tag1, tag2 in pairwise(ordered_column_tags):
             self.compress_between(tag1, tag2, **compress_opts)
-
-
-    # def _fill_column_with_identities(self, y, xrange=None):
-    #     if xrange is None:
-    #         xrange = (0, 2*self.Lx - 2)
-        
-    #     column_nodes = self.supergrid_column_slice(y, xrange, get='row', sweep='down')
-
-    #     for row1, row2 in pairwise(column_nodes):
-    #         where1, where2 = grid(row1, y), grid(row2, y)
-            # where--> tags
-    #         if row2 - row1 > 1 and bool(self.find_bonds_between(where1, where2)):
-                
-    #             midcoo = 
-    #             self.insert_identity_between_(where1, where2, tags=[f''])
-
-
-    # def _shift_tensor_to_right(self, left_coo):
-    #     x, yleft = left_coo
-
-    #     yright = yleft + 1
-
-    #     grid = self.supergrid
-        
-    #     if grid(x, yright) is not None:
-    #         raise ValueError(f"Supercoo {x},{yright} is already occupied!")
-
-        
-    #     elif (x > 0) and (x < 2*self.Lx-2):
-    #         #in the bulk, check for a bond to 'merge' with
-    #         try:
-    #             bond, = self.bond(grid(x-1, yright), grid(x+1, yright))
-    #             newid_tag = f'IX{x},Y{yright}'
-
-    #             self.insert_identity_between_(where1=grid(x-1, yright), 
-    #                                         where2=grid(x+1, yright),
-    #                                         tags=[newid_tag])
-
-    #             self._update_supergrid(x=x, y=yright, tag=newid_tag)
-
-    #             self.contract_((grid(x, yleft), grid(x, yright)), which='any')
-
-    #         except ValueError:
-    #             #there was no bond, just move right
-    #             self._update_supergrid(x=x, y=yright, tag=grid(x, yleft))
-
-            
-    #     else:
-    #         #add tensor's tag to location on the right
-    #         self._update_supergrid(x=x, y=yright, tag=grid(x, yleft))
-
 
 
 
@@ -2139,19 +2129,84 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     
                 
 
+    def compute_row_environments(self, dense=False, **compress_opts):
+        """Compute the ``--------`` 1D boundary tensor networks describing
+        the lower and upper environments of each row in this 2D tensor network,
+        *assumed to represent the norm*.
+
+        The 'above' environment for row ``i`` will be a contraction of all
+        rows ``i + 1, i + 2, ...`` etc::
+
+             ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+            ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
+        
+        The 'below' environment for row ``i`` will be a contraction of all
+        rows ``i - 1, i - 2, ...`` etc::
+
+            ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
+             ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+        
+        
+        Such that
+        ``envs['above', i] & self.select(self.row_tag(i)) & envs['below', i]``
+        would look like::
+
+             ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+            ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
+            o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o
+            ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
+             ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+
+        And be (an approximation of) the norm centered around row ``i``
+        Parameters
+        ----------
+        dense : bool, optional
+            If true, contract the boundary in as a single dense tensor.
+        compress_opts
+            Supplied to
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary_from_bottom`
+            and
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary_from_top`
+            .
+        Returns
+        -------
+        row_envs : dict[(str, int), TensorNetwork]
+            The two environment tensor networks of row ``i`` will be stored in
+            ``row_envs['below', i]`` and ``row_envs['above', i]``.
+        """
+        row_envs = dict()
+
+        self._add_supergrid_row_col_tags()
+
+        # row_envs['below', 2 * self.Lx - 2] = TensorNetwork([])
+        row_envs['above', 0] = TensorNetwork([])
+        # first_row = self.supergrid_row_slice(x=0, yrange=(0, 2*self.Ly-2), get='tag')
+        first_row = 'ROW0'
+        env_bottom = self.copy()
+        if dense:
+            env_bottom ^= first_row
 
 
 
 
 
 
+    def _add_supergrid_row_col_tags(self, tag_rows=True, tag_cols=True):
+        '''Add row and column tags like 'ROW{x}', 'COL{y}', to every 
+        occupied supergrid location.
+        '''
+        for (x, y), tags_xy in self.gen_supergrid_tags(with_coo=True):
+                
+                if tag_rows:
+                    self[tags_xy].add_tag(f'ROW{x}')
+                    self._update_supergrid(x, y, f'ROW{x}')
+                
+                if tag_cols:
+                    self[tags_xy].add_tag(f'COL{y}')
+                    self._update_supergrid(x, y, f'COL{y}')
 
 
 
-
-
-            
-                        
 
 
 
@@ -2171,42 +2226,34 @@ class QubitEncodeNet(qtn.TensorNetwork):
         which: {'u', 'd', 'r', 'l', 'he', 'ho', 
                 've', 'vo', 'horizontal', 'all'}
         '''
-        return self.qlattice.get_edges(which)
+        return self.qlattice().get_edges(which)
 
-
-    @property
-    def Lx(self):
-        return self.qlattice._Lx
-    
-    @property
-    def Ly(self):
-        return self.qlattice._Ly
 
     @property
     def num_sites(self):
-        return self.qlattice.num_sites
+        return self.qlattice().num_sites
 
     @property
     def num_verts(self):
-        return self.qlattice.num_verts
+        return self.qlattice().num_verts
 
     @property
     def num_faces(self):
-        return self.qlattice.num_faces
+        return self.qlattice().num_faces
 
     @property
     def codespace_dims(self):
         '''List like [phys_dim] * num_verts,
         i.e. dimensions for vertex subspace
         '''
-        return self.qlattice.codespace_dims
+        return self.qlattice().codespace_dims
 
     @property
     def simspace_dims(self):
         '''List like [phys_dim] * num_sites,
         i.e. dimensions for full qubit space
         '''
-        return self.qlattice.simspace_dims
+        return self.qlattice().simspace_dims
 
 
     def bond(self, where1, where2):
@@ -2311,28 +2358,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
             super().graph(**graph_opts)
 
             
-        # else:
-        #     try:                
-        #         Lx,Ly = self.Lx, self.Ly
-                
-        #         LATCX, LATCY = 1.5, 2
-
-        #         fix_verts = {(f'Q{i*Ly+j}', *fix_tags): (LATCY*j, -LATCX*i) 
-        #                     for i,j in product(range(Lx),range(Ly))}
-                
-        #         fix_faces, k = dict(), 0
-        #         for i,j in product(range(Lx-1), range(Ly-1)):
-        #             if i%2 == j%2:
-        #                 fix_faces.update({(f'Q{k+(Lx*Ly)}', *fix_tags): 
-        #                                 (LATCY*(j+0.5), -LATCX*(i+0.5)) })
-        #                 k+=1
-
-        #         fix = {**fix_verts, **fix_faces}
-                    
-        #         super().graph(fix=fix, **graph_opts)
-            
-        #     except:
-        #         super().graph(**graph_opts)
 
 
     # def exact_projector_from_matrix(self, Udag_matrix):
@@ -2589,7 +2614,10 @@ class QubitEncodeVector(QubitEncodeNet,
                         qtn.TensorNetwork):
 
     _EXTRA_PROPS = (
-        '_qlattice',
+        # '_qlattice',
+        '_Lx',
+        '_Ly',
+        '_phys_dim',
         '_site_tag_id',
         '_aux_tag_id',
         '_phys_ind_id'
@@ -2599,7 +2627,10 @@ class QubitEncodeVector(QubitEncodeNet,
     def __init__(
             self, 
             tn, 
-            qlattice, 
+            *, # qlattice, 
+            Lx=None,
+            Ly=None,
+            phys_dim=2,
             site_tag_id = 'Q{}',
             phys_ind_id = 'q{}',
             aux_tag_id = 'IX{}Y{}',
@@ -2608,38 +2639,38 @@ class QubitEncodeVector(QubitEncodeNet,
         
         #shortcut for copying QEN vectors
         if isinstance(tn, QubitEncodeVector):
-            self._qlattice = tn.qlattice
-            self._site_tag_id = tn.site_tag_id
-            self._aux_tag_id = tn.aux_tag_id
-            self._phys_ind_id = tn.phys_ind_id
-            
             super().__init__(tn)
             return
 
-        self._qlattice = qlattice
+
+        self._Lx = Lx
+        self._Ly = Ly
+        self._phys_dim = phys_dim
+
         self._site_tag_id = site_tag_id
         self._phys_ind_id = phys_ind_id
         self._aux_tag_id = aux_tag_id
 
-        
-        self._vert_coo_map = self.vert_coo_map()
-        self._face_coo_map = self.face_coo_map()
+        self._qlattice = denseQubits.QubitLattice(Lx, Ly, local_dim=phys_dim)
 
-        # self._face_coo_map_nonempty = self.face_coo_map_nonempty()
+        
+        # self._vert_coo_map = self.vert_coo_map()
+        # self._face_coo_map = self.face_coo_map()
+
             
         super().__init__(tn, **tn_opts)
 
     
 
-    def copy(self):
-        return self.__class__(
-                        tn=self, 
-                        qlattice=self.qlattice,
-                        site_tag_id=self.site_tag_id,
-                        phys_ind_id=self.phys_ind_id,
-                        aux_tag_id=self.aux_tag_id)
+    # def copy(self, virtual, deep):
+    #     return self.__class__(
+    #                     tn=self, 
+    #                     qlattice=self.qlattice,
+    #                     site_tag_id=self.site_tag_id,
+    #                     phys_ind_id=self.phys_ind_id,
+    #                     aux_tag_id=self.aux_tag_id)
 
-    __copy__ = copy
+    # __copy__ = copy
         
 
     @classmethod
@@ -2654,22 +2685,22 @@ class QubitEncodeVector(QubitEncodeNet,
         bond_dim: int
             Size of lattice bonds (like D in PEPS)
         '''
-        rand_tn = make_random_net(qlattice=qlattice,
-                                bond_dim=bond_dim,
-                                **tn_opts)
-                                
-        return cls(tn=rand_tn, qlattice=qlattice)
+        Lx, Ly = qlattice.lattice_shape
+        phys_dim = qlattice.local_dim
+
+        return cls.rand(Lx=Lx, Ly=Ly, phys_dim=phys_dim, 
+                    bond_dim=bond_dim, **tn_opts)
 
 
     @classmethod
     def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, **tn_opts):
-        qlat = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=phys_dim)
-        rand_tn = make_random_net(qlattice=qlat,
+        
+        rand_tn = make_random_net(Lx=Lx, Ly=Ly, 
+                                  phys_dim=phys_dim,
                                   bond_dim=bond_dim,
                                   **tn_opts)
-        return cls(tn=rand_tn, qlattice=qlat)                                
-
-
+        
+        return cls(tn=rand_tn, Lx=Lx, Ly=Ly, phys_dim=phys_dim, **tn_opts)                                
 
 
     @property
@@ -2700,7 +2731,7 @@ class QubitEncodeVector(QubitEncodeNet,
         shape (-1, 1), in the order assigned to the local sites.
         '''
         inds_seq = (self._phys_ind_id.format(i) 
-                    for i in self.qlattice.all_sites())
+                    for i in self.qlattice().all_sites())
 
         psid = self.to_dense(inds_seq).reshape(-1,1)
 
@@ -3184,7 +3215,59 @@ class QubitEncodeVector(QubitEncodeNet,
         
 #         return self._aux_coo_map
         
+# class QubitEncodeNetFlat(QubitEncodeNet, 
+#                         qtn.TensorNetwork):
+#     ''' Mixin class for flat networks with the shape of a QE lattice,
+#     e.g. flattened norms or expectations.
 
+#     '''
+    
+#     _EXTRA_PROPS = (
+#         '_qlattice',
+#         '_site_tag_id',
+#         '_aux_tag_id'
+#     )
+
+#     def __init__(
+#         self, 
+#         tn,
+#         qlattice,
+#         site_tag_id = 'Q{}',
+#         aux_tag_id = 'IX{}Y{}',
+#         **tn_opts):
+
+#         if isinstance(tn, QubitEncodeNetFlat):
+#             self._qlattice = tn.qlattice
+#             self._site_tag_id = tn.site_tag_id
+#             self._aux_tag_id = tn.aux_tag_id
+#             super().__init__(tn)
+#             return
+        
+#         self._qlattice = qlattice
+#         self._site_tag_id = site_tag_id
+#         self._aux_tag_id = aux_tag_id
+
+#         self._vert_coo_map = self.vert_coo_map()
+#         self._face_coo_map = self.face_coo_map()
+
+#         super().__init__(tn, **tn_opts)
+    
+
+#     @classmethod
+#     def rand(cls, Lx, Ly, bond_dim=4, **tn_opts):
+#         qlat = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=1)
+        
+#         rand_tn = make_random_net(qlattice=qlat,
+#                                   bond_dim=bond_dim,
+#                                   **tn_opts)
+#         rand_tn.squeeze_()                                  
+#         return cls(tn=rand_tn, qlattice=qlat)
+
+
+
+    
+
+        
 
 
 
@@ -4103,6 +4186,17 @@ def gate_string_split_(TG, where, string, original_ts, bonds_along,
         tn.transpose_like_(to)
         to.modify(data=tn.data)
 
+def bmps_norm_test():
+    net = beeky.QubitEncodeVector.rand(Lx=3,Ly=3, add_tags=['KET'])
+    norm = net.make_norm()
+    norm.flatten_()
+    norm.reshape_face_to_cross_(0,0)
+    norm.reshape_face_to_cross_(1,1)
+
+    nex = norm ^ all
+    
+    
+        
 
 if __name__ == '__main__':
     knet = QubitEncodeVector.rand(Lx=2,Ly=3, add_tags=[])

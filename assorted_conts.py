@@ -119,11 +119,11 @@ class PEPS(qtn.TensorNetwork):
 
 
 
-    def copy(self):
-        return self.__class__(self, self._Lx, self._Ly, self._chi)
+    # def copy(self):
+    #     return self.__class__(self, self._Lx, self._Ly, self._chi)
     
 
-    __copy__ = copy
+    # __copy__ = copy
 
 
     def graph(self, fix_lattice=True, color=['KET','BRA','GATE'],**graph_opts):
