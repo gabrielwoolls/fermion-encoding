@@ -723,6 +723,20 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''        
         return self._phys_dim
 
+    @property
+    def grid_Lx(self):
+        '''Number of rows in the ``supergrid``, i.e.
+        vertex rows + face rows.
+        '''
+        return 2 * self.Lx - 1
+
+    @property
+    def grid_Ly(self):
+        '''Number of columns in ``supergrid``, i.e. vertex 
+        cols + face cols
+        '''
+        return 2 * self.Ly - 1
+
 
     def qlattice(self):
         '''Internal ``QubitLattice`` object
@@ -1033,6 +1047,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 else:
                     yield(self.supergrid(x, y))
             
+    def valid_supercoo(self, xy):
+        x, y = xy
+        return (0 <= x < self.grid_Lx) and (0 <= y < self.grid_Ly)
 
 
     def _canonize_supergrid_row(self, x, sweep, yrange=None, **canonize_opts):
@@ -2884,6 +2901,71 @@ class QubitEncodeNet(qtn.TensorNetwork):
     
     fill_cols_with_identities_ = functools.partialmethod(fill_cols_with_identities,
                                                         inplace=True)
+
+
+    def _compute_plaquette_environments_row_first(
+        self,
+        x_bsz,
+        y_bsz,
+        second_dense=None,
+        row_envs=None,
+        **compute_environment_opts
+    ):
+        if second_dense is None:
+            second_dense = x_bsz < 2
+        
+        # first contract from either side to produce column environments
+        if row_envs is None:
+            row_envs = self.compute_row_environments(
+                **compute_environment_opts)
+        
+        # now form vertical strips and contract from top + bottom
+        # for each column
+        col_envs = dict()
+        for x in range(self.grid_Lx - x_bsz + 1):
+
+            row_x = qtn.TensorNetwork(
+                (row_envs['below', x],
+                self.select_any([self.row_tag(x + dx) for dx in range(x_bsz)]),
+                row_envs['above', x + x_bsz - 1]
+                ), check_collisions=False).view_as_(QubitEncodeNet, like=self)
+            
+            # return row_x
+
+            col_envs[x] = row_x.compute_col_environments(
+                xrange=(max(x - 1, 0), min(x + x_bsz, self.grid_Lx - 1)),
+                dense=second_dense, **compute_environment_opts)
+        
+        # now range through all possible plaquettes, selecting the correct
+        # boundary tensors from either the column or row environments
+        plaquette_envs = dict()
+        for x0, y0 in product(range(self.grid_Lx - x_bsz + 1),
+                              range(self.grid_Ly - y_bsz + 1)):
+            
+            # first make sure we only do plaquettes starting at face corners
+            if 'VERT' not in self.supergrid(x0, y0):
+                continue
+            
+            
+            
+            # select bordering tensors from:
+            #
+            #       L──A──A──R    <- A from the row environments
+            #       │  │  │  │
+            #  x0   L──●──i──R
+            #       │  │  │  │    
+            #  x0+1 L──i──●──R    <- L, R from the column environments
+            #       │  │  │  │
+            #  x0+2 L──●──i──R
+            #       │  │  │  │
+            #       L──B──B──R    <- B from the row environments
+            #
+            #         y0  y0+1
+            #
+
+
+
+
 ## End QubitEncodeNet class
 ## ********************* ##
 
