@@ -748,7 +748,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         return self._aux_tag_id
 
-
+    @property
+    def row_tag_id(self):
+        return "ROW{}"
+    
+    @property
+    def col_tag_id(self):
+        return "COL{}"
+    
+    
+    
     # def copy(self, virtual=False, deep=False):
     #     return self.__class__(
     #                     self,
@@ -933,6 +942,17 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Tag for 'auxiliary' tensor at supergrid[x][y]
         '''
         return self.aux_tag_id.format(x,y)
+
+    def row_tag(self, x):
+        '''ROW{x}
+        '''
+        return self.row_tag_id.format(x)
+    
+
+    def col_tag(self, y):
+        '''COL{y}
+        '''
+        return self.col_tag_id.format(y)
 
 
     def maybe_convert_face(self, where):
@@ -1370,6 +1390,40 @@ class QubitEncodeNet(qtn.TensorNetwork):
         #end loop over columns
                                                 
 
+    def contract_boundary_from_left(
+        self, 
+        yrange,
+        xrange=None,
+        canonize=True,
+        compress_sweep='up',
+        layer_tags=None,
+        inplace=False,
+        **compress_opts
+
+    ):
+        tn = self if inplace else self.copy()
+
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+
+        if layer_tags is None:
+            tn._contract_boundary_from_left_single(
+                yrange, xrange, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+        
+        else:
+            pass
+            # tn._contract_boundary_from_left_multi(
+            #     yrange, xrange, layer_tags, canonize=canonize,
+            #     compress_sweep=compress_sweep, **compress_opts)
+
+        return tn
+
+    contract_boundary_from_left_ = functools.partialmethod(
+        contract_boundary_from_left, inplace=True)
+
+
+
     
     def _contract_boundary_from_right_single(
         self,
@@ -1551,6 +1605,38 @@ class QubitEncodeNet(qtn.TensorNetwork):
             # move to next column
         
         # end loop over columns
+
+
+    def contract_boundary_from_right(
+        self,
+        yrange,
+        xrange=None,
+        canonize=True,
+        compress_sweep='down',
+        layer_tags=None,
+        inplace=False,
+        **compress_opts
+    ):
+        
+        tn = self if inplace else self.copy()
+
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+
+        if layer_tags is None:
+            tn._contract_boundary_from_right_single(
+                yrange, xrange, canonize=canonize,
+                compress_sweep=compress_sweep, **compress_opts)
+        else:
+            pass
+            # tn._contract_boundary_from_right_multi(
+            #     yrange, xrange, layer_tags, canonize=canonize,
+            #     compress_sweep=compress_sweep, **compress_opts)
+
+        return tn
+
+    contract_boundary_from_right_ = functools.partialmethod(
+        contract_boundary_from_right, inplace=True)
 
 
 
@@ -2174,21 +2260,172 @@ class QubitEncodeNet(qtn.TensorNetwork):
             The two environment tensor networks of row ``i`` will be stored in
             ``row_envs['below', i]`` and ``row_envs['above', i]``.
         """
+        ## NOTE: should this be automatic?
+        self.fill_rows_with_identities_()
+        ##
+
         row_envs = dict()
+
+        grid_Lx = 2 * self.Lx - 1
+        grid_Ly = 2 * self.Ly - 1
+
+        self._add_supergrid_row_col_tags()
+        # first_row = self.supergrid_row_slice(x=0, yrange=(0, 2*self.Ly-2), get='tag')
+
+        # downwards pass #
+        row_envs['above', 0] = qtn.TensorNetwork([])
+        first_row_tag = self.row_tag(0)
+        env_top = self.copy()
+
+        if dense:
+            env_top ^= first_row_tag
+
+        row_envs['above', 1] = env_top.select(first_row_tag)
+
+        for x in range(2, grid_Lx):
+
+            if dense:
+                env_top ^= (self.row_tag(x-2), self.row_tag(x-1))
+            else:
+                env_top._contract_boundary_from_top_single(
+                    xrange=(x - 2, x - 1), 
+                    yrange=(0, grid_Ly - 1),
+                    **compress_opts)
+
+            row_envs['above', x] = env_top.select(first_row_tag)
+
+
+        # upwards pass #
+        row_envs['below', grid_Lx - 1] = qtn.TensorNetwork([])
+        last_row_tag = self.row_tag(grid_Lx - 1)
+        env_bottom = self.copy()
+        
+        if dense:
+            env_bottom ^= last_row_tag
+        
+        row_envs['below', grid_Lx - 2] = env_bottom.select(last_row_tag)
+
+        for x in range(grid_Lx - 3, -1, -1):
+            
+            if dense:
+                env_bottom ^= (self.row_tag(x + 1), self.row_tag(x + 2))
+            else:
+                env_bottom._contract_boundary_from_bottom_single(
+                        xrange=(x + 1, x + 2), yrange=(0, grid_Ly - 1),
+                        **compress_opts)
+            
+            row_envs['below', x] = env_bottom.select(last_row_tag)
+
+        return row_envs
+
+
+
+    def compute_col_environments(self, dense=False, **compress_opts):
+        r"""Compute the ``2 * self.Ly`` 1D boundary tensor networks describing
+        the left and right environments of each column in this 2D tensor
+        network, assumed to represent the norm.
+        The 'left' environment for column ``j`` will be a contraction of all
+        columns ``j - 1, j - 2, ...`` etc::
+            ●<
+            ┃
+            ●<
+            ┃
+            ●<
+            ┃
+            ●<
+        The 'right' environment for row ``j`` will be a contraction of all
+        rows ``j + 1, j + 2, ...`` etc::
+            >●
+             ┃
+            >●
+             ┃
+            >●
+             ┃
+            >●
+        Such that
+        ``envs['left', j] & self.select(self.col_tag(j)) & envs['right', j]``
+        would look like::
+               ╱o
+            ●< o| >●
+            ┃  |o  ┃
+            ●< o| >●
+            ┃  |o  ┃
+            ●< o| >●
+            ┃  |o  ┃
+            ●< o╱ >●
+        And be (an approximation of) the norm centered around column ``j``
+        Parameters
+        ----------
+        dense : bool, optional
+            If true, contract the boundary in as a single dense tensor.
+        compress_opts
+            Supplied to
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary_from_left`
+            and
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary_from_right`
+            .
+        Returns
+        -------
+        col_envs : dict[(str, int), TensorNetwork]
+            The two environment tensor networks of column ``j`` will be stored
+            in ``row_envs['left', j]`` and ``row_envs['right', j]``.
+        """
+        ### NOTE: should column identities be automatic?
+
+        self.fill_cols_with_identities_()
+
+        ####
+
+        col_envs = dict()
+
+        grid_Lx = 2 * self.Lx - 1
+        grid_Ly = 2 * self.Ly - 1
 
         self._add_supergrid_row_col_tags()
 
-        # row_envs['below', 2 * self.Lx - 2] = TensorNetwork([])
-        row_envs['above', 0] = TensorNetwork([])
-        # first_row = self.supergrid_row_slice(x=0, yrange=(0, 2*self.Ly-2), get='tag')
-        first_row = 'ROW0'
-        env_bottom = self.copy()
+        # rightward pass #
+        col_envs['left', 0] = qtn.TensorNetwork([])
+        first_column_tag = self.col_tag(0)
+        env_right = self.copy()
+        
         if dense:
-            env_bottom ^= first_row
+            env_right ^= first_column_tag
+        
+        col_envs['left', 1] = env_right.select(first_column_tag)
+        
+        for y in range(2, grid_Ly):
+            if dense:
+                env_right ^= (self.col_tag(y-2), self.col_tag(y-1))
+            else:
+                env_right.contract_boundary_from_left_(
+                    yrange=(y - 2, y - 1),
+                    xrange=(0, grid_Lx-1), 
+                    **compress_opts)
+            col_envs['left', y] = env_right.select(first_column_tag)
 
 
 
+        # leftward pass #
+        col_envs['right', grid_Ly - 1] = qtn.TensorNetwork([])
+        last_column_tag = self.col_tag(grid_Ly - 1)
+        env_left = self.copy()
 
+        if dense:
+            env_left ^= last_column_tag
+        
+        col_envs['right', grid_Ly - 2] = env_left.select(last_column_tag)
+
+        for y in range(grid_Ly - 3, -1, -1):
+            if dense:
+                env_left ^= (self.col_tag(y + 1), self.col_tag(y + 2))                
+            else:
+                env_left.contract_boundary_from_right_(
+                    yrange=(y + 1, y + 2),
+                    **compress_opts)
+            
+            col_envs['right', y] = env_left.select(last_column_tag)
+
+        return col_envs        
 
 
     def _add_supergrid_row_col_tags(self, tag_rows=True, tag_cols=True):
@@ -2205,13 +2442,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     self[tags_xy].add_tag(f'COL{y}')
                     self._update_supergrid(x, y, f'COL{y}')
 
-
-
-
-
-
-
-
+    
     def get_edges(self, which):
         '''
         Returns: 
@@ -2556,7 +2787,103 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return (x, y)
 
 
+    def _fill_column_with_identities(self, y, xrange=None):
 
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+
+        grid = self.supergrid
+
+        for x in range(min(xrange), max(xrange) + 1):
+            floating_bond = self.check_for_vertical_bond_across(x, y)
+            
+            if floating_bond:
+
+                dummy_tag = self.aux_tensor_tag(x, y)
+                self.insert_identity_between_(where1=grid(x-1, y), 
+                                              where2=grid(x+1, y),
+                                              tags=[dummy_tag])
+                self._update_supergrid(x, y, dummy_tag)  
+                
+
+    def _fill_row_with_identities(self, x, yrange=None):
+        
+        if yrange is None:
+            yrange = (0, 2 * self.Ly - 2)
+        
+        grid = self.supergrid
+
+        for y in range(min(yrange), max(yrange) + 1):
+
+            floating_bond = self.check_for_horizontal_bond_across(x, y)
+
+            if floating_bond:
+
+                dummy_tag = self.aux_tensor_tag(x, y)
+                self.insert_identity_between_(where1=grid(x, y-1),
+                                              where2=grid(x, y+1),
+                                              tags=[dummy_tag])
+                self._update_supergrid(x, y, dummy_tag)                                              
+
+
+    def fill_rows_with_identities(self, xrange=None, inplace=False):
+        '''For each row in xrange (inclusive), fill the row with
+        auxiliary tensors in the 'empty' supergrid locations.
+        
+             │  │  │         │  │  │
+             ●──●──●         ●──●──●    
+             │     │         │     │    
+         x   ●─────●   ==>   ●──i──●  x
+             │     │         │     │
+             ●──●──●         ●──●──●    
+        
+        xrange: optional, defaults to all rows.
+            (first row, last row to fill) 
+        '''
+
+        tn = self if inplace else self.copy()
+
+        if xrange is None:
+            xrange = (0, 2 * self.Lx - 2)
+
+        for x in range(min(xrange), max(xrange) + 1):
+            tn._fill_row_with_identities(x)
+
+        return tn
+
+
+    fill_rows_with_identities_ = functools.partialmethod(fill_rows_with_identities,
+                                                        inplace=True)
+
+
+    def fill_cols_with_identities(self, yrange=None, inplace=False):
+        '''For each col in yrange (inclusive), fill the row with
+        auxiliary tensors in the 'empty' supergrid locations.
+        
+             y                y 
+
+        ──●──●──●        ──●──●──●
+          │  │  │          │  │  │ 
+        ──●  │  ●  ==>   ──●  i  ● 
+          │  │  │          │  │  │ 
+        ──●──●──●        ──●──●──● 
+
+        yrange: optional, defaults to all columns.
+            (first col, last col to fill)
+        '''
+        tn = self if inplace else self.copy()
+
+        if yrange is None:
+            yrange = (0, 2 * self.Ly - 2)
+        
+        for y in range(min(yrange), max(yrange) + 1):
+            tn._fill_column_with_identities(y)
+
+        return tn
+        
+    
+    fill_cols_with_identities_ = functools.partialmethod(fill_cols_with_identities,
+                                                        inplace=True)
 ## End QubitEncodeNet class
 ## ********************* ##
 
@@ -2742,14 +3069,23 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
 
-    def make_norm(self, layer_tags=('KET','BRA')):
+    def make_norm(self, layer_tags=('KET','BRA'), return_all=False):
         '''<psi|psi> as an uncontracted ``QubitEncodeNet``.
+
+        If ``return_all == True`` return (norm, bra, ket), otherwise
+        just norm. 
         '''
         ket = self.copy()
         ket.add_tag(layer_tags[0])
 
         bra = ket.H.retag({layer_tags[0]: layer_tags[1]})
-        return ket | bra
+
+        norm  = bra | ket
+        
+        if return_all:
+            return norm, bra, ket
+
+        return norm
     
 
 
@@ -3140,6 +3476,57 @@ class QubitEncodeVector(QubitEncodeNet,
         return dense_bra.H @ dense_ket
 
 
+    def compute_local_expectation(
+        self,
+        terms,
+        normalized=False,
+        autogroup=True,
+        contract_optimize='auto-hq',
+        return_all=False,
+        plaquette_envs=None,
+        plaquette_map=None,
+        **plaquette_env_options,
+    ):
+        r"""Compute the sum of many local expecations by essentially forming
+        the reduced density matrix of all required plaquettes.
+        Parameters
+        ----------
+        terms : dict[tuple[tuple[int], array]
+            A dictionary mapping site coordinates to raw operators, which will
+            be supplied to
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2DVector.gate`.
+        normalized : bool, optional
+            If True, normalize the value of each local expectation by the local
+            norm: $\langle O_i \rangle = Tr[\rho_p O_i] / Tr[\rho_p]$.
+        autogroup : bool, optional
+            If ``True`` (the default), group terms into horizontal and vertical
+            sets to be computed separately (usually more efficient) if
+            possible.
+        contract_optimize : str, optional
+            Contraction path finder to use for contracting the local plaquette
+            expectation (and optionally normalization).
+        return_all : bool, optional
+            Whether to the return all the values individually as a dictionary
+            of coordinates to tuple[local_expectation, local_norm].
+        plaquette_envs : None or dict, optional
+            Supply precomputed plaquette environments.
+        plaquette_map : None, dict, optional
+            Supply the mapping of which plaquettes (denoted by
+            ``((x0, y0), (dx, dy))``) to use for which coordinates, it will be
+            calculated automatically otherwise.
+        plaquette_env_options
+            Supplied to
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.compute_plaquette_environments`
+            to generate the plaquette environments, equivalent to approximately
+            performing the partial trace.
+        Returns
+        -------
+        scalar or dict
+        """
+        norm, bra, ket = self.make_norm(return_all=True)
+
+
+
 ####################################################
 
 # class QubitEncodeVectorAUX(QubitEncodeVector,
@@ -3215,6 +3602,8 @@ class QubitEncodeVector(QubitEncodeNet,
         
 #         return self._aux_coo_map
         
+
+
 # class QubitEncodeNetFlat(QubitEncodeNet, 
 #                         qtn.TensorNetwork):
 #     ''' Mixin class for flat networks with the shape of a QE lattice,
@@ -4195,12 +4584,18 @@ def bmps_norm_test():
 
     nex = norm ^ all
     
-    
+
+def main():
+    knet = QubitEncodeNet.random_flat(Lx=2,Ly=3)
+    knet.reshape_face_to_cross_(0,0)
+
+    col_envs = knet.compute_col_environments()
+    return col_envs
         
 
 if __name__ == '__main__':
-    knet = QubitEncodeVector.rand(Lx=2,Ly=3, add_tags=[])
-    knet.graph()
+    main()
+    
     # knet.reshape_face_to_cross_(0,0)
     # norm = knet.make_norm()
     # norm.flatten_()
