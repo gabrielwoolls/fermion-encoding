@@ -19,14 +19,15 @@ def make_auxcon_net(
     Ly,
     phys_dim=2,
     bond_dim=3,
+    grid_tag_id='S{},{}',
     site_tag_id='Q{}',
     phys_ind_id='q{}',
     aux_tag_id='X{}',
-    add_tags={},
+    add_tags=None,
     **tn_opts
 ):
-    tag_id = site_tag_id
-    ind_id = phys_ind_id
+    # tag_id = site_tag_id
+    # ind_id = phys_ind_id
     D = bond_dim
     add_tags = tags_to_oset(add_tags)
 
@@ -34,16 +35,16 @@ def make_auxcon_net(
 
     dummy = np.random.rand(D,D,D,D)
 
-    vertex_net = make_vertex_net(
-        Lx=Lx, Ly=Ly, phys_dim=phys_dim,
+    vertex_net = make_skeleton_net(
+        vertices_only=True, Lx=Lx, Ly=Ly, phys_dim=phys_dim,
         bond_dim=bond_dim, site_tag_id=site_tag_id,
         phys_ind_id=phys_ind_id, add_tags=add_tags,
         **tn_opts)
     
     k=0
-    for fi, fj in product(range(Lx-1), range(Ly-1)):
+    for i, j in product(range(Lx-1), range(Ly-1)):
 
-        if fi % 2 == fj % 2: #add face site & splitting tensors
+        if i % 2 == j % 2: #add face site & splitting tensors
             
             face_bonds = [phys_ind_id.format(Lx*Ly + k)] + [qtn.rand_uuid()
                                                             for _ in range(2)]
@@ -52,28 +53,31 @@ def make_auxcon_net(
                             shape=[phys_dim, D, D],
                             inds=face_bonds,
                             tags=('FACE', 
-                                  tag_id.format(Lx*Ly + k), 
+                                  grid_tag_id.format(2*i+1, 2*j+1),
+                                  site_tag_id.format(Lx*Ly + k), 
                                   *add_tags)
             )
             
-            up_left_corner = fi * Ly + fj
+            up_left_corner = i * Ly + j
             T1 = vertex_net[up_left_corner]
             T2 = vertex_net[up_left_corner+1]
             
             tensor_upper_split = insert_split_tensor(
                 T1=T1, T2=T2, face_ind=face_bonds[1],
                 Tf=face_tensor, add_tags=['AUX', 'UPPER',
-                aux_tag_id.format(up_left_corner), *add_tags]
+                aux_tag_id.format(up_left_corner),
+                grid_tag_id.format(2*i, 2*j+1), *add_tags]
             )
 
-            down_left_corner = (fi + 1) * Ly + fj
+            down_left_corner = (i + 1) * Ly + j
             T1 = vertex_net[down_left_corner]
             T2 = vertex_net[down_left_corner + 1]
 
             tensor_lower_split = insert_split_tensor(
                 T1=T1, T2=T2, face_ind=face_bonds[2],
                 Tf=face_tensor, add_tags=['AUX', 'LOWER', 
-                aux_tag_id.format(down_left_corner), *add_tags]
+                aux_tag_id.format(down_left_corner), 
+                grid_tag_id.format(2*i + 2, 2*j+1), *add_tags]
             )
             
 
@@ -83,8 +87,8 @@ def make_auxcon_net(
             k+=1
     
     vertex_net |= added_tensors
-    return qtn.TensorNetwork(vertex_net.tensors, 
-                            structure=site_tag_id)
+    # return qtn.TensorNetwork(vertex_net.tensors, structure=site_tag_id)
+    return vertex_net
 
 
 
@@ -135,14 +139,6 @@ def insert_identity_between_tensors(T1, T2, add_tags=None):
                       tags=add_tags)
 
 
-
-def get_halfcoo_between(coo1, coo2):
-    i1, j1 = coo1
-    i2, j2 = coo2
-
-    return ((i1+i2)/2, (j1+j2)/2)
-
-
 def make_skeleton_net(
     Lx, 
     Ly,
@@ -152,6 +148,7 @@ def make_skeleton_net(
     site_tag_id='Q{}',
     phys_ind_id='q{}',
     add_tags=None,
+    vertices_only=False,
     **tn_opts
 ):
     '''Makes a product state qubit network, for a lattice with 
@@ -172,25 +169,8 @@ def make_skeleton_net(
     add_tags = tags_to_oset(add_tags) #none by default
 
     #default to ``up`` spin at every site
-    # vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
-    #                 for j in range(Ly)]
-    #                 for i in range(Lx)]
-        
-    # face_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
-    #                 for j in range(Ly-1)]
-    #                 for i in range(Lx-1)]
-
-    #default data for tensors
     vertex_data = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
     face_data = vertex_data
-
-
-    # vtensors = [[qtn.Tensor(data = vert_array[i][j], 
-    #                         inds = [phys_ind_id.format(i*Ly+j)],  #[f'q{i*Ly+j}'],f'Q{i*Ly+j}'
-    #                         tags = (tag_id.format(i*Ly+j), 
-    #                                 'VERT', *add_tags)) 
-    #             for j in range(Ly)] 
-    #             for i in range(Lx)]
 
     vtensors = [[None for _ in range(Ly)] for _ in range(Lx)]
 
@@ -209,7 +189,22 @@ def make_skeleton_net(
         
         vtensors[i][j] = vertex_ij
 
-    # ftensors = np.ndarray(shape=(Lx-1,Ly-1), dtype=object)
+    
+    for i,j in product(range(Lx), range(Ly)):
+        
+        if i<=Lx-2:
+            vtensors[i][j].new_bond(vtensors[i+1][j], size=bond_dim)
+        
+        if j<=Ly-2:
+            vtensors[i][j].new_bond(vtensors[i][j+1], size=bond_dim)
+
+
+    if vertices_only:
+        vtensors = list(chain.from_iterable(vtensors))
+        return qtn.TensorNetwork(vtensors, structure=site_tag_id, **tn_opts)
+
+
+    # add face sites + bonds
     
     ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
     
@@ -232,14 +227,6 @@ def make_skeleton_net(
             k += 1
 
     
-
-    for i,j in product(range(Lx), range(Ly)):
-        
-        if i<=Lx-2:
-            vtensors[i][j].new_bond(vtensors[i+1][j], size=bond_dim)
-        
-        if j<=Ly-2:
-            vtensors[i][j].new_bond(vtensors[i][j+1], size=bond_dim)
 
 
     for i, j in product(range(Lx-1), range(Ly-1)):
@@ -347,55 +334,53 @@ def make_random_net(Lx, Ly, phys_dim,
     return tnet
 
 
-def make_vertex_net(
-    Lx,
-    Ly, 
-    phys_dim=2,
-    bond_dim=3, 
-    site_tag_id='Q{}',
-    phys_ind_id='q{}',
-    add_tags={},
-    qlattice=None,
-    return_arrays=False
-):
-    '''Build 2D array of *vertex* tensors, without 
-    face sites (i.e. essentially a PEPS).
+# def make_vertex_net(
+#     Lx,
+#     Ly, 
+#     phys_dim=2,
+#     bond_dim=3, 
+#     grid_tag_id='S{},{}',
+#     site_tag_id='Q{}', 
+#     phys_ind_id='q{}',
+#     add_tags=None,
+#     **tn_opts
+# ):
+#     '''Build 2D array of *vertex* tensors, without 
+#     face sites (essentially, a PEPS).
 
-    Returns: 
-    -------
-    vtensors: array [ array [qtn.Tensor] ] ]
-        (Lx, Ly)-shaped array of qtn.Tensors connected by
-        bonds of dimension ``bond_dim``. Vertex tensors are tagged 
-        with 'VERT' *and* those supplied in ``add_tags``
-    '''
+#     Returns: 
+#     -------
+#     vtensors: array [ array [qtn.Tensor] ] ]
+#         (Lx, Ly)-shaped array of qtn.Tensors connected by
+#         bonds of dimension ``bond_dim``. Vertex tensors are tagged 
+#         with 'VERT' *and* those supplied in ``add_tags``
+#     '''
 
-    if qlattice is not None:
-        Lx, Ly = qlat.lattice_shape
+#     add_tags = tags_to_oset(add_tags)
 
-    add_tags = set(add_tags)
+#     # vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim) 
+#     #                 for j in range(Ly)]
+#     #                 for i in range(Lx)]
+#     vertex_data = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
 
-    vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim) 
-                    for j in range(Ly)]
-                    for i in range(Lx)]
-       
 
-    vtensors = [[qtn.Tensor(data = vert_array[i][j], 
-                            inds = [phys_ind_id.format(i*Ly+j)],
-                            tags = {site_tag_id.format(i*Ly+j),
-                                    'VERT'} | add_tags) 
-                for j in range(Ly)] 
-                for i in range(Lx)]
+#     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
+#                             inds = [phys_ind_id.format(i*Ly+j)],
+#                             tags = {site_tag_id.format(i*Ly+j),
+#                                     'VERT'} | add_tags) 
+#                 for j in range(Ly)] 
+#                 for i in range(Lx)]
 
     
 
-    for i,j in product(range(Lx), range(Ly)):
-        if i < Lx-1:
-            vtensors[i][j].new_bond(vtensors[i+1][j],size=bond_dim)
-        if j < Ly-1:
-            vtensors[i][j].new_bond(vtensors[i][j+1],size=bond_dim)
+#     for i,j in product(range(Lx), range(Ly)):
+#         if i < Lx-1:
+#             vtensors[i][j].new_bond(vtensors[i+1][j],size=bond_dim)
+#         if j < Ly-1:
+#             vtensors[i][j].new_bond(vtensors[i][j+1],size=bond_dim)
 
-    vtn = qtn.TensorNetwork(vtensors, structure=site_tag_id)
-    return vtn
+#     vtn = qtn.TensorNetwork(vtensors, structure=site_tag_id)
+#     return vtn
 
 
 
