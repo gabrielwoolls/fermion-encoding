@@ -1,7 +1,7 @@
 import quimb as qu
-import numpy as np
-from itertools import product, chain, starmap, cycle
 import quimb.tensor as qtn
+# import numpy as np
+from itertools import product, chain, starmap, cycle, combinations
 import denseQubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
 from collections import defaultdict
@@ -11,6 +11,7 @@ import tqdm
 import functools
 from quimb.tensor.tensor_core import tags_to_oset
 from quimb.utils import pairwise, check_opt, oset
+import opt_einsum as oe
 
 
 
@@ -178,7 +179,7 @@ def make_skeleton_net(
 
         ind_ij = (phys_ind_id.format(i * Ly + j),)
 
-        tags_ij = ('VERT',
+        tags_ij = ('VERT', 'QUBIT',
                    site_tag_id.format(i * Ly + j),
                    grid_tag_id.format(2*i, 2*j),
                    *add_tags)
@@ -214,7 +215,7 @@ def make_skeleton_net(
         if i%2 == j%2:
             ind_ij = (phys_ind_id.format(k + Lx * Ly),)
 
-            tags_ij = ('FACE',
+            tags_ij = ('FACE', 'QUBIT',
                         site_tag_id.format(k + Lx * Ly),
                         grid_tag_id.format(2*i + 1, 2*j + 1),
                         *add_tags)
@@ -634,7 +635,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             (spin-1/2) fermions.
 
 
-        _vert_coo_map: dict[tuple(int) : int]
+        _vertex_coo_map: dict[tuple(int) : int]
             Numbering of the vertex sites, i.e.
             maps each location (i,j) in the vertex lattice
             to an integer.
@@ -894,28 +895,52 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def vert_coo_map(self, i=None, j=None):
+    def vertex_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in vertex lattice
         to the corresponding site number.
         '''
-        if not hasattr(self, '_vert_coo_map'):
+        if not hasattr(self, '_vertex_coo_map'):
 
-            self._vert_coo_map = {(2*i, 2*j): i * self.Ly + j
+            self._vertex_coo_map = {(2*i, 2*j): i * self.Ly + j
                     for i, j in product(range(self.Lx), range(self.Ly))
                     }
             
         if (i is None) and (j is None):
-            return self._vert_coo_map
+            return self._vertex_coo_map
         
 
         elif (i % 2 == 0) and (j % 2 == 0):
-            return self._vert_coo_map[(i, j)]
+            return self._vertex_coo_map[(i, j)]
         
         
         else:
             raise ValueError(f"{i},{j} not a proper vertex coordinate")
 
 
+    def is_vertex_coo(self, xy):
+        x, y = xy
+
+        return all((
+            x % 2 == 0,
+            y % 2 == 0,
+            self.valid_supercoo(xy)
+        ))
+    
+    def is_face_coo(self, xy):
+        x, y = xy
+
+        return all((
+            x % 2 == 1,
+            y % 2 == 1,
+            self.valid_supercoo(xy)
+        ))
+    
+    def is_qubit_coo(self, xy):
+        '''Whether `xy` is a vertex or face coo (not auxiliary)
+        Note: will count empty face sites as ``True``
+        '''
+        x, y = xy
+        return (x % 2 == y % 2) and self.valid_supercoo(xy)
 
     def face_coo_map(self, x=None, y=None):
         '''Maps location (x, y) in grid to the 
@@ -953,14 +978,40 @@ class QubitEncodeNet(qtn.TensorNetwork):
             raise ValueError(f"{x},{y} not a proper face coordinate")
 
 
-        
+    def qubit_to_coo_map(self, qnumber=None):
+        """Mapping of qubit numbers to corresponding grid coordinates, e.g.
+
+        >>> qubit_to_coo_map(0)
+        (0, 0)
+
+        >>> qubit_to_coo_map(1)
+        (0, 1)
+
+        or, if no qubit is specified, return the whole dict:
+
+        >>> qubit_to_coo_map()
+        {0: (0, 0), 1: (0, 1), 2: (0, 2), 3: (1, 0), ...}
+        """
+
+        if not hasattr(self, '_qubit_to_coo_map'):
+            q2coo = {q: coo for coo, q in self.vertex_coo_map().items()}
+            q2coo.update({q: coo for coo, q in self.face_coo_map().items()
+                                    if q is not None})
+            self._qubit_to_coo_map = q2coo
+
+
+        if qnumber is not None:
+            return self._qubit_to_coo_map[qnumber]
+
+
+        return self._qubit_to_coo_map
 
 
     def set_supergrid(self, arrays):
         self._supergrid = arrays
 
 
-    def supergrid(self, x=None, y=None):
+    def supergrid(self, x=None, y=None, layer=None):
         '''Returns *tuple* of tags corresponding
         to supercoo ``x, y``. If no coo is specified
         (default) returns the whole dictionary.
@@ -988,7 +1039,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def vert_coo_tag(self, x, y):
         '''Tag 'Q{k}' for vertex site at supercoo (x, y)
         '''
-        qnumber = self.vert_coo_map(x,y)
+        qnumber = self.vertex_coo_map(x,y)
 
         return self.site_tag_id.format(qnumber)
     
@@ -1050,25 +1101,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return where
 
         
-    
-    # def gen_vertex_sites(self):
-    #     ''' Generator, same as ``range(num_vertices)``
-    #     '''
-    #     return self.qlattice().gen_vertex_sites()
-
-    
-    # def gen_face_sites(self):
-    #     '''Generator, same as ``range(num_verts, num_sites)``
-    #     '''
-    #     return self.qlattice().gen_face_sites()
-    
-
-    # def gen_all_sites(self):
-    #     '''Generator, same as ``range(num_sites)``.
-    #     Only includes vertices and faces, not 'aux' tensors.
-    #     '''
-    #     return self.qlattice().gen_all_sites()
-
 
     def gen_vertex_coos(self):
         '''Generate supergrid coordinates for all 
@@ -1077,7 +1109,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         for i,j in product(range(self.Lx), range(self.Ly)):
             yield (2*i, 2*j)
 
-
+        
     
     def gen_face_coos(self, including_empty=False):
         '''Generate supergrid coordinates of 'face' sites,
@@ -1090,10 +1122,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
                 yield (2 * i + 1, 2 * j + 1)
     
-    
-    # def gen_supergrid_coos(self):
-    #     return product(range(2 * self.Lx - 1), range(2 * self.Ly - 1))
-
 
     def gen_supergrid_tags(self, with_coo=False):
         '''Generate the supergrid tags, corresponding to locations
@@ -1113,6 +1141,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
 
     def valid_supercoo(self, xy):
+        '''Whether ``xy`` is inside the supergrid boundary
+        '''
         x, y = xy
         return (0 <= x < self.grid_Lx) and (0 <= y < self.grid_Ly)
 
@@ -2145,7 +2175,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
         canonize=True,
         compress_sweep='left',
         **compress_opts        
-    ):
+    ):  
+        ## update?
+        self._supergrid = self.calc_supergrid()
+        ##
+
         for x in range(max(xrange), min(xrange), -1):
             # first ensure the exterior sites are a single tensor
             #
@@ -2171,7 +2205,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     compress_sweep=compress_sweep, layer_tag=tag,
                     **compress_opts)
                 
-                for y in range(min(yrange), max(yrange)+1):
+                for y in range(min(yrange), max(yrange) + 1):
                     inner_tag = self.supergri
 
 
@@ -2907,13 +2941,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
         for k, ccoo in enumerate(corner_coos):
             tn ^= f'TEMP{k}'
 
+            corner_qubit = self.vertex_coo_map(*ccoo)
+
             next_ccoo = corner_coos[0] if k==3 else corner_coos[k+1]
 
-            # mid_supercoo = tn.supergrid_coo_between_verts(ij1=ccoo, ij2=next_ccoo)
             mid_coo = tn.coo_between(xy1=ccoo, xy2=next_ccoo)
             new_grid_tag = tn.grid_coo_tag(*mid_coo)
 
             tn.retag_({f'TEMP{k}': new_grid_tag})
+            tn[new_grid_tag].add_tag(f"ADJ{corner_qubit}")
 
             # records the unique `new_id_tag` in the supergrid
             tn._update_supergrid(*mid_coo, tag=new_grid_tag)
@@ -3097,7 +3133,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         row_envs=None,
         **compute_environment_opts
     ):
-        needs_face_qubit = (x_bsz >= 3) or (y_bsz >= 3)
+        # needs_face_qubit = (x_bsz >= 3) or (y_bsz >= 3)
 
 
         if second_dense is None:
@@ -3157,8 +3193,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 continue
             
             # skip if the plaquette has no face qubit?
-            if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
-                continue
+            # if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
+            #     continue
 
 
             # select bordering tensors from:
@@ -3219,7 +3255,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         col_envs=None,
         **compute_environment_opts
     ):
-        needs_face_qubit = (x_bsz >= 3) or (y_bsz >= 3)
+        # needs_face_qubit = (x_bsz >= 3) or (y_bsz >= 3)
 
         if second_dense is None:
             second_dense = y_bsz < 2
@@ -3272,7 +3308,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #     ●──●──●──●      ╰──●──╯
             #
             row_envs[y] = col_y.compute_row_environments(
-                yrange=(max(y - 1, 0), min(y + y_bsz, self.Ly - 1)),
+                yrange=(max(y - 1, 0), min(y + y_bsz, self.grid_Ly - 1)),
                 dense=second_dense, **compute_environment_opts)
             
         # range through possible plaquettes, slecting correct boundary tensors
@@ -3286,8 +3322,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 continue
             
             # skip the plaquette if it doesn't have a face qubit?
-            if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
-                continue
+            # if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
+            #     continue
 
             # we want to select bordering tensors from:
             #
@@ -3516,7 +3552,155 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return qtn.TensorNetwork(tensors, check_collisions=False).view_as_(QubitEncodeNet,
                                                                         like=self)
 
+    def calc_qubit_plaquette_sizes(self, qubit_groups, autogroup=True):
+        """Compute sequence of block size pairs (x_bsz, y_bsz) to cover
+        all the qubit groupings in ``qubit_groups``.
 
+        Args
+        ----
+        qubit_groups: sequence of tuple[int]
+            The set of qubit groups; each group is a tuple of ints
+            (could be length 2 or 3) labeling qubits that get acted 
+            on together by a Ham term
+        autogroup: bool, optional:
+            Whether to return minimal sequence of blocksizes that will
+            cover all the groups, or merge them into a single ``((x_bsz, y_bsz),)``.
+
+        Returns
+        -------
+        block_sizes: tuple[tuple[int]]
+            Pairs of block sizes like ((1,2), (2,1))
+        """
+        # maps a group of qubits to group of coos, e.g.
+        # (0, 1, 9) --> ((0, 0), (0, 2), (1, 1))
+        # (1, 2) --> ((0, 2), (0, 4))
+        qs2coos = lambda qs: tuple(map(self.qubit_to_coo_map, qs))
+
+
+        # get groups of grid coordinates
+        # e.g.  ((0, 1, 9), (0, 9, 2)) --> coo_groups[0] = ((0, 0), (0, 2), (1, 1)) 
+        #                                  coo_groups[1] = ((0, 0), (1, 1), (0, 4))
+        coo_groups = map(qs2coos, qubit_groups)
+        
+
+        # get rectangular plaq sizes for each group
+        # e.g.  ((0, 0), (0, 2), (1, 1)) --> (2, 3)
+        # 
+        #   ●───o───●──   ┬
+        #   │   │   │     ┊  x_bsz = 2
+        #   o───●───o──   ┴ 
+        #   │   │   │     
+        #   o───o───o── 
+        # 
+        #   <------->  y_bsz = 3
+        # 
+        block_sizes = set()
+        for group in coo_groups:
+            xs, ys = zip(*group)
+            x_bsz = max(xs) - min(xs) + 1
+            y_bsz = max(ys) - min(ys) + 1
+            block_sizes.add((x_bsz, y_bsz))
+        
+        # block_sizes = {tuple(max(ds) - min(ds) + 1 for ds in zip(*group)) 
+        #               for group in coo_groups}
+
+        # remove block sizes that can be contained in another block size
+        #     e.g. {(1, 2), (2, 1), (2, 2)} -> ((2, 2),)
+        relevant_block_sizes = []
+
+        for b in block_sizes:
+
+            is_included = any(
+                (b[0] <= b2[0]) and (b[1] <= b2[1]) 
+                for b2 in block_sizes - {b}
+                )
+
+            if not is_included:
+                relevant_block_sizes.append(b)
+        
+        bszs = tuple(sorted(relevant_block_sizes))
+
+        # bszs = tuple(sorted(
+        # b for b in block_sizes
+        # if not any(
+        #     (b[0] <= b2[0]) and (b[1] <= b2[1])
+        #     for b2 in block_sizes - {b}
+        #         )
+        # ))
+
+        # return all plaquette sizes separately
+        if autogroup:
+            return bszs
+
+
+        # otherwise make a big blocksize to cover all terms
+        #     e.g. ((1, 2), (3, 2)) -> ((3, 2),)
+        #          ((1, 2), (2, 1)) -> ((2, 2),)
+        return (tuple(map(max, zip(*bszs))),)
+
+
+    def calc_plaquette_map(self, plaquettes, face_qubits=True):
+        """Generate a dictionary of all the coordinate pairs in ``plaquettes``
+        mapped to the 'best' (smallest) rectangular plaquette that contains them.
+        
+        Will optionally compute for 3-length combinations as well, to
+        capture 3-local qubit interactions like (vertex, vertex, face)
+        interactions.
+
+        Args:
+            plaquettes: sequence of tuple[tuple[int]]
+                Sequence of plaquettes like ((x0, y0), (dx, dy))
+
+            face_qubits: bool, optional
+                Whether to include 3-local interactions as well 
+                as 2-local (pairwise).
+
+        NOTE: Inefficient bc most of the coo mappings are irrelevant; only
+        *qubit* sites will be acted on (auxiliary grid coos don't matter). 
+        """
+        # sort in descending total plaquette size
+        plqs = sorted(plaquettes, key=lambda p: (-p[1][0] * p[1][1], p))
+        
+        mapping = dict()
+
+        
+        for p in plqs:
+            sites = self.plaquette_to_site_coos(p)
+        
+            # for pairwise (no face qubit) interactions
+            # like ij_a, ij_b
+            for coo_pair in combinations(sites, 2):
+
+                if all(tuple(map(self.is_qubit_coo, coo_pair))):
+                    mapping[coo_pair] = p
+
+
+            if face_qubits:
+                # include 3-local interactions
+                # like ij_a, ij_b, ij_c
+                for coo_triple in combinations(sites, 3):
+                    
+                    if all(tuple(map(self.is_qubit_coo, coo_triple))):
+                        mapping[coo_triple] = p
+
+        return mapping
+
+            
+
+
+
+    def plaquette_to_site_coos(self, p):
+        """Turn a plaquette ``((x0, y0), (dx, dy))`` into the grid
+        coordinates of the sites it contains.
+
+        Examples
+        --------
+            >>> plaquette_to_site_coos([(3, 4), (2, 2)])
+            ((3, 4), (3, 5), (4, 4), (4, 5))
+        """
+        (x0, y0), (dx, dy) = p
+        return tuple((x, y) for x in range(x0, x0 + dx)
+                            for y in range(y0, y0 + dy))
 
 ##                       ##
 ## End QubitEncodeNet class
@@ -3612,32 +3796,17 @@ class QubitEncodeVector(QubitEncodeNet,
 
         self._grid_tag_id = grid_tag_id
         self._site_tag_id = site_tag_id
-        self._phys_ind_id = phys_ind_id
         self._aux_tag_id = aux_tag_id
 
-        self._qlattice = denseQubits.QubitLattice(Lx=Lx, Ly=Ly,
-                                                  local_dim=phys_dim)
+        self._phys_ind_id = phys_ind_id
+
+        # self._qlattice = denseQubits.QubitLattice(Lx=Lx, Ly=Ly,
+        #                                           local_dim=phys_dim)
 
         
-        # self._vert_coo_map = self.vert_coo_map()
-        # self._face_coo_map = self.face_coo_map()
-
-            
         super().__init__(tn, **tn_opts)
 
     
-
-    # def copy(self, virtual, deep):
-    #     return self.__class__(
-    #                     tn=self, 
-    #                     qlattice=self.qlattice,
-    #                     site_tag_id=self.site_tag_id,
-    #                     phys_ind_id=self.phys_ind_id,
-    #                     aux_tag_id=self.aux_tag_id)
-
-    # __copy__ = copy
-        
-
     @classmethod
     def rand_from_qlattice(cls, qlattice, bond_dim=3, **tn_opts):
         '''Make a random QubitEncodeVector from specified `qlattice`.
@@ -3675,16 +3844,16 @@ class QubitEncodeVector(QubitEncodeNet,
         return self._phys_ind_id
     
     def _vert_coo_ind(self,i,j):
-        '''Index id for site at vertex-coo (i,j)
+        '''Physical index for vertex-qubit at coo (i,j)
         '''
-        k = self.vert_coo_map(i,j)
+        k = self.vertex_coo_map(i,j)
         return self.phys_ind_id.format(k)
 
 
-    def _face_coo_ind(self, fi, fj):
-        '''Index id for site at face-coo (fi,fj)
+    def _face_coo_ind(self, i, j):
+        '''Physical index for face-qubit at coo (i,j)
         '''
-        k = self.face_coo_map(fi, fj)
+        k = self.face_coo_map(i, j)
         return None if k is None else self.phys_ind_id.format(k)
         # if k is None:
         #     return None
@@ -3746,7 +3915,7 @@ class QubitEncodeVector(QubitEncodeNet,
             shape ([physical_dim] * 2 * len(where))
         
         where: sequence of ints
-            The sites on which to act, using the (default) 
+            The qubits on which to act, using the (default) 
             custom numbering that labels both face and vertex
             sites.
         
@@ -3892,6 +4061,8 @@ class QubitEncodeVector(QubitEncodeNet,
             for k in range(nsites):
                 psi |= qtn.tensor_contract(pts[k], Ts[k])
 
+            # psi.fuse_multibonds_()
+
             return psi
 
         else:
@@ -4000,7 +4171,7 @@ class QubitEncodeVector(QubitEncodeNet,
         #only finds occupations at *vertices*
         for i,j in product(range(Lx), range(Ly)):
             
-            where = self.vert_coo_map(i,j)
+            where = self.vertex_coo_map(i,j)
             G_ket = self.apply_gate(G, where=(where,))
 
             nxy_array[i][j] = (bra | G_ket) ^ all
@@ -4045,7 +4216,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
         E = 0
         for where, mpo in Hmpo.gen_ham_terms():
-            E += (bra|self.apply_mpo(mpo, where, contract=True))^all
+            E += (bra | self.apply_mpo(mpo, where, contract=True))^all
         
         if not normalize:
             return E
@@ -4110,10 +4281,9 @@ class QubitEncodeVector(QubitEncodeNet,
 
     def compute_local_expectation(
         self,
-        terms,
+        qubit_terms,
         normalized=False,
         autogroup=True,
-        contract_optimize='auto-hq',
         return_all=False,
         plaquette_envs=None,
         plaquette_map=None,
@@ -4123,41 +4293,116 @@ class QubitEncodeVector(QubitEncodeNet,
         the reduced density matrix of all required plaquettes.
         Parameters
         ----------
-        terms : dict[tuple[tuple[int], array]
-            A dictionary mapping site coordinates to raw operators, which will
+        qubit_terms : dict[tuple[int]: array or quimb.tensor.MPO]
+            A dictionary mapping sets of *qubits* to raw operators, which will
             be supplied to
-            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2DVector.gate`.
+            :meth:`~QubitEncodeVector.apply_gate` or to
+            :meth:`~QubitEncodeVector.apply_mpo`.
+        
         normalized : bool, optional
             If True, normalize the value of each local expectation by the local
             norm: $\langle O_i \rangle = Tr[\rho_p O_i] / Tr[\rho_p]$.
+        
         autogroup : bool, optional
             If ``True`` (the default), group terms into horizontal and vertical
             sets to be computed separately (usually more efficient) if
             possible.
-        contract_optimize : str, optional
-            Contraction path finder to use for contracting the local plaquette
-            expectation (and optionally normalization).
+        
         return_all : bool, optional
             Whether to the return all the values individually as a dictionary
             of coordinates to tuple[local_expectation, local_norm].
+        
         plaquette_envs : None or dict, optional
             Supply precomputed plaquette environments.
+
         plaquette_map : None, dict, optional
             Supply the mapping of which plaquettes (denoted by
             ``((x0, y0), (dx, dy))``) to use for which coordinates, it will be
             calculated automatically otherwise.
+        
         plaquette_env_options
             Supplied to
-            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.compute_plaquette_environments`
-            to generate the plaquette environments, equivalent to approximately
-            performing the partial trace.
+            :meth:`~QubitEncodeNet.compute_plaquette_environments`
+            to generate the plaquette environments.
+
         Returns
         -------
         scalar or dict
         """
+        
+        # contract_optimize = 'auto-hq'
+
         norm, bra, ket = self.make_norm(return_all=True)
 
+        qubit_groups = qubit_terms.keys()
 
+        if plaquette_envs is None:
+            # set some sensible defaults
+            # plaquette_env_options.setdefault...
+
+            plaquette_envs = dict()
+            
+            for x_bsz, y_bsz in self.calc_qubit_plaquette_sizes(qubit_groups, autogroup):
+                plaquette_envs.update(norm.compute_plaquette_environments(
+                    x_bsz=x_bsz, y_bsz=y_bsz, **plaquette_env_options))
+            
+        if plaquette_map is None:
+
+            # max number of qubits acted on at a time
+            max_local = max(tuple(map(len, qubit_groups)))
+
+            with_face_qubits = max_local > 2
+
+            # find what plaquette to use for each group of qubits
+            plaquette_map = self.calc_plaquette_map(plaquette_envs, with_face_qubits)
+
+        # map plaquettes to list of (qubit group, ham gate) tuples
+        # that use that plaquette
+        plaq2qubits = defaultdict(list)
+        for where, G in qubit_terms.items():
+
+            qubit_coos = tuple(map(self.qubit_to_coo_map, where))
+            p = plaquette_map[qubit_coos]
+            plaq2qubits[p].append((where, G))
+        
+
+        expecs = dict()
+        for p in plaq2qubits:
+            # site tags in plaquette
+            site_tags = tuple(starmap(self.grid_coo_tag, plaquette_to_site_coos(p)))
+            
+            # check which sites are in plaquette though?
+            # i.e. might have missing lads?
+            #
+
+            bra_and_env = bra.select_any(site_tags) | plaquette_envs[p]
+            ket_local = ket.select_any(sites)
+            ket_local.view_as_(QubitEncodeVector, like=self)
+
+            with oe.shared_intermediates():
+                # local norm estimate for this plaquette
+                if normalized:
+                    norm_x0y0 = (
+                        ket_local | bra_and_env
+                    ).contract(all, optimize='auto-hq')
+                else:
+                    norm_x0y0 = None
+                
+                for where, G in plaq2qubits[p]:
+                    expec_xy = (
+                        ket_local.apply_gate(G, where, contract=False) | bra_and_env
+                    ).contract(all, optimize='auto-hq')
+
+                    expecs[where] = expec_xy, norm_x0y0
+            
+        if return_all:
+            return expecs
+        
+        if normalized:
+            return functools.reduce(add, (e / n for e, n in expecs.values()))
+        
+        return functools.reduce(add, (e for e, _ in expecs.values()))
+        
 
 ####################################################
 
@@ -4194,7 +4439,7 @@ class QubitEncodeVector(QubitEncodeNet,
 #         self._site_tag_id = site_tag_id
 #         self._aux_tag_id = aux_tag_id
 
-#         self._vert_coo_map = self.vert_coo_map()
+#         self._vertex_coo_map = self.vertex_coo_map()
 #         self._face_coo_map = self.face_coo_map()
 
 #         super().__init__(tn, **tn_opts)
