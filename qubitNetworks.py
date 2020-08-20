@@ -1582,6 +1582,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         canonize=True,
         compress_sweep='down',
         layer_tag=None,
+        recalc_supergrid=True,
         **compress_opts
      ):
         canonize_sweep = {
@@ -1599,20 +1600,21 @@ class QubitEncodeNet(qtn.TensorNetwork):
         def contract_chosen_layer(grid_tags1, grid_tags2):
             ''' Only contract tensors living on the specified
             layer via `layer_tag`.
+
+            Looks for `layer_tag` on the *second* tensor given.
             '''
             self.contract_between(tags1=grid_tags1,
                                   tags2=(*grid_tags2, layer_tag))
                                 
+        #bound method that maps (x,y) to tuple(tags_xy) or None
+        grid = self.supergrid
 
         if layer_tag is None:
             contract_step = contract_any_layers
 
         else:
             contract_step = contract_chosen_layer
-
-
-        #bound method, maps (x,y) to tuple(tags of tensor at xy)
-        grid = self.supergrid
+        
 
         for y in range(max(yrange), min(yrange), -1):
             #
@@ -1634,9 +1636,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
                 #check if there is a bond 'floating' over the supergrid locations
-                bonds_here = tuple(starmap(self.check_for_vertical_bond_across, 
-                                            [(x, y-1), 
-                                             (x, y)]))
+                # bonds_here = tuple(starmap(self.check_for_vertical_bond_across, 
+                #                             [(x, y-1), 
+                #                              (x, y)]))
+                bonds_here = (self.check_for_vertical_bond_across(x, y-1, layer_tag),
+                              self.check_for_vertical_bond_across(x, y, layer_tag))
                 
                 if tensors_here == (True, True):
                     #
@@ -1646,7 +1650,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     #
                     # tensors on both sides, contract:
 
-                    contract_step(grid(x, y-1), grid(x, y))
+                    contract_step(grid(x, y), grid(x, y-1))
+                    # look for ``layer_tag`` on left tensor`
                 
 
 
@@ -1662,16 +1667,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
                         # 
                         # no left tensor, but need to absorb a bond.
                         # Insert dummy identity and contract w/ right-tensor
-                        # dummy_tag = self.grid_coo_tag(x, y-1)
                         dummy_tags = ('AUX', self.grid_coo_tag(x, y-1))
+
+                        if layer_tags is not None:
+                            dummy_tags = (*dummy_tags, layer_tag)
 
                         self.insert_identity_between_(where1=grid(x-1, y-1),
                                                       where2=grid(x+1, y-1),
+                                                      layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        self._update_supergrid(x, y-1, dummy_tags)                                                      
+                        # self._update_supergrid(x, y-1, dummy_tags)                                                      
 
-                        contract_step(grid(x, y-1), grid(x, y))
+                        contract_step(dummy_tags, grid(x, y))
 
                     else:
                         # 
@@ -1706,9 +1714,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       where2=grid(x + 1, y),
                                                       add_tags=dummy_tags)
 
-                        self._update_supergrid(x, y, dummy_tags)
+                        # self._update_supergrid(x, y, dummy_tags)
 
-                        contract_step(grid(x,y), grid(x, y-1))                                                      
+                        # layer_tag will be on left-tensor
+                        contract_step(dummy_tags, grid(x, y-1))                                                      
 
                     else:
                         # 
@@ -1752,13 +1761,82 @@ class QubitEncodeNet(qtn.TensorNetwork):
             self._compress_supergrid_column(y, compress_sweep, 
                                     xrange, **compress_opts)
 
-            # move tags in supergrid[:][y] to the left (--> y-1)
-            for x in range(min(xrange), max(xrange)+1):         
-                self.drop_tags(self.grid_coo_tag(x, y))       
-                # self._move_supergrid_tags(from_coo=(x, y), to_coo=(x, y-1))
+            # should be true if contracting more than one column at a time
+            if recalc_supergrid:
+                # drop previous tags to move boundary (previously at
+                # supergrid[:][y]) to the left (y -> y-1)
+                for x in range(min(xrange), max(xrange)+1):         
+                    self.drop_tags(self.grid_coo_tag(x, y))       
+                
+                self._supergrid = self.calc_supergrid()
+            
+            # on to next column
+        
+        # end loop over columns
+
+    def _contract_boundary_from_right_multi(
+        self,
+        yrange,
+        xrange,
+        layer_tags,
+        canonize=True,
+        compress_sweep='down',
+        **compress_opts
+    ):
+        ## update?
+        self._supergrid = self.calc_supergrid()
+        ##
+
+        for y in range(max(yrange), min(yrange), -1):
+            # make sure the exterior sites are a single tensor
+            #
+            #         ──○──○           ──○──●
+            #          ╱│ ╱│            ╱│ ╱│    (for two layer tags)
+            #       ──○──○─●         ──○──●─╯
+            #        ╱│╱╱│╱   ==>     ╱│╱╱│
+            #     ──○──○─●         ──○──●─╯
+            #       │╱ │╱            │╱ │
+            #     ──●──●           ──●──╯
+            #
+            for right_tag in self.supergrid_column_slice(y, xrange, get='tag'):
+                self ^= right_tag
+            
+
+            for layer in layer_tags:
+                # contract interior sites from layer ``tag``
+                #
+                #         ──○
+                #          ╱ ╲╲     (first contraction if there are two tags)
+                #       ──○────v
+                #        ╱ ╲╲ ╱
+                #     ──○────v
+                #        ╲╲ ╱
+                #     ─────●
+                #
+                # contract layer with boundary, forcing ``supergrid``` to stay 
+                # the same until both BRA and KET have been contracted
+                self._contract_boundary_from_right_single(
+                    yrange=(y, y-1), xrange=xrange, recalc_supergrid=False,
+                    canonize=canonize, compress_sweep=compress_sweep, 
+                    layer_tag=layer, **compress_opts)
+                
+                # so we can still uniqely identify 'inner' tensors, drop inner
+                #     site tag merged into outer tensor for all but last tensor
+                for x in range(min(xrange), max(xrange) + 1):
+                    inner_tag = self.grid_coo_tag(x, y - 1)
+                    if len(self.tag_map[inner_tag]) > 1:
+                        outer_tensor_xy = self[self.grid_coo_tag(x,y)]
+                        outer_tensor_xy.drop_tags(inner_tag)
+
+                # on to next layer
+
+            # end loop over layers
+
+            for x in range(min(xrange), max(xrange)+1):
+                self.drop_tags(self.grid_coo_tag(x, y))
             
             self._supergrid = self.calc_supergrid()
-            
+
             # on to next column
         
         # end loop over columns
@@ -1782,13 +1860,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         if layer_tags is None:
             tn._contract_boundary_from_right_single(
-                yrange, xrange, canonize=canonize,
+                yrange=yrange, xrange=xrange, canonize=canonize,
                 compress_sweep=compress_sweep, **compress_opts)
         else:
-            pass
-            # tn._contract_boundary_from_right_multi(
-            #     yrange, xrange, layer_tags, canonize=canonize,
-            #     compress_sweep=compress_sweep, **compress_opts)
+            tn._contract_boundary_from_right_multi(
+                yrange=yrange, xrange=xrange, layer_tags=layer_tags,
+                canonize=canonize, compress_sweep=compress_sweep, 
+                **compress_opts)
 
         return tn
 
@@ -2005,7 +2083,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             for top_tag in self.supergrid_row_slice(x, yrange, get='tag'):
                 self ^= top_tag
             
-            
+
             for layer in layer_tags:
                 # contract interior sites from layer ``tag``
                 #
@@ -2135,7 +2213,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 # check if there are horizontal bonds 'floating' over the supergrid locations
                 # bonds_here = tuple(starmap(self.check_for_horizontal_bond_across,
                 #                             [(x-1, y), (x, y)] ))
-                bonds_here = (self.check_for_horizontal_bond_across(x - 1, y, layer_tag),
+                bonds_here = (self.check_for_horizontal_bond_across(x-1, y, layer_tag),
                               self.check_for_horizontal_bond_across(x, y, layer_tag),)
 
                 
@@ -2506,7 +2584,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             elif direction == 'r':
                 if (around is None) or (right - 1 > stop_j_max):
-                    tn._contract_boundary_from_right_single(
+                    tn.contract_boundary_from_right_(
                         yrange=(right, right - 1),
                         xrange=(bottom, top),
                         compress_sweep='down',
@@ -2835,17 +2913,18 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return list(self[tags1].bonds(self[tags2]))
 
 
-    def check_for_vertical_bond_across(self, x, y):
+    def check_for_vertical_bond_across(self, x, y, layer_tag=None):
         '''Check if there is a vertical bond crossing supergrid
-        coordinate `x,y`, i.e. whether there are connected tensors 
-        above and below. 
+        coordinate ``x,y``, i.e. whether there are connected tensors 
+        above and below. Can optionally give a ``layer_tag`` to 
+        look only in 'BRA' or 'KET' layer.
         
         Assumes:
         -------
         There is no bond at the supergrid edges
         Need only check above and below by 1 node
         '''
-        if x == 0 or x == 2 * self.Lx - 2: #
+        if x == 0 or x == 2 * self.Lx - 2: 
             return False
         
         tags_above = self.supergrid(x-1, y)
@@ -2853,6 +2932,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         if (tags_above is None) or (tags_below is None):
             return False
+        
+        if layer_tag is not None:
+            tags_above = (*tags_above, layer_tag)
+            tags_below = (*tags_below, layer_tag)
+
 
         return bool(self.find_bonds_between(tags1=tags_above,
                                             tags2=tags_below))
