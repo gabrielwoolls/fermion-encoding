@@ -2241,6 +2241,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 #    │╱ │╱ │╱ │╱ │╱
                 #    ●══<══<══<══<
                 #
+                # contract layer with boundary, forcing ``supergrid``` to stay 
+                # the same until both BRA and KET have been contracted
                 self._contract_boundary_from_bottom_single(
                     yrange=yrange, xrange=(x, x-1), recalc_supergrid=False,
                     canonize=canonize, compress_sweep=compress_sweep, 
@@ -2253,6 +2255,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     if len(self.tag_map[inner_tag]) > 1:
                         outer_tensor_xy = self[self.grid_coo_tag(x,y)]
                         outer_tensor_xy.drop_tags(inner_tag)
+
+                # on to next layer
+            
+            # end loop over layers
 
             for y in range(min(yrange), max(yrange)+1):
                     self.drop_tags(self.grid_coo_tag(x, y))
@@ -2288,8 +2294,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         else:
             tn._contract_boundary_from_bottom_multi(
-                yrange, xrange, layer_tags, canonize=canonize,
-                compress_sweep=compress_sweep, **compress_opts)
+                yrange=yrange, xrange=xrange, layer_tags=layer_tags, 
+                canonize=canonize, compress_sweep=compress_sweep, 
+                **compress_opts)
 
         return tn
 
@@ -2330,7 +2337,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
             If given, don't contract the square of sites bounding these
             coordinates.
         layer_tags : None or sequence of str, optional
-        # NOTE currently doesn't do anything
             If given, perform a multilayer contraction, contracting the inner
             sites in each layer into the boundary individually.
         max_separation : int, optional
@@ -2363,7 +2369,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
         tn = self if inplace else self.copy()
 
-        # boundary_contract_opts['layer_tags'] = layer_tags
+        boundary_contract_opts['layer_tags'] = layer_tags
 
         # starting borders (default to *supergrid* dimensions!)
         if bottom is None:
@@ -2400,7 +2406,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             if direction == 'b':
                 # check if we have reached the 'stop' region
                 if (around is None) or (bottom - 1 > stop_i_max):
-                    tn._contract_boundary_from_bottom_single(
+                    tn.contract_boundary_from_bottom_(
                         xrange=(bottom, bottom - 1),
                         yrange=(left, right),
                         compress_sweep='left',
@@ -2834,8 +2840,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         graph_opts.setdefault('show_tags', False)
         graph_opts.setdefault('show_inds', True)
 
-        if not fix_lattice:
-            super().graph(**graph_opts)
+        
 
 
         def get_layer_fix_tags(layer_tag=None, offset=0.0):
@@ -2854,9 +2859,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                           -LATX * (x + offset))})
         
             return fix_tags
+        
+        
+        if fix_lattice == False:
+            super().graph(**graph_opts)
 
-
-        try:
+        else:
+            # try:
             if layer_tags is None:
                 fix_tags = get_layer_fix_tags()
 
@@ -2867,10 +2876,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                         offset= 0.5 * k))
 
             super().graph(fix=fix_tags, **graph_opts)
-        
-        except ValueError as e:
-            print(f"Graph attempt error: {e}")
-            super().graph(**graph_opts)
+            
+            # except ValueError as e:
+            #     print(f"Graph attempt error: {e}")
+            #     super().graph(**graph_opts)
 
 
             
