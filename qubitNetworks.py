@@ -1805,6 +1805,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         canonize=True,
         compress_sweep='right',
         layer_tag=None,
+        recalc_supergrid=True,
         **compress_opts
     ):
         canonize_sweep = {
@@ -1823,10 +1824,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
             ''' Only contract tensors living on the specified
             layer via `layer_tag`.
 
-            Assumes `layer_tag` will be found on *first* given tensor.
+            Assumes `layer_tag` will be found on *second* given tensor.
             '''
-            self.contract_between(tags1=(*grid_tags1,layer_tag),
-                                  tags2=grid_tags2)
+            self.contract_between(tags1=grid_tags1,
+                                  tags2=(*grid_tags2, layer_tag))
                                 
 
         if layer_tag is None:
@@ -1882,13 +1883,17 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         dummy_tags = ('AUX', self.grid_coo_tag(x, y+1))
 
+                        if layer_tags is not None:
+                            dummy_tags = (*dummy_tags, layer_tag)
+
                         self.insert_identity_between_(where1=grid(x+1, y-1),
                                                       where2=grid(x+1, y+1),
+                                                      layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        self._update_supergrid(x+1, y, dummy_tags)
+                        # self._update_supergrid(x+1, y, dummy_tags)
 
-                        contract_step(grid(x, y), grid(x+1, y))
+                        contract_step(dummy_tags, grid(x, y))
 
                     else:
                         #
@@ -1923,8 +1928,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         self._update_supergrid(x, y, dummy_tags)
 
-                        contract_step(grid(x+1, y), grid(x, y))
-                        # flip order of args, ``layer_tag`` will be on lower-tensor
+                        # layer_tag will be on lower-tensor
+                        contract_step(dummy_tags, grid(x+1, y))
+                        
 
                     else:
                         #
@@ -1962,17 +1968,78 @@ class QubitEncodeNet(qtn.TensorNetwork):
             self._compress_supergrid_row(x, sweep=compress_sweep, 
                                         yrange=yrange, **compress_opts)
 
-            #move the tags in supergrid[x][:] down by one (--> x+1)
-            for y in range(min(yrange), max(yrange)+1):
+            # should be true if contracting more than one row at a time
+            if recalc_supergrid:
+                # drop previous tags to move boundary (previously at 
+                # supergrid[x][:]) down by one (x -> x+1)
+                for y in range(min(yrange), max(yrange)+1):
+                    self.drop_tags(self.grid_coo_tag(x, y))
 
-                self.drop_tags(self.grid_coo_tag(x, y))
-                # self._move_supergrid_tags(from_coo=(x, y), to_coo=(x+1, y))
-
-            self._supergrid = self.calc_supergrid()
+                self._supergrid = self.calc_supergrid()
             
             # on to next row
         
         # end loop over rows
+
+
+    
+    def _contract_boundary_from_top_multi(
+        self,
+        xrange,
+        yrange,
+        layer_tags,
+        canonize=True,
+        compress_sweep='left',
+        **compress_opts
+    ):
+        self._supergrid = self.calc_supergrid()
+
+        for x in range(min(xrange), max(xrange)):
+            # make sure the exterior sites are a single tensor
+            #
+            #    ●─○●─○●─○●─○●─○         ●══●══●══●══●
+            #    │ ││ ││ ││ ││ │  ==>   ╱│ ╱│ ╱│ ╱│ ╱│
+            #    ●─○●─○●─○●─○●─○       ●─○●─○●─○●─○●─○
+            #    │ ││ ││ ││ ││ │       │ ││ ││ ││ ││ │   (for two layer tags)
+            #
+            for top_tag in self.supergrid_row_slice(x, yrange, get='tag'):
+                self ^= top_tag
+            
+            
+            for layer in layer_tags:
+                # contract interior sites from layer ``tag``
+                #
+                #    ●══<══<══<══<
+                #    │╲ │╲ │╲ │╲ │╲
+                #    │ ○──○──○──○──○
+                #    │ ││ ││ ││ ││ │  (first contraction if there are two tags)
+                #
+                self._contract_boundary_from_top_single(
+                    xrange=(x, x + 1), yrange=yrange, recalc_supergrid=False,
+                    canonize=canonize, compress_sweep=compress_sweep, 
+                    layer_tag=layer, **compress_opts)
+                
+                # so we can still uniqely identify 'inner' tensors, drop inner
+                #     site tag merged into outer tensor for all but last tensor
+                for y in range(min(yrange), max(yrange) + 1):
+                    inner_tag = self.grid_coo_tag(x + 1, y)
+                    if len(self.tag_map[inner_tag]) > 1:
+                        outer_tensor_xy = self[self.grid_coo_tag(x,y)]
+                        outer_tensor_xy.drop_tags(inner_tag)
+
+                # on to next layer
+            
+            # end loop over layers
+
+            for y in range(min(yrange), max(yrange) + 1):
+                self.drop_tags(self.grid_coo_tag(x, y))
+            
+            self._supergrid = self.calc_supergrid()
+
+            # on to next row
+        
+        # end loop over rows
+
 
     def contract_boundary_from_top(
         self, 
@@ -1995,18 +2062,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 yrange=yrange, xrange=xrange, canonize=canonize,
                 compress_sweep=compress_sweep, **compress_opts)
         else:
-            pass
-            # tn._contract_boundary_from_right_multi(
-            #     yrange, xrange, layer_tags, canonize=canonize,
-            #     compress_sweep=compress_sweep, **compress_opts)
+            tn._contract_boundary_from_top_multi(
+                yrange=yrange, xrange=xrange, layer_tags=layer_tags,
+                canonize=canonize, compress_sweep=compress_sweep, 
+                **compress_opts)
 
         return tn
 
     contract_boundary_from_top_ = functools.partialmethod(
         contract_boundary_from_top, inplace=True)
-
-
-
                 
 
     def _contract_boundary_from_bottom_single(
@@ -2046,11 +2110,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         if layer_tag is None:
             contract_step = contract_any_layers
-            layer_grid = grid
+            # layer_grid = grid
 
         else:
             contract_step = contract_chosen_layer
-            layer_grid = lambda tags: tags + (layer_tag,)  
+            # layer_grid = lambda tags: tags + (layer_tag,)  
         
 
         for x in range(max(xrange), min(xrange), -1):
@@ -2430,7 +2494,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             elif direction == 't':
                 if (around is None) or (top + 1 < stop_i_min):
-                    tn._contract_boundary_from_top_single(
+                    tn.contract_boundary_from_top_(
                         xrange=(top, top + 1),
                         yrange=(left, right),
                         compress_sweep='right',
