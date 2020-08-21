@@ -2072,7 +2072,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       where2=grid(x, y+1),
                                                       add_tags=dummy_tags)
 
-                        self._update_supergrid(x, y, dummy_tags)
+                        # self._update_supergrid(x, y, dummy_tags)
 
                         # layer_tag will be on lower-tensor
                         contract_step(dummy_tags, grid(x+1, y))
@@ -2686,18 +2686,18 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 
 
     def compute_row_environments(self, dense=False, **compress_opts):
-        """Compute the ``--------`` 1D boundary tensor networks describing
+        """Compute the ``2 * grid_Lx `` 1D boundary tensor networks describing
         the lower and upper environments of each row in this 2D tensor network,
         *assumed to represent the norm*.
 
         The 'above' environment for row ``i`` will be a contraction of all
-        rows ``i + 1, i + 2, ...`` etc::
+        rows ``i - 1, i - 2, ...`` etc::
 
              ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
             ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
         
         The 'below' environment for row ``i`` will be a contraction of all
-        rows ``i - 1, i - 2, ...`` etc::
+        rows ``i + 1, i + 2, ...`` etc::
 
             ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
              ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
@@ -2731,7 +2731,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             ``row_envs['below', i]`` and ``row_envs['above', i]``.
         """
         ## NOTE: should this be automatic?
-        self.fill_rows_with_identities_()
+        # self.fill_rows_with_identities_()
         ##
 
         row_envs = dict()
@@ -2843,14 +2843,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
         """
         ### NOTE: should column identities be automatic?
 
-        self.fill_cols_with_identities_()
+        # self.fill_cols_with_identities_()
 
         ####
 
         col_envs = dict()
 
-        grid_Lx = self.grid_Lx # 2 * Lx - 1 
-        grid_Ly = self.grid_Ly
+        grid_Lx = self.grid_Lx # = 2 * Lx - 1 
+        grid_Ly = self.grid_Ly # = 2 * Ly - 1
 
         self._add_supergrid_row_col_tags()
 
@@ -2905,12 +2905,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
         for (x, y), tags_xy in self.gen_supergrid_tags(with_coo=True):
                 
                 if tag_rows:
-                    self[tags_xy].add_tag(f'ROW{x}')
-                    self._update_supergrid(x, y, f'ROW{x}')
+                    self.add_tag(tag=f'ROW{x}', where=tags_xy)
+                    # self[tags_xy].add_tag(f'ROW{x}')
+
+                    # self._update_supergrid(x, y, f'ROW{x}')
                 
                 if tag_cols:
-                    self[tags_xy].add_tag(f'COL{y}')
-                    self._update_supergrid(x, y, f'COL{y}')
+                    self.add_tag(tag=f'COL{y}', where=tags_xy)
+                    # self[tags_xy].add_tag(f'COL{y}')
+                    # self._update_supergrid(x, y, f'COL{y}')
 
     
     def get_edges(self, which):
@@ -3056,9 +3059,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         graph_opts.setdefault('show_tags', False)
         graph_opts.setdefault('show_inds', True)
 
-        
-
-
         def get_layer_fix_tags(layer_tag=None, offset=0.0):
             layer_tag = tags_to_oset(layer_tag)
             
@@ -3098,7 +3098,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #     super().graph(**graph_opts)
 
 
-            
+    graph_layers = functools.partialmethod(graph, 
+                            layer_tags=('BRA','KET'))
 
             
 
@@ -3250,6 +3251,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             next_ccoo = corner_coos[0] if k==3 else corner_coos[k+1]
 
+            # coordinate between the two corner coos
             mid_coo = tn.coo_between(xy1=ccoo, xy2=next_ccoo)
             new_grid_tag = tn.grid_coo_tag(*mid_coo)
 
@@ -3461,8 +3463,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             row_envs = self.compute_row_environments(
                 **compute_environment_opts)
         
-        # now form strips and contract from sides,
-        # for each row
+        # now form strips and contract from sides, for each row
         col_envs = dict()
         for x in range(self.grid_Lx - x_bsz + 1):
         # for x in [2*i for i in range(self.Lx) if 2*i < self.grid_Lx - x_bsz + 1]:
