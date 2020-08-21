@@ -69,7 +69,9 @@ class QubitLattice():
         '''
         if which in ['horizontal', 'right+left']:
             return self._edge_map['r'] + self._edge_map['l']
-        
+
+        elif which in ('vertical', 'up+down'):
+            return self._edge_map['u'] + self._edge_map['d']        
 
         if which == 'all':
             return (self._edge_map['r']+
@@ -943,7 +945,7 @@ def gen_lattice_sites(Lx, Ly):
     return Vs, Fs
 
 
-def make_right_edges(V_ind, F_ind):
+def calc_right_edges(V_ind, F_ind):
     '''
     |  U? |
     i-->--j
@@ -975,7 +977,7 @@ def make_right_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def make_left_edges(V_ind, F_ind):
+def calc_left_edges(V_ind, F_ind):
     '''List of left-edges for given arrays
     of vertices and faces
     '''
@@ -997,7 +999,7 @@ def make_left_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def make_up_edges(V_ind, F_ind):
+def calc_up_edges(V_ind, F_ind):
     '''List of up-edges for given arrays
     of vertices and faces
     '''
@@ -1015,7 +1017,7 @@ def make_up_edges(V_ind, F_ind):
 '''
 TODO: COMMENT
 '''
-def make_down_edges(V_ind, F_ind):
+def calc_down_edges(V_ind, F_ind):
     '''List of down-edges for given arrays
     of vertices and faces  
     '''
@@ -1046,8 +1048,8 @@ def inverse_coo_map(Vs):
 
 
 def make_edge_map(Vs, Fs):
-    '''Map to edges of the graph
-    in various directions/groupings.
+    '''Map to edges of the graph, organized in various
+    directions/classifications for convenience.
     
     Returns:
     edge_map: dict[string : list(tuple(int))]
@@ -1057,14 +1059,14 @@ def make_edge_map(Vs, Fs):
         values: lists of edges, i.e. lists of
         tuples (i,j,f) 
     '''
-    Lx,Ly = Vs.shape
+    Lx, Ly = Vs.shape
     
-    edge_map = {}
+    edge_map = dict()
     
-    edge_map['r'] = make_right_edges(Vs, Fs)
-    edge_map['l'] = make_left_edges(Vs, Fs)
-    edge_map['u'] = make_up_edges(Vs, Fs)
-    edge_map['d'] = make_down_edges(Vs, Fs)
+    edge_map['r'] = calc_right_edges(Vs, Fs)
+    edge_map['l'] = calc_left_edges(Vs, Fs)
+    edge_map['u'] = calc_up_edges(Vs, Fs)
+    edge_map['d'] = calc_down_edges(Vs, Fs)
 
 
     horizontals = edge_map['r'] + edge_map['l']
@@ -1078,7 +1080,7 @@ def make_edge_map(Vs, Fs):
         xj, yj = inv_coo_map[j]
         assert xi==xj and abs(yi-yj)==1
 
-        if min([yi,yj])%2 == 0:
+        if min([yi, yj]) % 2 == 0:
             hor_even.append(tuple([i,j,f]))
         else:
             hor_odd.append(tuple([i,j,f]))
@@ -1089,7 +1091,7 @@ def make_edge_map(Vs, Fs):
         xj, yj = inv_coo_map[j]
         assert yi==yj and abs(xi-xj)==1
 
-        if min([xi,xj])%2 == 0:
+        if min([xi, xj]) % 2 == 0:
             ver_even.append(tuple([i,j,f]))
         else:
             ver_odd.append(tuple([i,j,f]))

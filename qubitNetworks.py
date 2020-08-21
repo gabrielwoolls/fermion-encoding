@@ -4619,6 +4619,7 @@ class QubitEncodeVector(QubitEncodeNet,
         qubit_terms,
         normalized=False,
         autogroup=True,
+        contract_optimize='auto-hq',
         return_all=False,
         plaquette_envs=None,
         plaquette_map=None,
@@ -4731,14 +4732,14 @@ class QubitEncodeVector(QubitEncodeNet,
                 if normalized:
                     norm_x0y0 = (
                         ket_local | bra_and_env
-                    ).contract(all, optimize='auto-hq')
+                    ).contract(all, optimize=contract_optimize)
                 else:
                     norm_x0y0 = None
                 
                 for where, G in plaq2qubits[p]:
                     expec_xy = (
                         ket_local.apply_gate(G, where, contract=False) | bra_and_env
-                    ).contract(all, optimize='auto-hq')
+                    ).contract(all, optimize=contract_optimize)
 
                     expecs[where] = expec_xy, norm_x0y0
             
@@ -5043,9 +5044,18 @@ class SimulatorHam():
         '''
         pass
 
+
     def gen_ham_terms(self):
         pass
     
+    
+    def gen_horizontal_ham_terms(self):
+        pass
+    
+    def gen_vertical_ham_terms(self):
+        pass
+
+
     def gen_trotter_gates(self, tau):
         pass
 
@@ -5111,6 +5121,26 @@ class SpinlessSimHam(SimulatorHam):
         for (i,j,f), gate in self._ham_terms.items():
             where = (i,j) if f is None else (i,j,f)
             yield where, gate
+
+
+    def gen_horizontal_ham_terms(self):
+        '''Only those terms in the Hamiltonian acting on horizontal
+        graph edges, i.e. the ``where`` qubit sites must correspond
+        to a *horizontal* (vertex, vertex, face or None).
+        '''
+
+        for (i, j, f) in self.get_edges(which='horizontal'):
+            gate = self.get_term_at(i, j, f)
+            where = (i, j) if f is None else (i, j, f)
+            yield where, gate
+    
+    def gen_vertical_ham_terms(self):
+    
+        for (i, j, f) in self.get_edges(which='vertical'):
+            gate = self.get_term_at(i, j, f)
+            where = (i, j) if f is None else (i, j, f)
+            yield where, gate
+    
 
 
     def gen_trotter_gates(self, tau):
@@ -5199,7 +5229,7 @@ class SpinlessSimHam(SimulatorHam):
             edges = self._vertices_to_covering_terms[vertex]
             num_edges = len(edges)
 
-            assert num_edges>1 or qlattice.num_faces()==0 #should appear in at least two edge terms!
+            assert num_edges > 1 or qlattice.num_faces() == 0 #should appear in at least two edge terms!
 
             for (i,j,f) in edges:
 
