@@ -12,6 +12,7 @@ import functools
 from quimb.tensor.tensor_core import tags_to_oset
 from quimb.utils import pairwise, check_opt, oset
 import opt_einsum as oe
+from operator import add
 
 
 
@@ -1138,7 +1139,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         the coordinate (x,y) together with the tags.
         '''
     
-        for x, y in product(range(2*self.Lx -1), range(2*self.Ly -1)):
+        for x, y in product(range(2 * self.Lx -1), range(2 * self.Ly -1)):
     
             if self.supergrid(x, y) is not None:
 
@@ -3474,9 +3475,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
             #      ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
             #
 
-            row_x = self.row_environment_sandwich(x0=x, x_bsz=x_bsz, 
-                                                row_envs=row_envs,
-                                                simple_test=True)
+            # row_x = self.row_environment_sandwich(x0=x, x_bsz=x_bsz, 
+            #                                     row_envs=row_envs,
+            #                                     simple_test=True)
+            row_x = qtn.TensorNetwork((
+                        row_envs['above', x],
+                        self.select_any([self.row_tag(x + dx) for dx in range(x_bsz)]),
+                        row_envs['below', x + x_bsz - 1],
+            ), check_collisions=False).view_as_(QubitEncodeNet, like=self)
+                                                
             #
             #           y_bsz
             #           <-->               second_dense=True
@@ -3498,12 +3505,18 @@ class QubitEncodeNet(qtn.TensorNetwork):
         plaquette_envs = dict()
 
         #only pick vertices as corners
-        for x0, y0 in self.gen_vertex_coos():
+        # for x0, y0 in self.gen_vertex_coos():
+        for x0, y0 in product(range(self.grid_Lx), range(self.grid_Ly)):
             
             if (x0 > self.grid_Lx - x_bsz) or (y0 > self.grid_Ly - y_bsz):
                 continue
             
             # skip if the plaquette has no face qubit?
+            # if needs_face_qubit:
+            #     plaq_tags = self.plaquette_at(xy=(x0,y0), x_bsz=x_bsz, 
+            #                                 y_bsz=y_bsz, get='tags')
+
+
             # if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
             #     continue
 
@@ -3689,6 +3702,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         return plaquette_envs
 
+    # NOTE: row-first working but still need to debug column-first plaq_envs
     def compute_plaquette_environments(
         self, 
         x_bsz=2,
@@ -3751,106 +3765,106 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def row_environment_sandwich(self, x0, x_bsz, row_envs, 
-                            simple_test=False, **kwargs):
-        """Make a ``QubitEncodeNet`` out of a 'horizontal slice' of this 
-        network; in particular leave the supergrid rows 
+    # def row_environment_sandwich(self, x0, x_bsz, row_envs, 
+    #                         simple_test=False, **kwargs):
+    #     """Make a ``QubitEncodeNet`` out of a 'horizontal slice' of this 
+    #     network; in particular leave the supergrid rows 
                 
-                (x0, x0 + 1, ..., x0 + x_bsz - 1)
+    #             (x0, x0 + 1, ..., x0 + x_bsz - 1)
         
-        intact, and sandwich them in between the appropriate row envs.
+    #     intact, and sandwich them in between the appropriate row envs.
 
-        Args:
-            x0: int
-                The 'top' row of the block
+    #     Args:
+    #         x0: int
+    #             The 'top' row of the block
 
-            x_bsz: int
-                The width of the row block
+    #         x_bsz: int
+    #             The width of the row block
 
-            row_envs: dict[(str, int): TensorNetwork]
-                The row environments of this QubitEncodeNet
+    #         row_envs: dict[(str, int): TensorNetwork]
+    #             The row environments of this QubitEncodeNet
 
-        Returns:
-            QubitEncodeNet: the uncontracted 'norm' centered on the 
-                supergrid rows (x0, x0 + 1, ..., x0 + x_bsz - 1), 
-                with row environments bounding it above and below
-        
-        
-                      ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
-                     ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
-            x0 ->    o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┬
-             :       | | | | | | | | | | | | | | | | | | | |     ┊ x_bsz
-             :       o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┴
-                     ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
-                      ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
-        
-        """
-        if simple_test:
-            print('SIMP')
-            return qtn.TensorNetwork((
-                row_envs['above', x0],
-                self.select_any([self.row_tag(x0 + dx) for dx in range(x_bsz)]),
-                row_envs['below', x0 + x_bsz - 1],
-            ), check_collisions=False).view_as_(QubitEncodeNet, like=self)
-
-
-        grid_Lx, grid_Ly = self.grid_Lx, self.grid_Ly
-
-        new_grid = [[None for _ in range(grid_Ly)]
-                          for _ in range(grid_Lx)]
-
-        env_top = row_envs['above', x0]
-
-        if len(tuple(env_top)) > 0:
-            for y in range(grid_Ly):
-                new_grid[x0 - 1][y] = tags_to_oset(
-                    env_top[self.col_tag(y)].tags)
-
-        #       ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
-        #      ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
-
-        
-
-        env_bottom = row_envs['below', x0 + x_bsz - 1]
-        
-        if len(tuple(env_bottom)) > 0:
-            for y in range(grid_Ly):
-                new_grid[x0 + x_bsz][y] = tags_to_oset(
-                    env_bottom[self.col_tag(y)].tags)
-
-        #      ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
-        #       ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+    #     Returns:
+    #         QubitEncodeNet: the uncontracted 'norm' centered on the 
+    #             supergrid rows (x0, x0 + 1, ..., x0 + x_bsz - 1), 
+    #             with row environments bounding it above and below
         
         
+    #                   ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+    #                  ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
+    #         x0 ->    o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┬
+    #          :       | | | | | | | | | | | | | | | | | | | |     ┊ x_bsz
+    #          :       o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┴
+    #                  ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
+    #                   ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+        
+    #     """
+    #     if simple_test:
+    #         print('SIMP')
+    #         return qtn.TensorNetwork((
+    #             row_envs['above', x0],
+    #             self.select_any([self.row_tag(x0 + dx) for dx in range(x_bsz)]),
+    #             row_envs['below', x0 + x_bsz - 1],
+    #         ), check_collisions=False).view_as_(QubitEncodeNet, like=self)
 
-        row_block_tensors = []
-        for x, y in product(range(x0, x0 + x_bsz), range(grid_Ly)):
-            tags_xy = self.supergrid(x, y)
+
+    #     grid_Lx, grid_Ly = self.grid_Lx, self.grid_Ly
+
+    #     new_grid = [[None for _ in range(grid_Ly)]
+    #                       for _ in range(grid_Lx)]
+
+    #     env_top = row_envs['above', x0]
+
+    #     if len(tuple(env_top)) > 0:
+    #         for y in range(grid_Ly):
+    #             new_grid[x0 - 1][y] = tags_to_oset(
+    #                 env_top[self.col_tag(y)].tags)
+
+    #     #       ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+    #     #      ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲
+
+        
+
+    #     env_bottom = row_envs['below', x0 + x_bsz - 1]
+        
+    #     if len(tuple(env_bottom)) > 0:
+    #         for y in range(grid_Ly):
+    #             new_grid[x0 + x_bsz][y] = tags_to_oset(
+    #                 env_bottom[self.col_tag(y)].tags)
+
+    #     #      ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱ ╲ ╱
+    #     #       ●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●━━━●
+        
+        
+
+    #     row_block_tensors = []
+    #     for x, y in product(range(x0, x0 + x_bsz), range(grid_Ly)):
+    #         tags_xy = self.supergrid(x, y)
             
-            # x0:  o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┬
-            #      | | | | | | | | | | | | | | | | | | | |     ┊ x_bsz
-            #      o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┴
+    #         # x0:  o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┬
+    #         #      | | | | | | | | | | | | | | | | | | | |     ┊ x_bsz
+    #         #      o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o─o     ┴
 
-            if tags_xy is not None:
-                new_grid[x][y] = tags_to_oset(tags_xy)
-                row_block_tensors.append(self[tags_xy])
-
-
-
-        row_x0 = qtn.TensorNetwork(
-                (env_top, 
-                *row_block_tensors,
-                env_bottom,
-                ), check_collisions=False).view_as_(
-                                            QubitEncodeNet,
-                                            like=self)
-
-        row_x0.set_supergrid(new_grid)
-
-        return row_x0
+    #         if tags_xy is not None:
+    #             new_grid[x][y] = tags_to_oset(tags_xy)
+    #             row_block_tensors.append(self[tags_xy])
 
 
-    def plaquette_at(self, xy, x_bsz, y_bsz):
+
+    #     row_x0 = qtn.TensorNetwork(
+    #             (env_top, 
+    #             *row_block_tensors,
+    #             env_bottom,
+    #             ), check_collisions=False).view_as_(
+    #                                         QubitEncodeNet,
+    #                                         like=self)
+
+    #     row_x0.set_supergrid(new_grid)
+
+    #     return row_x0
+
+
+    def plaquette_at(self, xy, x_bsz, y_bsz, get='tensors'):
         x0, y0 = xy
 
         # plaq_coos = ((x0 + dx, y0 + dy) for dx, dy in product(range(x_bsz), range(y_bsz)))
@@ -3860,6 +3874,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
             lambda t: t in self.tags,
             starmap(self.grid_coo_tag, plaq_coos)
             ))
+
+        if get == 'tags':
+            return plaq_tags
 
         # tensors = [self[t] for t in plaq_tags if t in self.tags]
         tensors = self.select_tensors(plaq_tags, which='any')
@@ -4652,11 +4669,18 @@ class QubitEncodeVector(QubitEncodeNet,
 
         norm, bra, ket = self.make_norm(return_all=True)
 
+        # the groups of qubits that get acted on together, e.g.
+        # (vertex, vertex, face): (0, 1, 9), (0, 2, 9), or
+        # (vertex, vertex, ----): (1, 2), (2, 5)
+        # for 2-body and 3-body terms
         qubit_groups = qubit_terms.keys()
 
         if plaquette_envs is None:
             # set some sensible defaults
-            # plaquette_env_options.setdefault...
+            plaquette_env_options.setdefault('layer_tags', ('BRA','KET'))
+            
+            # until col-first environments are working properly
+            plaquette_env_options.setdefault('first_contract', 'rows')
 
             plaquette_envs = dict()
             
@@ -4674,12 +4698,12 @@ class QubitEncodeVector(QubitEncodeNet,
             # find what plaquette to use for each group of qubits
             plaquette_map = self.calc_plaquette_map(plaquette_envs, with_face_qubits)
 
-        # map plaquettes to list of (qubit group, ham gate) tuples
+        # map plaquettes to list[(qubit group, ham gate)] of tuples
         # that use that plaquette
         plaq2qubits = defaultdict(list)
         for where, G in qubit_terms.items():
 
-            qubit_coos = tuple(map(self.qubit_to_coo_map, where))
+            qubit_coos = tuple(sorted(map(self.qubit_to_coo_map, where)))
             p = plaquette_map[qubit_coos]
             plaq2qubits[p].append((where, G))
         
@@ -4687,14 +4711,19 @@ class QubitEncodeVector(QubitEncodeNet,
         expecs = dict()
         for p in plaq2qubits:
             # site tags in plaquette
-            site_tags = tuple(starmap(self.grid_coo_tag, plaquette_to_site_coos(p)))
-            
-            # check which sites are in plaquette though?
-            # i.e. might have missing lads?
-            #
+            site_tags = starmap(self.grid_coo_tag, self.plaquette_to_site_coos(p))
+            site_tags = tuple(filter(lambda t: t in self.tags, site_tags))
 
+            # plaq_coos = self.plaquette_to_site_coos(p)
+            # site_tags = tuple(filter(
+            # lambda t: t in self.tags,
+            # starmap(self.grid_coo_tag, plaq_coos)
+            # ))
+            # check which sites are in plaquette though?
+            # some sites may be empty
+            
             bra_and_env = bra.select_any(site_tags) | plaquette_envs[p]
-            ket_local = ket.select_any(sites)
+            ket_local = ket.select_any(site_tags)
             ket_local.view_as_(QubitEncodeVector, like=self)
 
             with oe.shared_intermediates():
@@ -4951,13 +4980,16 @@ class SimulatorHam():
     and a mapping `ham_terms` of edges to two/three site gates.
     '''
     
-    def __init__(self, qlattice, ham_terms):
+    def __init__(self, Lx, Ly, phys_dim, ham_terms):
         
-        self.qlattice = qlattice
+        self._Lx = Lx
+        self._Ly = Ly
+        self._phys_dim = phys_dim
+
         self._ham_terms = ham_terms
         self._exp_gates = dict()
 
-
+        
     def get_gate(self, edge):
         '''Local term corresponding to `edge`
         '''
@@ -4996,18 +5028,18 @@ class SimulatorHam():
         '''
         return self.qlattice.get_edges(which)
 
+    @property
+    def Lx(self):
+        return self._Lx
 
-    def Lx():
-        return self.qlattice._Lx
-
-
-    def Ly():
-        return self.qlattice._Ly
+    @property
+    def Ly(self):
+        return self._Ly
 
     
     def ham_params(self):
         '''Relevant parameters. Override for
-         each daughter Hamiltonian.
+         each 'daughter' Hamiltonian.
         '''
         pass
 
@@ -5023,7 +5055,7 @@ class SimulatorHam():
 ## ******************* ##
 
 class SpinlessSimHam(SimulatorHam):
-    '''Encoded Hubbard Hamiltonian for spinless fermions,
+    '''Qubit Hamiltonian: spinless fermion Hubbard Ham,
     encoded as a qubit simulator Ham.
 
     H =   t  * hopping
@@ -5031,26 +5063,27 @@ class SpinlessSimHam(SimulatorHam):
         - mu * occupation
     '''
 
-    def __init__(self, qlattice, t, V, mu):
+    def __init__(self, Lx, Ly, t=1.0, V=1.0, mu=0.5):
         '''
-        qlattice: QubitLattice
-            Lattice of qubits specifying the geometry
-            and vertex/face sites.
+        Lx: number of (vertex) qubit rows
+        Ly: number of vertex qubit columns
         
         t: hopping parameter
         V: nearest-neighbor repulsion
         mu: single-site chemical potential
-
         '''
-        
+        # Hubbard parameters
         self._t = t
         self._V = V
         self._mu = mu
 
-        terms = self._make_ham_terms(qlattice)
-
-        super().__init__(qlattice, terms)
+        # to handle the fermion-to-qubit encoding & lattice geometry
+        self.qlattice = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
+        terms = self._make_ham_terms()
+
+        super().__init__(Lx=Lx, Ly=Ly, phys_dim=0, ham_terms=terms)
+
     
     def get_term_at(self, i, j, f=None):
         '''Array acting on edge `(i,j,f)`.
@@ -5071,8 +5104,9 @@ class SpinlessSimHam(SimulatorHam):
 
 
     def gen_ham_terms(self):
-        '''Generate (`where`, `gate`) pairs for every location
-        (edge) to be acted on with a Ham term
+        '''Generate ``(where, gate)`` pairs for every group 
+        of qubits (i.e. every graph edge ``where``) to be acted
+        on with a Ham term.
         '''
         for (i,j,f), gate in self._ham_terms.items():
             where = (i,j) if f is None else (i,j,f)
@@ -5099,7 +5133,7 @@ class SpinlessSimHam(SimulatorHam):
                 yield where, exp_gate
 
 
-    def _make_ham_terms(self, qlattice):
+    def _make_ham_terms(self):
         '''Get all terms in Ham as two/three-site gates, 
         in a dict() mapping edges to qarrays.
         
@@ -5109,11 +5143,12 @@ class SpinlessSimHam(SimulatorHam):
         (vertices only). Otherwise, gate acts on three sites.
         '''
         t, V, mu = self.ham_params()
+        qlattice = self.qlattice
 
         terms = dict()
 
         #vertical edges
-        for direction, sign in [('down', 1), ('up', -1)]:
+        for direction, sign in (('down', 1), ('up', -1)):
 
             for (i,j,f) in qlattice.get_edges(direction):
                 
@@ -5774,8 +5809,9 @@ if __name__ == '__main__':
     # main_debug()
     qvec = QubitEncodeVector.rand(3, 3, bond_dim=2)
     qvec.setup_bmps_contraction_()
-    norm = qvec.make_norm()
-    # flat = norm.flatten()
-    norm.contract_boundary_from_bottom(xrange=(3,4), layer_tags=('BRA','KET'))
+    # norm = qvec.make_norm()
     
-    # bmps = norm.contract_boundary(max_bond=4, sequence='r', max_separation=0)
+    HubHam = SpinlessSimHam(Lx=3, Ly=3)
+    qubit_terms = dict(HubHam.gen_ham_terms())
+
+    qvec.compute_local_expectation(qubit_terms, return_all=True)
