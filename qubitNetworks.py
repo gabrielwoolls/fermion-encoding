@@ -3120,38 +3120,31 @@ class QubitEncodeNet(qtn.TensorNetwork):
     #     Udagger = qtn.Tensor()
 
 
-    #TODO: fix patchwork of 'aux' tensor flattening
     def flatten(self, inplace=False, fuse_multibonds=True):
-        '''Contract all tensors corresponding to each site into one
+        '''Contract all tensors at each grid location to one, thus 
+        squishing together layers ('BRA', 'KET', etc) into a flat TN.
         '''
-        net = self if inplace else self.copy()
+        tn = self if inplace else self.copy()
 
-        # for tags_xy in net.gen_supergrid_tags():
-        #     net ^= tags_xy
-
-        # for k in net.gen_all_sites():
-        #     net ^= k
+        # for each grid location, check if there are tensors there
+        nonempty_coo_tags = filter(
+                        lambda t: t in tn.tags, 
+                        starmap(tn.grid_coo_tag, 
+                        product(range(tn.grid_Lx), 
+                                range(tn.grid_Ly)))
+                                )
         
-        # #PATCHWORK needs to be cleaned up
-        # for x,y in net.gen_supergrid_coos():
-        #     aux_tag = net.aux_tensor_tag(x, y)
-        #     if aux_tag in net.tags:
-        #         net ^= aux_tag
+        # squish together the layers at each 'occupied' grid coo
+        for tag_xy in nonempty_coo_tags:
+            tn ^= tag_xy
 
-        coo_tags = [net.grid_coo_tag(x,y) for x,y in 
-            product(range(2 * net.Lx - 1), range(2 * net.Ly - 1))]
-        
-        for tag_xy in coo_tags:
-            if tag_xy in net.tags:
-                net ^= tag_xy
-
-        net._supergrid = net.calc_supergrid() 
+        tn._supergrid = tn.calc_supergrid() 
 
         if fuse_multibonds:
-            net.fuse_multibonds_()
+            tn.fuse_multibonds_()
         
-        return net
-        # return net.view_as_(QubitEncodeNetFlat)
+        return tn
+        # return tn.view_as_(QubitEncodeNetFlat)
 
     flatten_ = functools.partialmethod(flatten, inplace=True)
 
@@ -3483,7 +3476,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             row_x = self.row_environment_sandwich(x0=x, x_bsz=x_bsz, 
                                                 row_envs=row_envs,
-                                                simple_test=False)
+                                                simple_test=True)
             #
             #           y_bsz
             #           <-->               second_dense=True
@@ -3860,12 +3853,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def plaquette_at(self, xy, x_bsz, y_bsz):
         x0, y0 = xy
 
-        plaq_coos = ((x0 + dx, y0 + dy) for dx, dy in product(range(x_bsz), range(y_bsz)))
-        plaq_tags = tuple(
-            starmap(self.grid_coo_tag, filter(self.valid_supercoo, plaq_coos))
-            )
+        # plaq_coos = ((x0 + dx, y0 + dy) for dx, dy in product(range(x_bsz), range(y_bsz)))
+        plaq_coos = self.plaquette_to_site_coos(plaq=(xy, (x_bsz, y_bsz)))
+        
+        plaq_tags = tuple(filter(
+            lambda t: t in self.tags,
+            starmap(self.grid_coo_tag, plaq_coos)
+            ))
 
-        tensors = [self[t] for t in plaq_tags if t in self.tags]
+        # tensors = [self[t] for t in plaq_tags if t in self.tags]
+        tensors = self.select_tensors(plaq_tags, which='any')
         
         return qtn.TensorNetwork(tensors, check_collisions=False).view_as_(QubitEncodeNet,
                                                                         like=self)
@@ -4007,7 +4004,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def plaquette_to_site_coos(self, p):
+    def plaquette_to_site_coos(self, plaq):
         """Turn a plaquette ``((x0, y0), (dx, dy))`` into the grid
         coordinates of the sites it contains.
 
@@ -4016,9 +4013,12 @@ class QubitEncodeNet(qtn.TensorNetwork):
             >>> plaquette_to_site_coos([(3, 4), (2, 2)])
             ((3, 4), (3, 5), (4, 4), (4, 5))
         """
-        (x0, y0), (dx, dy) = p
+        (x0, y0), (dx, dy) = plaq
         return tuple((x, y) for x in range(x0, x0 + dx)
                             for y in range(y0, y0 + dy))
+
+    # def plaquette_to_grid_tags(self, p):
+
 
 ##                       ##
 ## End QubitEncodeNet class
