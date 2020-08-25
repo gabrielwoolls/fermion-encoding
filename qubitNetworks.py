@@ -13,6 +13,7 @@ from quimb.tensor.tensor_core import tags_to_oset
 from quimb.utils import pairwise, check_opt, oset
 import opt_einsum as oe
 from operator import add
+import re
 
 
 
@@ -1090,6 +1091,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         return self.col_tag_id.format(y)
 
+    def qubit_tag(self, k):
+        '''Q{k}
+        '''
+        return self.site_tag_id.format(k) 
 
     def maybe_convert_face(self, where):
         '''Returns None if ``where`` is the coo
@@ -3048,7 +3053,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def graph(self, fix_lattice=True, layer_tags=None, **graph_opts):
+    def graph(self, fix_lattice=True, layer_tags=None, with_gate=False, **graph_opts):
         '''
         TODO: DEBUG ``fix_tags`` PARAM
 
@@ -3061,25 +3066,51 @@ class QubitEncodeNet(qtn.TensorNetwork):
         graph_opts.setdefault('show_inds', True)
 
         def get_layer_fix_tags(layer_tag=None, offset=0.0):
-            layer_tag = tags_to_oset(layer_tag)
+            
+            # if layer_tag == 'GATE':
+            #     gate_tensors = self.select_tensors('GATE')
+            #     for gt in gate_tensors:
+
+            
+            
+            # layer_tag = tags_to_oset(layer_tag)
             
             # scale x and y differently if desired
             LATX, LATY = 3, 4
             fix_tags = dict()
             
-            nonempty_sites =  {(x,y): self.supergrid(x,y) for x,y in product(range(self.grid_Lx), range(self.grid_Ly))
-                                if self.supergrid(x,y) is not None}
+            layer_tn = self if layer_tag is None else self.select_tensors(layer_tag)
+            layer_tn = qtn.TensorNetwork(layer_tn).view_like_(self)
+
+            nonempty_sites =  {(x,y): layer_tn.supergrid(x,y) for x,y in product(range(self.grid_Lx), range(self.grid_Ly))
+                                if layer_tn.supergrid(x,y) is not None}
             
             for (x,y), tags in nonempty_sites.items():
-                tags = tags_to_oset(tags)
-                fix_tags.update({tuple(tags | layer_tag): (LATY * (y + offset), 
-                                                          -LATX * (x + offset))})
+                tags_xy = tags_to_oset(tags) | tags_to_oset(layer_tag)
+                fix_tags.update({tuple(tags_xy): (LATY * (y + 0.5 * offset), 
+                                                 -LATX * (x + offset))})
         
             return fix_tags
         
         
         if fix_lattice == False:
             super().graph(**graph_opts)
+        
+        # elif 'GATE' in tuple(layer_tags):
+        #     fix_tags = dict()
+            
+        #     for k, layer in enumerate(tags_to_oset(layer_tags) - tags_to_oset('GATE')):
+        #         fix_tags.update(get_layer_fix_tags(layer_tag= layer,
+        #                                             offset= 0.5 * k))
+            
+
+        #     grid_coo_regex = re.compile(r'S\d,\d')
+        #     for t in self.select_tensors('GATE'):
+        #         neighbors = self.select_neighbors(t.tags)
+        #         for nt in neighbors:
+        #             neighbor_coo = [x for x in nt.tags if grid_coo_regex.match(x)]
+
+
 
         else:
             # try:
@@ -3102,7 +3133,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
     graph_layers = functools.partialmethod(graph, 
                             layer_tags=('BRA','KET'))
 
-            
 
 
     # def exact_projector_from_matrix(self, Udag_matrix):
@@ -3203,12 +3233,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
     # absorb_face_left_ = functools.partialmethod(absorb_face_left,
     #                                             inplace=True)
 
-    def rotate_face_qubits(self, inplace=False):
+    def rotate_face_qubits(self, layer_tag=None, inplace=False):
+        """Find every face qubit in this TN (optionally, only those matching 
+         ``layer_tag``) and 'rotate' the bonds  to make "X"-connectivity look
+         like "+"-connectivity
+        """
         tn = self if inplace else self.copy()
         
         for x, y in tn.gen_face_coos(including_empty=False):
             
-            tn.rotate_face_qubit_bonds_(x, y)
+            tn.rotate_face_qubit_bonds_(x, y, layer_tag)
 
         return tn
     
@@ -3216,7 +3250,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                 inplace=True)
 
 
-    def rotate_face_qubit_bonds(self, x, y, keep_tags=None, inplace=False, fuse_multibonds=True):
+    def rotate_face_qubit_bonds(
+        self, 
+        x, 
+        y, 
+        layer_tag=None,
+        inplace=False, 
+        fuse_multibonds=True
+    ):
         tn = self if inplace else self.copy()
 
         face_tag = tn.face_coo_tag(x, y)
@@ -3230,34 +3271,44 @@ class QubitEncodeNet(qtn.TensorNetwork):
         corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))        
 
         for k, ctag in enumerate(corner_tags):
-            
-            tn.insert_identity_between_(face_tag, ctag, add_tags=('AUX', f'TEMP{k}'))
+            add_tags = tags_to_oset(('AUX', f'TEMP{k}')) | tags_to_oset(layer_tag)
+
+            tn.insert_identity_between_(where1=face_tag, where2=ctag, 
+                    layer_tag=layer_tag, add_tags=add_tags)
             
             next_ctag = corner_tags[0] if k==3 else corner_tags[k+1]
+            
             #insert I between this and 'next' corner in the square
-            tn.insert_identity_between_(ctag, next_ctag, add_tags=('AUX', f'TEMP{k}'))        
+            tn.insert_identity_between_(where1=ctag, where2=next_ctag, 
+                    layer_tag=layer_tag, add_tags=add_tags)        
 
 
         for k, ccoo in enumerate(corner_coos):
+
             tn ^= f'TEMP{k}'
 
-            corner_qubit = self.vertex_coo_map(*ccoo)
+            corner_qnumber = tn.vertex_coo_map(*ccoo)
 
-            next_ccoo = corner_coos[0] if k==3 else corner_coos[k+1]
+            next_ccoo = corner_coos[0] if k == 3 else corner_coos[k + 1]
 
-            # coordinate between the two corner coos
+            # get the grid coo between the two corners
             mid_coo = tn.coo_between(xy1=ccoo, xy2=next_ccoo)
             new_grid_tag = tn.grid_coo_tag(*mid_coo)
 
+            # replace temporary tag with the proper grid coo tag
             tn.retag_({f'TEMP{k}': new_grid_tag})
-            tn[new_grid_tag].add_tag(f"ADJ{corner_qubit}")
+        
+            # also add the 'ADJ{k}' tag to know where to reabsorb if necessary
+            tn.add_tag(tag=f"ADJ{corner_qnumber}", 
+                where=tags_to_oset(new_grid_tag) | tags_to_oset(layer_tag),
+                which='all',)
 
-            # records the unique `new_id_tag` in the supergrid
+            # record the unique `new_id_tag` in the supergrid
             tn._update_supergrid(*mid_coo, tag=new_grid_tag)
 
-            if keep_tags is not None:
-                # optional additional tags e.g. 'KET' 
-                tn[new_id_tag].add_tag(keep_tags)
+            # if (layer_tag is not None):
+            #     # optional additional tags e.g. 'KET' 
+            #     tn[new_id_tag].add_tag(layer_tag)
 
 
         if fuse_multibonds:
@@ -3267,6 +3318,22 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     rotate_face_qubit_bonds_ = functools.partialmethod(rotate_face_qubit_bonds, 
                                                     inplace=True)
+
+
+    # def reabsorb_face_qubit_identities(self, layer_tag=None, inplace=False):
+
+    #     tn = self if inplace else self.copy()
+
+    #     adj_tags = {k: f'ADJ{k}' for k in range((tn.num_sites) if f'ADJ{k}' in tn.tags)}
+
+    #     for k, tag_k in adj_tags.items():
+    #         # absorb identity into a qubit site
+    #         dummy_tags = tn[tag_k].tags
+    #         tn.contract_tags(tags=(tn.qubit_tag(k), tag_k))
+    #         tn.drop_tags(dummy_tags)
+        
+            
+        
 
 
 
@@ -3645,10 +3712,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
             if (x0 > self.grid_Lx - x_bsz) or (y0 > self.grid_Ly - y_bsz):
                 continue
             
-            # skip the plaquette if it doesn't have a face qubit?
-            # if needs_face_qubit and self.face_coo_map(x0 + 1, y0 + 1) is None:
-            #     continue
-
             # we want to select bordering tensors from:
             #
             #          A──A──A──A    <- A from the row environments
@@ -3864,9 +3927,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
     #     return row_x0
 
 
-    def plaquette_at(self, xy, x_bsz, y_bsz, get='tensors'):
+    def plaquette_at(self, xy, bsz, get='tn'):
         x0, y0 = xy
-
+        x_bsz, y_bsz = bsz
         # plaq_coos = ((x0 + dx, y0 + dy) for dx, dy in product(range(x_bsz), range(y_bsz)))
         plaq_coos = self.plaquette_to_site_coos(plaq=(xy, (x_bsz, y_bsz)))
         
@@ -4199,15 +4262,16 @@ class QubitEncodeVector(QubitEncodeNet,
         '''Return this state as dense vector, i.e. a qarray with 
         shape (-1, 1), in the order assigned to the local sites.
         '''
+        # use the order that the qubits are numbered in
         inds_seq = (self._phys_ind_id.format(i) 
-                    for i in self.qlattice().all_sites())
+                    for i in range(self.num_sites))
 
-        psid = self.to_dense(inds_seq).reshape(-1,1)
+        psi_d = self.to_dense(inds_seq).reshape(-1,1)
 
-        if not normalize:
-            return psid
+        if normalize:
+            return psi_d / np.linalg.norm(psi_d)
         
-        return psid / np.linalg.norm(psid)
+        return psi_d
 
 
 
@@ -4826,7 +4890,7 @@ class MasterHam():
     ----------
     `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
 
-    `gen_trotter_gates(tau)`: trotter gates of Hsim followed by Hstab
+    `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
     '''
     def __init__(self, Hsim, Hstab):
         self.Hsim=Hsim
@@ -4846,6 +4910,7 @@ class MasterHam():
 
 class HamStab():
     '''TODO: INSTEAD can store lists of 8 1-site gates?
+            What does multiplier do?
 
         Pseudo-Hamiltonian of stabilizers,
         
@@ -4869,13 +4934,14 @@ class HamStab():
         #map coos to `loopStabOperator` objects
         coo_stab_map = qlattice.make_coo_stabilizer_map()
 
-        self._stab_gates = self.make_stab_gate_map(coo_stab_map)
+        self._stab_gates = self.make_stab_gate_map(coo_stab_map, store='gate')
         self._exp_stab_gates = dict()
+        self._stab_lists = self.make_stab_gate_map(coo_stab_map, store='tuple')
 
 
 
-    def make_stab_gate_map(self, coo_stab_map):
-        '''TODO: ALTERED!! NOW MAPS coos to (where, gate) tuples.
+    def make_stab_gate_map(self, coo_stab_map, store='gate'):
+        '''TODO: NOW MAPS coos to (where, gate) tuples.
 
         Return
         -------
@@ -4886,25 +4952,36 @@ class HamStab():
 
         Param:
         ------
-        `coo_stab_map`: dict[tuple : dict]
+        coo_stab_map: dict[tuple : dict]
             Maps coordinates (x,y) in the face array of the lattice
             to `loop_stab` dictionaries of the form
             {'inds' : (indices),   'opstring' : (string)}
+        
+        store: 'gate' or 'tuple', optional
+            Whether to store a 'dense' 2**8 x 2**8 array or a tuple
+            of 8 (ordered) 2 x 2 arrays
         '''
         gate_map = dict()
 
         for coo, loop_stab in coo_stab_map.items():
             #tuple e.g. (1,2,4,5,6)
-            inds = tuple(loop_stab['inds'])
+            qubits = tuple(loop_stab['inds'])
+
             #string e.g. 'ZZZZX'
             opstring = loop_stab['opstring']
-            #qarray
-            gate = qu.kron(*[qu.pauli(Q) for Q in opstring])
             
-            gate *= self.multiplier
+            if store == 'gate':            
+                #qarray
+                gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
+                gate *= self.multiplier
+                gate_map[coo] = (qubits, gate)
             
-            # gatelist = [qu.pauli(Q) for Q in opstring]
-            gate_map[coo] = (inds, gate)
+            elif store == 'tuple':
+
+                signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
+                gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
+                gate_map[coo] = (qubits, gates)
+            
         
         return gate_map
 
@@ -4928,7 +5005,15 @@ class HamStab():
         for where, gate in self._stab_gates.values():
             yield (where, gate)
 
-
+    def gen_ham_stabilizer_lists(self):
+        '''Generate ``(where, gates)`` pairs for each stabilizer term.
+        where: tuple[int]
+            The qubits to be acted on
+        gates: tuple[array]
+            The one-site qubit gates (2x2 arrays)
+        '''
+        for where, gatelist in self._stab_lists.values():
+            yield (where, gatelist)
     
     def _get_exp_stab_gate(self, coo, tau):
         '''
