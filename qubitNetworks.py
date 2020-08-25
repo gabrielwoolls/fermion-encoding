@@ -613,16 +613,9 @@ def compute_encnet_normsquared(qnet):
 
 class QubitEncodeNet(qtn.TensorNetwork):
     '''
-        Params:
-        -------
-        `tn`: TensorNetwork
-            Initial tensors of the lattice.
-
-        
-        
-        `bond_dim`: int, optional
-            The bond dimension to connect local site tensors.
-            Defaults to 5.
+        Tensors at physical sites are tagged with 'QUBIT' while
+        auxiliary tensors (e.g. dummy identities) are tagged with
+        'AUX' tag.
         
         
 
@@ -862,21 +855,21 @@ class QubitEncodeNet(qtn.TensorNetwork):
             print('\n')
 
     
-    def _update_supergrid(self, x, y, tag):
-        '''Add `tag` to the set of tags at supergrid 
-        coordinate `x, y`. Does not complain if the
-        tag was already there.
-        '''
-        if not hasattr(self, '_supergrid'):
-            self._supergrid = self.calc_supergrid()
+    # def _update_supergrid(self, x, y, tag):
+    #     '''Add `tag` to the set of tags at supergrid 
+    #     coordinate `x, y`. Does not complain if the
+    #     tag was already there.
+    #     '''
+    #     if not hasattr(self, '_supergrid'):
+    #         self._supergrid = self.calc_supergrid()
         
-        tag = tags_to_oset(tag)
+    #     tag = tags_to_oset(tag)
 
-        if self._supergrid[x][y] is None:
-            self._supergrid[x][y] = tag
+    #     if self._supergrid[x][y] is None:
+    #         self._supergrid[x][y] = tag
         
-        else:
-            self._supergrid[x][y].update(tag)
+    #     else:
+    #         self._supergrid[x][y].update(tag)
     
 
     # def _move_supergrid_tags(self, from_coo, to_coo):
@@ -1162,6 +1155,19 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return (0 <= x < self.grid_Lx) and (0 <= y < self.grid_Ly)
 
 
+    def check_for_matching_tags(self, tags):
+        '''Whether this TN contains a tensor having all of
+        the specified ``tags``
+        '''
+        tags = tags_to_oset(tags)
+
+        for tag in tags:
+            if tag not in self.tag_map:
+                return False
+        
+        return bool(self._get_tids_from_tags(tags=tags, which='all'))
+
+
     def _canonize_supergrid_row(self, x, sweep, yrange=None, **canonize_opts):
         '''Canonize all bonds between tensors in the xth row
         of the supergrid.
@@ -1287,11 +1293,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
             xrange is (0, 2*self.Lx - 2)
         
         sweep: {'up', 'down'}
-            Direction/order of the slice.
+            Direction of the slice.
         
         get: {'tag', 'row'}
-            Whether to generate the str `tag` or the integer `row`.
-            TODO: Get rid of this?
+            Whether to generate the str ``tag``s or 
+            the integer ``row``s.
         '''
 
         if sweep == 'down':
@@ -1311,29 +1317,25 @@ class QubitEncodeNet(qtn.TensorNetwork):
             raise ValueError('Bad direction given for slice')
 
 
-    # def convert_to_quimb_TN2D(self, inplace=False, **tn_opts):
-    #     '''Assumes we start from un-rotated face qubit bonds.
-    #     '''
-    #     tn = self if inplace else self.copy()
-
-    #     for i,j in tn.gen_nonempty_face_coos():
-    #         tn.rotate_face_qubit_bonds(i, j)
-        
-    #     tn.fill_columns_with_identities_()
-    #     tn.fill_rows_with_identities_()
-        
-    def setup_bmps_contraction(self, inplace=False):
-        '''Prepare for boundary-MPS-style contraction
-        by inserting identities to make this TN look
+    def setup_bmps_contraction(self, layer_tags=None, inplace=False):
+        '''Prepare for boundary-MPS-style contraction by 'rotating'
+        face qubits, inserting identities to make this TN look
         more 'PEPS-like'.
         '''
         tn = self if inplace else self.copy()
 
-        tn.rotate_face_qubits_()
+        if layer_tags is None:
+            tn.rotate_face_qubits_()
+            tn.fill_cols_with_identities_()
+            tn.fill_rows_with_identities_()
+        
+        else:
+            for layer in layer_tags:
+                tn.rotate_face_qubits_(layer_tag=layer)
+                tn.fill_cols_with_identities_(layer_tag=layer)
+                tn.fill_rows_with_identities_(layer_tag=layer)
 
-        tn.fill_cols_with_identities_()
-        tn.fill_rows_with_identities_()
-
+        tn._supergrid = tn.calc_supergrid()
         return tn
     
     setup_bmps_contraction_ = functools.partialmethod(
@@ -1403,8 +1405,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
                 #check if there is a bond 'floating' over the supergrid locations
-                # bonds_here = tuple(starmap(self.check_for_vertical_bond_across, 
-                #                             [(x, y), (x, y+1)] ))
                 bonds_here = (self.check_for_vertical_bond_across(x, y, layer_tag),
                               self.check_for_vertical_bond_across(x, y+1, layer_tag))
                 
@@ -1443,8 +1443,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x, y+1, dummy_tags)   
-                            
                         contract_step(dummy_tags, grid(x, y))
 
                     
@@ -1459,7 +1457,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                         # no bond to absorb, just shift left-tensor
                         # rightward so we have it on the 'next' column
                         
-                        # self._move_supergrid_tags(from_coo=(x, y), to_coo=(x, y+1))
                         left_tensor = self[self.grid_coo_tag(x, y)]
                         left_tensor.add_tag(self.grid_coo_tag(x, y+1))
                         continue
@@ -1484,8 +1481,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       where2=grid(x + 1, y), 
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x, y, dummy_tags)
-                        
                         contract_step(dummy_tags, grid(x, y+1))
                         # look for ``layer_tag`` on right-tensor
 
@@ -1709,9 +1704,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
                 #check if there is a bond 'floating' over the supergrid locations
-                # bonds_here = tuple(starmap(self.check_for_vertical_bond_across, 
-                #                             [(x, y-1), 
-                #                              (x, y)]))
+                
                 bonds_here = (self.check_for_vertical_bond_across(x, y-1, layer_tag),
                               self.check_for_vertical_bond_across(x, y, layer_tag))
                 
@@ -1750,8 +1743,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x, y-1, dummy_tags)                                                      
-
                         contract_step(dummy_tags, grid(x, y))
 
                     else:
@@ -1787,7 +1778,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       where2=grid(x + 1, y),
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x, y, dummy_tags)
 
                         # layer_tag will be on left-tensor
                         contract_step(dummy_tags, grid(x, y-1))                                                      
@@ -2043,8 +2033,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x+1, y, dummy_tags)
-
                         contract_step(dummy_tags, grid(x, y))
 
                     else:
@@ -2077,8 +2065,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                         self.insert_identity_between_(where1=grid(x, y-1),
                                                       where2=grid(x, y+1),
                                                       add_tags=dummy_tags)
-
-                        # self._update_supergrid(x, y, dummy_tags)
 
                         # layer_tag will be on lower-tensor
                         contract_step(dummy_tags, grid(x+1, y))
@@ -2325,8 +2311,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       layer_tag=layer_tag,
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x-1, y, dummy_tags)
-
                         contract_step(dummy_tags, grid(x, y))
 
                     else:
@@ -2362,8 +2346,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                       where2=grid(x, y+1),
                                                       add_tags=dummy_tags)
 
-                        # self._update_supergrid(x, y, dummy_tags)
-                        
                         # ``layer_tag`` will be on upper-tensor
                         contract_step(dummy_tags, grid(x-1, y))
 
@@ -2764,9 +2746,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 env_top ^= (self.row_tag(x-2), self.row_tag(x-1))
             else:
                 env_top.contract_boundary_from_top_(
-                    xrange=(x - 2, x - 1), 
-                    # yrange=(0, grid_Ly - 1),
-                    **compress_opts)
+                    xrange=(x - 2, x - 1), **compress_opts)
 
             row_envs['above', x] = env_top.select(first_row_tag).copy()
 
@@ -2787,9 +2767,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 env_bottom ^= (self.row_tag(x + 1), self.row_tag(x + 2))
             else:
                 env_bottom.contract_boundary_from_bottom_(
-                        xrange=(x + 1, x + 2), 
-                        # yrange=(0, grid_Ly - 1),
-                        **compress_opts)
+                        xrange=(x + 1, x + 2), **compress_opts)
             
             row_envs['below', x] = env_bottom.select(last_row_tag).copy()
 
@@ -2912,15 +2890,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 
                 if tag_rows:
                     self.add_tag(tag=f'ROW{x}', where=tags_xy)
-                    # self[tags_xy].add_tag(f'ROW{x}')
-
-                    # self._update_supergrid(x, y, f'ROW{x}')
+                   
                 
                 if tag_cols:
                     self.add_tag(tag=f'COL{y}', where=tags_xy)
-                    # self[tags_xy].add_tag(f'COL{y}')
-                    # self._update_supergrid(x, y, f'COL{y}')
-
+                   
     
     def get_edges(self, which):
         '''
@@ -3180,6 +3154,25 @@ class QubitEncodeNet(qtn.TensorNetwork):
     flatten_ = functools.partialmethod(flatten, inplace=True)
 
 
+    def multiply_each_qubit_tensor(self, x, inplace=False):
+        """Multiply all qubit (physical) tensors by scalar ``x``,
+        i.e. avoid multiplying the dummy identity tensors.
+
+        Parameters
+        ----------
+        x : scalar
+            The number that multiplies each *qubit* tensor in the tn
+        inplace : bool, optional
+            Whether to perform the multiplication inplace.
+        """
+        multiplied = self if inplace else self.copy()
+
+        for t in multiplied.select_tensors('QUBIT'):
+            t.modify(apply=lambda data: data * x)
+        
+        return multiplied
+
+
     # def absorb_face_left(self, face_coo, inplace=False, fuse_multibonds=True):
     #     '''NOTE: CURRENTLY ONLY FOR FLAT NETWORKS
     #     Need way to do one layer at a time for sandwiches.
@@ -3304,13 +3297,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 which='all',)
 
             # record the unique `new_id_tag` in the supergrid
-            tn._update_supergrid(*mid_coo, tag=new_grid_tag)
-
-            # if (layer_tag is not None):
-            #     # optional additional tags e.g. 'KET' 
-            #     tn[new_id_tag].add_tag(layer_tag)
+            # tn._update_supergrid(*mid_coo, tag=new_grid_tag)
 
 
+        # tn._supergrid = tn.calc_supergrid()
         if fuse_multibonds:
             tn.fuse_multibonds_()
 
@@ -3352,9 +3342,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         tn = self if inplace else self.copy()
 
+        tto = qtn.tensor_core.tags_to_oset
+
         if layer_tag is not None:
-            where1 = (*where1, layer_tag)
-            where2 = (*where2, layer_tag)
+            where1 = tto(where1) | tto(layer_tag)
+            where2 = tto(where2) | tto(layer_tag)
 
         T1, T2 = tn[where1], tn[where2]
         
@@ -3406,7 +3398,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return (int((x1 + x2)/2), int((y1 + y2)/2))
 
 
-    def _fill_column_with_identities(self, y, xrange=None):
+    def _fill_column_with_identities(self, y, xrange=None, layer_tag=None):
 
         if xrange is None:
             xrange = (0, 2 * self.Lx - 2)
@@ -3414,40 +3406,47 @@ class QubitEncodeNet(qtn.TensorNetwork):
         grid = self.supergrid
 
         for x in range(min(xrange), max(xrange) + 1):
-            floating_bond = self.check_for_vertical_bond_across(x, y)
+            floating_bond = self.check_for_vertical_bond_across(x, y, layer_tag)
             
             if floating_bond:
 
-                dummy_tag = self.grid_coo_tag(x, y)
+                dummy_tag = tags_to_oset(('AUX', self.grid_coo_tag(x, y))) 
+
                 self.insert_identity_between_(where1=grid(x-1, y), 
                                               where2=grid(x+1, y),
-                                              add_tags=[dummy_tag])
-                self._update_supergrid(x, y, dummy_tag)  
+                                              layer_tag=layer_tag,
+                                              add_tags=dummy_tag | tags_to_oset(layer_tag))
+                # self._update_supergrid(x, y, dummy_tag)  
                 
 
-    def _fill_row_with_identities(self, x, yrange=None):
+    def _fill_row_with_identities(self, x, yrange=None, layer_tag=None):
         
         if yrange is None:
             yrange = (0, 2 * self.Ly - 2)
         
         grid = self.supergrid
+        
+        # layer_tag = tags_to_oset(layer_tag) #empty by default
 
         for y in range(min(yrange), max(yrange) + 1):
 
-            floating_bond = self.check_for_horizontal_bond_across(x, y)
+            floating_bond = self.check_for_horizontal_bond_across(x, y, layer_tag)
 
             if floating_bond:
 
-                dummy_tag = self.grid_coo_tag(x, y)
+                dummy_tag = tags_to_oset(('AUX', self.grid_coo_tag(x, y)))
+
                 self.insert_identity_between_(where1=grid(x, y-1),
                                               where2=grid(x, y+1),
-                                              add_tags=[dummy_tag])
-                self._update_supergrid(x, y, dummy_tag)                                              
+                                              layer_tag=layer_tag,
+                                              add_tags=dummy_tag | tags_to_oset(layer_tag))
+                # self._update_supergrid(x, y, dummy_tag)                                              
 
 
-    def fill_rows_with_identities(self, xrange=None, inplace=False):
+    def fill_rows_with_identities(self, xrange=None, layer_tag=None, inplace=False):
         '''For each row in xrange (inclusive), fill the row with
-        auxiliary tensors in the 'empty' supergrid locations.
+        auxiliary tensors in the 'empty' supergrid locations. Can
+        optionally specify a ``layer_tag`` (like 'BRA')
         
              │  │  │         │  │  │
              ●──●──●         ●──●──●    
@@ -3456,8 +3455,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
              │     │         │     │
              ●──●──●         ●──●──●    
         
-        xrange: optional, defaults to all rows.
-            (first row, last row to fill) 
+        xrange: tuple[int], optional.
+            (first row, last row) to fill. Defaults to all rows.
         '''
 
         tn = self if inplace else self.copy()
@@ -3466,7 +3465,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             xrange = (0, 2 * self.Lx - 2)
 
         for x in range(min(xrange), max(xrange) + 1):
-            tn._fill_row_with_identities(x)
+
+            tn._fill_row_with_identities(x=x, layer_tag=layer_tag)
 
         return tn
 
@@ -3475,7 +3475,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                         inplace=True)
 
 
-    def fill_cols_with_identities(self, yrange=None, inplace=False):
+    def fill_cols_with_identities(self, yrange=None, layer_tag=None, inplace=False):
         '''For each col in yrange (inclusive), fill the row with
         auxiliary tensors in the 'empty' supergrid locations.
         
@@ -3496,7 +3496,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             yrange = (0, 2 * self.Ly - 2)
         
         for y in range(min(yrange), max(yrange) + 1):
-            tn._fill_column_with_identities(y)
+            
+            tn._fill_column_with_identities(y=y, layer_tag=layer_tag)
 
         return tn
         
@@ -3941,7 +3942,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if get == 'tags':
             return plaq_tags
 
-        # tensors = [self[t] for t in plaq_tags if t in self.tags]
         tensors = self.select_tensors(plaq_tags, which='any')
         
         return qtn.TensorNetwork(tensors, check_collisions=False).view_as_(QubitEncodeNet,
@@ -4815,6 +4815,53 @@ class QubitEncodeVector(QubitEncodeNet,
         
         return functools.reduce(add, (e for e, _ in expecs.values()))
         
+    
+    def normalize(
+        self,
+        balance_bonds=False,
+        equalize_norms=False,
+        inplace=False,
+        **boundary_contract_opts,
+    ):
+        """Normalize this ``QubitEncodeVector``.
+
+        Params
+        ------
+        inplace : bool, optional
+            Whether to perform the normalization inplace or not.
+        balance_bonds : bool, optional
+            Whether to balance the bonds after normalization, a form of
+            conditioning.
+        equalize_norms : bool, optional
+            Whether to set all the tensor norms to the same value after
+            normalization, another form of conditioning.
+        boundary_contract_opts
+            Supplied to
+            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary`,
+            by default, two layer contraction will be used.
+        """
+        norm = self.make_norm()
+
+        # default to two layer contraction
+        boundary_contract_opts.setdefault('layer_tags', ('KET', 'BRA'))
+
+        nfact = norm.contract_boundary(**boundary_contract_opts)
+
+        num_qubits = len(self.select_tensors('QUBIT'))
+        
+        n_ket = self.multiply_each_qubit_tensor(
+            nfact**(-1 / (2 * num_qubits)), inplace=inplace)
+
+        if balance_bonds:
+            n_ket.balance_bonds_()
+
+        if equalize_norms:
+            n_ket.equalize_norms_()
+
+        return n_ket
+
+    normalize_ = functools.partialmethod(normalize, inplace=True)
+
 
 ####################################################
 
@@ -5923,10 +5970,11 @@ def main_debug():
 if __name__ == '__main__':
     # main_debug()
     qvec = QubitEncodeVector.rand(3, 3, bond_dim=2)
-    qvec.setup_bmps_contraction_()
+    norm = qvec.make_norm()
+    norm.setup_bmps_contraction_(layer_tags=('BRA','KET'))
     # norm = qvec.make_norm()
     
-    HubHam = SpinlessSimHam(Lx=3, Ly=3)
-    qubit_terms = dict(HubHam.gen_ham_terms())
+    # HubHam = SpinlessSimHam(Lx=3, Ly=3)
+    # qubit_terms = dict(HubHam.gen_ham_terms())
 
-    qvec.compute_local_expectation(qubit_terms, return_all=True)
+    # qvec.compute_local_expectation(qubit_terms, return_all=True)
