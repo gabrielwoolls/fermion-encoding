@@ -8,6 +8,12 @@ import numpy as np
 
 DEBUG=0
 
+"""
+Exactly solve the Fermi Hubbard model via the Jordan-Wigner (JW)
+transform. Both for spinless and spin-1/2 fermions.
+"""
+
+
 class HubbardSpinless():
     def __init__(self, Lx=2, Ly=3):
         V_ind, F_ind = dq.gen_lattice_sites(Lx,Ly)
