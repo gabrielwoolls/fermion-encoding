@@ -10,10 +10,7 @@ from quimb.utils import pairwise, check_opt, oset
 import opt_einsum as oe
 from operator import add
 
-from quimb.tensor.optimize_tensorflow import TNOptimizer
-
-import tensorflow as tf
-sess = tf.InteractiveSession()
+from quimb.tensor.optimize import TNOptimizer
 
 LX, LY = 3, 3
 HubSimHam = beeky.SpinlessSimHam(Lx=LX, Ly=LY)
@@ -52,17 +49,28 @@ def normalize_state(psi: beeky.QubitEncodeVector):
     # inplace normalize
     return psi.normalize_()
 
-psi0 = beeky.QubitEncodeVector.rand(
-    Lx=LX, Ly=LY, bond_dim=3)
 
-optmzr = TNOptimizer(
-    psi0, # initial input guess
-    loss_fn=state_energy,
-    norm_fn=normalize_state,
-    constant_tags=('AUX',),
-    loss_kwargs={'hterms': horizontal_terms,
-                 'vterms': vertical_terms,
-                 'opts': compute_expec_opts},
-)
+def main():
 
-tn_opt = optmzr.optimize(100)
+    # random initial guess
+    psi0 = beeky.QubitEncodeVector.rand(Lx=LX, Ly=LY, bond_dim=3)
+
+    # important so that boundary contraction works!
+    psi0.setup_bmps_contraction_()
+
+    optmzr = TNOptimizer(
+        psi0, # initial state guess
+        loss_fn=state_energy,
+        norm_fn=normalize_state,
+        constant_tags=('AUX',),
+        loss_constants={'hterms': horizontal_terms,
+                    'vterms': vertical_terms,
+                    'opts': compute_expec_opts},
+        autodiff_backend='tensorflow',
+    )
+
+    tn_opt = optmzr.optimize(100)
+    return tn_opt
+
+if __name__ == '__main__':
+    main()

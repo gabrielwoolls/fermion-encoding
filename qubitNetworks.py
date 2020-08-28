@@ -38,7 +38,7 @@ def make_auxcon_net(
 
     dummy = np.random.rand(D,D,D,D)
 
-    vertex_net = make_skeleton_net(
+    vertex_net = make_product_state_net(
         vertices_only=True, Lx=Lx, Ly=Ly, phys_dim=phys_dim,
         bond_dim=bond_dim, site_tag_id=site_tag_id,
         phys_ind_id=phys_ind_id, add_tags=add_tags,
@@ -142,7 +142,7 @@ def insert_identity_between_tensors(T1, T2, add_tags=None):
                       tags=add_tags,)
 
 
-def make_skeleton_net(
+def make_product_state_net(
     Lx, 
     Ly,
     phys_dim, 
@@ -165,8 +165,6 @@ def make_skeleton_net(
         2. A 'supergrid' tag (e.g. "S{x}{y}" for supercoo (x, y)
         3. A qubit 'number' tag (e.g. "Q{k}" for the kth site)
         4. Any additional supplied in ``add_tags``
-    
-
     '''
     
     add_tags = tags_to_oset(add_tags) #none by default
@@ -279,7 +277,7 @@ def make_random_net(Lx, Ly, phys_dim,
     # phys_dim = qlattice.local_site_dim
 
     #dummy TN, site tensors to be replaced with randomized
-    tnet = make_skeleton_net(Lx=Lx, Ly=Ly, phys_dim=phys_dim,
+    tnet = make_product_state_net(Lx=Lx, Ly=Ly, phys_dim=phys_dim,
                             bond_dim=bond_dim, 
                             grid_tag_id=grid_tag_id,
                             site_tag_id=site_tag_id, 
@@ -1252,8 +1250,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
         sweep='right', 
         get='tag'
     ):
-        '''Inclusive, 'directed' slice of self._supergrid, where 
-        `yrange` is INCLUSIVE. Automatically drops the `None` tags.
+        '''Inclusive, 'directed' slice of the grid, where 
+        `yrange` is INCLUSIVE. Ignores the 'empty' sites
+        in the lattice.
 
         Params:
         ------
@@ -1263,6 +1262,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
         yrange: tuple(int, int)
             Inclusive range of columns to select, max yrange
             is (0, 2*Ly-2)
+        
+        layer_tag: str, optional
+            Can specify a layer to look in, like 'KET'  
         
         sweep: {'left', 'right'}
             Direction of the slice.
@@ -1379,25 +1381,21 @@ class QubitEncodeNet(qtn.TensorNetwork):
             'down': 'up',
         }[compress_sweep]
 
-        # TODO: TAKE TAGS RATHER THAN OSETS/SEQUENCES?
-        def contract_any_layers(grid_tags1, grid_tags2):
+        
+        def contract_any_layers(grid_tag1, grid_tag2):
 
             ''' Contract any tensors with these tags, i.e. 
             on any layer (bra or ket)'''
-            # self.contract_((*grid_tags1, *grid_tags2), which='any')
-            self.contract_((grid_tags1, grid_tags2,), which='any')
+            self.contract_((grid_tag1, grid_tag2,), which='any')
 
-        def contract_chosen_layer(grid_tags1, grid_tags2):
+        def contract_chosen_layer(grid_tag1, grid_tag2):
             ''' Only contract tensors living on the specified
             layer via `layer_tag`.
 
             Looks for `layer_tag` on the *second* tensor given.
             '''
-            # self.contract_between(tags1=grid_tags1,
-            #                       tags2=(*grid_tags2, layer_tag))
-            
-            self.contract_between(tags1=grid_tags1,
-                                  tags2=(grid_tags2, layer_tag))
+            self.contract_between(tags1=grid_tag1,
+                                  tags2=(grid_tag2, layer_tag))
                                 
 
         
@@ -2631,8 +2629,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         contract_boundary_from_bottom, inplace=True)
 
 
-    #TODO: IMPLEMENT MULTI-LAYER CONTRACTION
-    # Currently only works for a 'flat' TN
     def contract_boundary(
         self,
         around=None,
@@ -3134,7 +3130,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                             tags2=tags_below))
 
     
-    #TODO: TEST
     def check_for_horizontal_bond_across(self, x, y, layer_tag=None):
         '''Check if there is a horizontal bond crossing supergrid
         coordinate `x,y`, i.e. whether there are connected tensors 
@@ -3149,25 +3144,20 @@ class QubitEncodeNet(qtn.TensorNetwork):
         if y == 0 or y == 2 * self.Ly - 2:
             return False
         
-        tags_on_left = self.grid_coo_tag(x, y-1)
-        tags_on_right = self.grid_coo_tag(x, y+1)
+        left_tags = self.grid_coo_tag(x, y-1)
+        right_tags = self.grid_coo_tag(x, y+1)
 
-        # if (tags_on_left is None) or (tags_on_right is None):
-        #     return False
-
-
+        
         if layer_tag is not None:
-            # tags_on_left = (*tags_on_left, layer_tag)
-            # tags_on_right = (*tags_on_right, layer_tag)
-            tags_on_left = (tags_on_left, layer_tag)
-            tags_on_right = (tags_on_right, layer_tag)
+            left_tags = (left_tags, layer_tag)
+            right_tags = (right_tags, layer_tag)
 
 
-        if not all(map(self.check_for_matching_tags, (tags_on_left, tags_on_right))):
+        if not all(map(self.check_for_matching_tags, (left_tags, right_tags))):
             return False
 
-        return bool(self.find_bonds_between(tags1=tags_on_left,
-                                            tags2=tags_on_right))
+        return bool(self.find_bonds_between(tags1=left_tags,
+                                            tags2=right_tags))
 
 
 
@@ -3175,9 +3165,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def graph(self, fix_lattice=True, layer_tags=None, with_gate=False, **graph_opts):
         '''
         TODO: DEBUG ``fix_tags`` PARAM
+              GRAPH GATE LAYERS
 
-        Overloading TensorNetwork.graph() for convenient
-        lattice-fixing when ``fix_lattice`` is True (default).
+        Overload ``TensorNetwork.graph`` for aesthetic
+        lattice-fixing if ``fix_lattice==True`` (default).
         '''
         
         graph_opts.setdefault('color', ['VERT','FACE','GATE'])
@@ -4872,7 +4863,7 @@ class QubitEncodeVector(QubitEncodeNet,
         Params
         ------
         inplace : bool, optional
-            Whether to perform the normalization inplace or not.
+            Whether to perform the normalization inplace.
         balance_bonds : bool, optional
             Whether to balance the bonds after normalization, a form of
             conditioning.
@@ -4881,7 +4872,7 @@ class QubitEncodeVector(QubitEncodeNet,
             normalization, another form of conditioning.
         boundary_contract_opts
             Supplied to
-            :meth:`~quimb.tensor.tensor_2d.TensorNetwork2D.contract_boundary`,
+            :meth:`~QubitEncodeVector.contract_boundary`,
             by default, two layer contraction will be used.
         """
         norm = self.make_norm()
@@ -4893,6 +4884,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
         num_qubits = len(self.select_tensors('QUBIT'))
         
+        # only modify the qubit sites, i.e. leave identities alone
         n_ket = self.multiply_each_qubit_tensor(
             nfact**(-1 / (2 * num_qubits)), inplace=inplace)
 
@@ -5000,8 +4992,7 @@ class MasterHam():
 ### *********************** ###
 
 class HamStab():
-    '''TODO: INSTEAD can store lists of 8 1-site gates?
-            What does multiplier do?
+    '''TODO: What does multiplier do?
 
         Pseudo-Hamiltonian of stabilizers,
         
