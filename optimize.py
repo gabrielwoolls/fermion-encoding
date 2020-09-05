@@ -64,12 +64,12 @@ def main():
         norm_fn=normalize_state,
         constant_tags=('AUX',),
         loss_constants={'hterms': horizontal_terms,
-                    'vterms': vertical_terms,
-                    'opts': compute_expec_opts},
+                        'vterms': vertical_terms,
+                        'opts': compute_expec_opts},
         autodiff_backend='tensorflow',
     )
 
-    tn_opt = optmzr.optimize(100)
+    tn_opt = optmzr.optimize(1)
     return tn_opt
 
 if __name__ == '__main__':

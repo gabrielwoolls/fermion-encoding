@@ -255,6 +255,7 @@ def make_random_net(Lx, Ly, phys_dim,
                     site_tag_id='Q{}', 
                     phys_ind_id='q{}',
                     add_tags=None,
+                    dtype='complex128',
                     **tn_opts
                     ):
     '''
@@ -289,7 +290,6 @@ def make_random_net(Lx, Ly, phys_dim,
     for i, j in product(range(Lx), range(Ly)):
         
         tid = tuple(tnet.tag_map[site_tag_id.format(i*Ly+j)])
-        assert len(tid)==1
         tid = tid[0]
 
         old_tensor = tnet._pop_tensor(tid)
@@ -301,7 +301,7 @@ def make_random_net(Lx, Ly, phys_dim,
                 
         rand_data = qtn.array_ops.sensibly_scale(
                             qtn.array_ops.sensibly_scale(
-                            qu.gen.rand.randn(shape)))
+                            qu.gen.rand.randn(shape, dtype)))
         
         tensor_ij = qtn.Tensor(rand_data, inds, tags)
         tnet |= tensor_ij
@@ -314,7 +314,6 @@ def make_random_net(Lx, Ly, phys_dim,
         if i%2 == j%2:
             
             tid = tuple(tnet.tag_map[site_tag_id.format(k+Lx*Ly)])
-            assert len(tid)==1
             tid = tid[0]
 
             old_tensor = tnet._pop_tensor(tid)
@@ -326,7 +325,7 @@ def make_random_net(Lx, Ly, phys_dim,
                     
             rand_data = qtn.array_ops.sensibly_scale(
                                 qtn.array_ops.sensibly_scale(
-                                qu.gen.rand.randn(shape)))
+                                qu.gen.rand.randn(shape, dtype)))
             
             tensor_ij = qtn.Tensor(rand_data, inds, tags)
             tnet |= tensor_ij
@@ -2640,6 +2639,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         left=None,
         right=None,
         inplace=False,
+        contract_optimize='random-greedy',
         **boundary_contract_opts,
     ):
         """Contract boundary inwards::
@@ -2786,7 +2786,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                     (right - left <= max_separation)
                 )
                 if thin_strip:
-                    return tn.contract(all, optimize='auto-hq')
+                    return tn.contract(all, optimize=contract_optimize)
             
             elif all(reached_stop.values()):
                 break
@@ -4718,7 +4718,7 @@ class QubitEncodeVector(QubitEncodeNet,
         qubit_terms,
         normalized=False,
         autogroup=True,
-        contract_optimize='auto-hq',
+        contract_optimize='auto',
         return_all=False,
         plaquette_envs=None,
         plaquette_map=None,
@@ -4765,8 +4765,6 @@ class QubitEncodeVector(QubitEncodeNet,
         scalar or dict
         """
         
-        # contract_optimize = 'auto-hq'
-
         norm, bra, ket = self.make_norm(return_all=True)
 
         # the groups of qubits that get acted on together, e.g.
