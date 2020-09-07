@@ -64,9 +64,9 @@ def main():
         norm_fn=normalize_state,
         constant_tags=('AUX',),
         loss_constants={'hterms': horizontal_terms,
-                        'vterms': vertical_terms,
-                        'opts': compute_expec_opts},
-        autodiff_backend='tensorflow',
+                        'vterms': vertical_terms},
+        loss_kwargs=   {'opts': compute_expec_opts},
+        autodiff_backend='autograd',
     )
 
     tn_opt = optmzr.optimize(1)

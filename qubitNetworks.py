@@ -1,6 +1,5 @@
 import quimb as qu
 import quimb.tensor as qtn
-# import numpy as np
 from itertools import product, chain, starmap, cycle, combinations
 import denseQubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
@@ -2519,11 +2518,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             # should be true if contracting more than one row at a time
             if retag_boundary:
                 # drop previous tags to move boundary (previously 
-                # at supergrid[x][:]) up by one (x -> x-1)
-                # for y in range(min(yrange), max(yrange)+1):
-                #     self.drop_tags(self.grid_coo_tag(x, y))
-           
-                # self._supergrid = self.calc_supergrid()
+                # at supergrid[x, :]) up by one (x -> x-1)
                 for outer_tag in map(maybe_with_layer, retag_map.keys()):
                     self[outer_tag].retag_(retag_map)
             
@@ -5999,6 +5994,8 @@ def main_debug():
     row2 = nflat.row_environment_sandwich(x0=2, x_bsz=2, row_envs=row_envs)
 
     row2.compute_col_environments()
+
+
 
 if __name__ == '__main__':
     # main_debug()
