@@ -1,7 +1,7 @@
 import quimb as qu
 import quimb.tensor as qtn
 from itertools import product, chain, starmap, cycle, combinations
-import denseQubits
+import dense_qubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
 from collections import defaultdict
 from numbers import Integral

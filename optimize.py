@@ -1,4 +1,4 @@
-import qubitNetworks as beeky
+import qubit_networks as beeky
 
 import quimb as qu
 import quimb.tensor as qtn
@@ -66,7 +66,7 @@ def main():
         loss_constants={'hterms': horizontal_terms,
                         'vterms': vertical_terms},
         loss_kwargs=   {'opts': compute_expec_opts},
-        autodiff_backend='autograd',
+        autodiff_backend='torch',
     )
 
     tn_opt = optmzr.optimize(1)
