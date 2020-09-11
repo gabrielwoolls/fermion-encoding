@@ -1,4 +1,22 @@
 
+import autoray
+
+def tf_qr(x):
+    U, s, VH = autoray.do('linalg.svd', x)
+    
+    dtype = autoray.get_dtype_name(U)
+    if 'complex' in dtype:
+        s = autoray.astype(s, dtype)
+    
+    Q = U
+    R = autoray.reshape(s, (-1, 1)) * VH
+    
+    return Q, R
+
+
+autoray.register_function('tensorflow', 'linalg.qr', tf_qr)
+
+
 import quimb as qu
 import quimb.tensor as qtn
 from quimb.tensor.optimize import TNOptimizer
@@ -6,15 +24,19 @@ from quimb.tensor.optimize import TNOptimizer
 LX, LY = 2, 2
 DTYPE = 'complex128'
 
+autodiff_backend = 'tensorflow'
+autodiff_backend_opts = {'experimental_compile': True}
+
+
 def state_energy(psi, hterms, vterms, **opts):
     
     he = psi.compute_local_expectation(
-        hterms, normalized=False, contract_optimize='random-greedy',**opts)
+        hterms, normalized=True, **opts)
 
     ve = psi.compute_local_expectation(
-        vterms, normalized=False, contract_optimize='random-greedy',**opts)        
+        vterms, normalized=True, **opts)        
     
-    return he + ve
+    return autoray.do('real', (he + ve))
 
 
 def normalize_state(psi):
@@ -37,14 +59,14 @@ def main():
     optmzr = TNOptimizer(
         peps, 
         loss_fn=state_energy,
-        norm_fn=normalize_state,
+        # norm_fn=normalize_state,
         loss_constants={'hterms': hterms,
                         'vterms': vterms},
-        loss_kwargs=   {'opts': compute_expec_opts},
-        autodiff_backend='tensorflow',
-    )
+        loss_kwargs= compute_expec_opts,
+        autodiff_backend=autodiff_backend,
+        **autodiff_backend_opts)
 
-    peps_opt = optmzr.optimize(1)
+    peps_opt = optmzr.optimize(10)
     return peps_opt
 
 

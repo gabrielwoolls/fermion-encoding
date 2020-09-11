@@ -140,12 +140,13 @@ def insert_identity_between_tensors(T1, T2, add_tags=None):
                       inds=(bond, newbond),
                       tags=add_tags,)
 
-
+# TODO: implement bitstring functionality
 def make_product_state_net(
     Lx, 
     Ly,
     phys_dim, 
     bond_dim=3,
+    bitstring=None,
     grid_tag_id='S{},{}',
     site_tag_id='Q{}',
     phys_ind_id='q{}',
@@ -154,7 +155,7 @@ def make_product_state_net(
     **tn_opts
 ):
     '''Makes a product state qubit network, for a lattice with 
-    dimensions Lx, Ly and local site dimension `phys_dim`.    
+    dimensions ``Lx, Ly`` and local site dimension ``phys_dim``.    
 
     Currently, every site is initialized to the `up x up x ...`
     state, i.e. `basis_vec(0)`
@@ -405,7 +406,7 @@ class iTimeTEBD:
     
     `contract_opts`: 
         Supplied to 
-        :meth:`~denseQubits.QubitLattice.apply_trotter_gates_`
+        :meth:`~dense_qubits.QubitLattice.apply_trotter_gates_`
     '''
     def __init__(
         self,
@@ -756,7 +757,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Internal ``QubitLattice`` object
         '''
         if not hasattr(self, '_qlattice'):
-            self._qlattice = denseQubits.QubitLattice(
+            self._qlattice = dense_qubits.QubitLattice(
                             Lx=self.Lx,
                             Ly=self.Ly,
                             local_dim=self.phys_dim)
@@ -1211,9 +1212,18 @@ class QubitEncodeNet(qtn.TensorNetwork):
     
 
 
-    def _compress_supergrid_row(self, x, sweep, yrange=None, **compress_opts):
+    def _compress_supergrid_row(
+        self, 
+        x, 
+        sweep, 
+        yrange=None, 
+        split_method='qr', 
+        **compress_opts
+    ):
+        
         check_opt('sweep', sweep, ('right', 'left'))
         compress_opts.setdefault('absorb', 'right')
+        compress_opts.setdefault('method', split_method)
 
         if yrange is None:
             yrange = (0, 2 * self.Ly - 2)
@@ -1225,9 +1235,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def _compress_supergrid_column(self, y, sweep, xrange=None, **compress_opts):
+    def _compress_supergrid_column(self, y, sweep, xrange=None, split_method='qr', **compress_opts):
         check_opt('sweep', sweep, ('up', 'down'))
         compress_opts.setdefault('absorb', 'right')
+        compress_opts.setdefault('method', split_method)
 
         if xrange is None:
             xrange = (0, 2 * self.Lx - 2)
@@ -4228,9 +4239,6 @@ class QubitEncodeVector(QubitEncodeNet,
 
         self._phys_ind_id = phys_ind_id
 
-        # self._qlattice = denseQubits.QubitLattice(Lx=Lx, Ly=Ly,
-        #                                           local_dim=phys_dim)
-
         
         super().__init__(tn, **tn_opts)
 
@@ -4255,11 +4263,12 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
     @classmethod
-    def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, **tn_opts):
+    def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, dtype='complex128',**tn_opts):
         
         rand_tn = make_random_net(Lx=Lx, Ly=Ly, 
                                   phys_dim=phys_dim,
                                   bond_dim=bond_dim,
+                                  dtype=dtype,
                                   **tn_opts)
         
         return cls(tn=rand_tn, Lx=Lx, Ly=Ly, phys_dim=phys_dim, **tn_opts)                                
@@ -5248,7 +5257,7 @@ class SpinlessSimHam(SimulatorHam):
         self._mu = mu
 
         # to handle the fermion-to-qubit encoding & lattice geometry
-        self.qlattice = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
+        self.qlattice = dense_qubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
         terms = self._make_ham_terms()
 

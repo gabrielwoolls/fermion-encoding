@@ -1,28 +1,32 @@
-import qubit_networks as beeky
+import autoray
 
+def tf_qr(x):
+    U, s, VH = autoray.do('linalg.svd', x)
+    
+    dtype = autoray.get_dtype_name(U)
+    if 'complex' in dtype:
+        s = autoray.astype(s, dtype)
+    
+    Q = U
+    R = autoray.reshape(s, (-1, 1)) * VH
+    
+    return Q, R
+
+
+autoray.register_function('tensorflow', 'linalg.qr', tf_qr)
+
+
+import qubit_networks as beeky
 import quimb as qu
 import quimb.tensor as qtn
-from itertools import product, chain, starmap, cycle, combinations
-import denseQubits
-import functools
-from quimb.tensor.tensor_core import tags_to_oset
-from quimb.utils import pairwise, check_opt, oset
-import opt_einsum as oe
-from operator import add
-
 from quimb.tensor.optimize import TNOptimizer
 
 LX, LY = 3, 3
-HubSimHam = beeky.SpinlessSimHam(Lx=LX, Ly=LY)
+DTYPE = 'complex128'
 
-horizontal_terms = dict(HubSimHam.gen_horizontal_ham_terms())
-vertical_terms = dict(HubSimHam.gen_vertical_ham_terms())
+autodiff_backend = 'tensorflow'
+autodiff_backend_opts = {'experimental_compile': True}
 
-compute_expec_opts = dict(
-                cutoff=2e-3, 
-                max_bond=9, 
-                contract_optimize='random-greedy'
-                )
 
 def state_energy(
     psi: beeky.QubitEncodeVector,
@@ -35,39 +39,51 @@ def state_energy(
 
     # TODO: compute row/col envs first?
     he = psi.compute_local_expectation(
-        hterms, normalized=False, **opts)
+        hterms, normalized=True, **opts)
 
     ve = psi.compute_local_expectation(
-        vterms, normalized=False, **opts)        
+        vterms, normalized=True, **opts)        
     
-    return he + ve
+    return autoray.do('real', (he + ve))
+
 
 def normalize_state(psi: beeky.QubitEncodeVector):
     '''Set <psi|psi> to unity, only changing the 
     qubit tensors (leave identities alone).
     '''
-    # inplace normalize
     return psi.normalize_()
 
 
 def main():
 
     # random initial guess
-    psi0 = beeky.QubitEncodeVector.rand(Lx=LX, Ly=LY, bond_dim=3)
+    psi0 = beeky.QubitEncodeVector.rand(Lx=LX, Ly=LY, bond_dim=3, dtype=DTYPE)
 
     # important so that boundary contraction works!
     psi0.setup_bmps_contraction_()
 
+        
+    HubSimHam = beeky.SpinlessSimHam(Lx=LX, Ly=LY)
+
+    horizontal_terms = dict(HubSimHam.gen_horizontal_ham_terms())
+    vertical_terms = dict(HubSimHam.gen_vertical_ham_terms())
+
+    compute_expec_opts = dict(
+                    cutoff=0.0, 
+                    max_bond=9, 
+                    contract_optimize='random-greedy')
+
+
     optmzr = TNOptimizer(
         psi0, # initial state guess
         loss_fn=state_energy,
-        norm_fn=normalize_state,
-        constant_tags=('AUX',),
+        # norm_fn=normalize_state,
+        constant_tags=['AUX',],
         loss_constants={'hterms': horizontal_terms,
                         'vterms': vertical_terms},
-        loss_kwargs=   {'opts': compute_expec_opts},
-        autodiff_backend='torch',
-    )
+        loss_kwargs=compute_expec_opts,
+        autodiff_backend=autodiff_backend,
+        **autodiff_backend_opts)
 
     tn_opt = optmzr.optimize(1)
     return tn_opt
