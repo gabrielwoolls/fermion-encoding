@@ -21,7 +21,7 @@ import quimb as qu
 import quimb.tensor as qtn
 from quimb.tensor.optimize import TNOptimizer
 
-LX, LY = 2, 2
+LX, LY = 4, 4
 DTYPE = 'complex128'
 
 autodiff_backend = 'tensorflow'

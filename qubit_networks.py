@@ -5398,7 +5398,10 @@ class SpinlessSimHam(SimulatorHam):
             edges = self._vertices_to_covering_terms[vertex]
             num_edges = len(edges)
 
-            assert num_edges > 1 or qlattice.num_faces() == 0 #should appear in at least two edge terms!
+            #should appear in at least two edge terms!
+            if not (num_edges > 1 or qlattice.num_faces == 0):
+                raise ValueError("Something's wrong")
+
 
             for (i,j,f) in edges:
 

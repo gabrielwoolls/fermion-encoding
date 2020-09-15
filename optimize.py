@@ -21,11 +21,13 @@ import quimb as qu
 import quimb.tensor as qtn
 from quimb.tensor.optimize import TNOptimizer
 
-LX, LY = 3, 3
+LX, LY = 3, 2
 DTYPE = 'complex128'
 
 autodiff_backend = 'tensorflow'
 autodiff_backend_opts = {'experimental_compile': True}
+# autodiff_backend_opts = dict()
+
 
 
 def state_energy(
@@ -57,7 +59,7 @@ def normalize_state(psi: beeky.QubitEncodeVector):
 def main():
 
     # random initial guess
-    psi0 = beeky.QubitEncodeVector.rand(Lx=LX, Ly=LY, bond_dim=3, dtype=DTYPE)
+    psi0 = beeky.QubitEncodeVector.rand(Lx=LX, Ly=LY, bond_dim=2, dtype=DTYPE)
 
     # important so that boundary contraction works!
     psi0.setup_bmps_contraction_()
@@ -77,7 +79,6 @@ def main():
     optmzr = TNOptimizer(
         psi0, # initial state guess
         loss_fn=state_energy,
-        # norm_fn=normalize_state,
         constant_tags=['AUX',],
         loss_constants={'hterms': horizontal_terms,
                         'vterms': vertical_terms},
@@ -85,7 +86,7 @@ def main():
         autodiff_backend=autodiff_backend,
         **autodiff_backend_opts)
 
-    tn_opt = optmzr.optimize(1)
+    tn_opt = optmzr.optimize(100)
     return tn_opt
 
 if __name__ == '__main__':
