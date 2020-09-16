@@ -3,7 +3,7 @@ from operator import add
 import functools
 import itertools
 import operator
-import denseQubits as dq
+import dense_qubits as dq
 import numpy as np
 
 DEBUG=0
@@ -21,13 +21,13 @@ class HubbardSpinless():
         self._V_ind = V_ind
         
         self._edgesR = [(i,j) for (i,j,f) in 
-                        dq.make_right_edges(V_ind, F_ind)]
+                        dq.calc_right_edges(V_ind, F_ind)]
         self._edgesL = [(i,j) for (i,j,f) in 
-                        dq.make_left_edges(V_ind, F_ind)]
+                        dq.calc_left_edges(V_ind, F_ind)]
         self._edgesU = [(i,j) for (i,j,f) in 
-                        dq.make_up_edges(V_ind, F_ind)]
+                        dq.calc_up_edges(V_ind, F_ind)]
         self._edgesD = [(i,j) for (i,j,f) in 
-                        dq.make_down_edges(V_ind, F_ind)]
+                        dq.calc_down_edges(V_ind, F_ind)]
 
         self._allEdges = self._edgesU+self._edgesR+self._edgesD+self._edgesL
 
@@ -43,7 +43,7 @@ class HubbardSpinless():
         '''
         ci, cj = self.jw_annihil_op(i), self.jw_annihil_op(j)
         cidag, cjdag = self.jw_creation_op(i), self.jw_creation_op(j)
-        return cidag@cj + cjdag@ci
+        return cidag @ cj + cjdag @ ci
 
 
     def H_hop_boson(self, i, j):
@@ -52,7 +52,7 @@ class HubbardSpinless():
         c, cdag = annihil_op(), creation_op()
         ccd = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[i, j])
         cdc = qu.ikron(ops=[c, cdag], dims=self._dims, inds=[j, i])
-        return ccd+cdc
+        return ccd + cdc
 
 
     def H_occ(self, i):

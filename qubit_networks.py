@@ -4728,6 +4728,9 @@ class QubitEncodeVector(QubitEncodeNet,
         plaquette_map=None,
         **plaquette_env_options,
     ):
+        # TODO: make an equivalent method but for stabilizer gates, so that 
+        # we can evaluate 8 1-site gates rather than a dense 8-site gates
+
         r"""Compute the sum of many local expecations by essentially forming
         the reduced density matrix of all required plaquettes.
         Parameters
@@ -4994,29 +4997,26 @@ class MasterHam():
 ### *********************** ###
 
 class HamStab():
-    '''TODO: What does multiplier do?
-
-        Pseudo-Hamiltonian of stabilizers,
+    '''Pseudo-Hamiltonian of stabilizers,
         
-            `H_stab = multiplier * (S1 + S2 + ... + Sk)`, 
+            H_stab = multiplier * (S1 + S2 + ... + Sk), 
         
-        i.e. sum of all the stabilizers in `qlattice` multiplied 
-        by the Lagrange `multiplier`.
+        i.e. sum of all the stabilizers multiplied by ``multiplier``.
 
         Stores 8-site gates corresponding to the loop
-        stabilizer operators, to be added to a simulator
+        stabilizer operators, intending to be added to a simulator
         Hamiltonian `H_sim` for TEBD.
         '''
 
-    def __init__(self, qlattice, multiplier = -1.0):
+    def __init__(self, Lx, Ly, multiplier = -1.0):
         
         
-        self.qlattice = qlattice
+        self.qlattice = dense_qubits.QubitLattice(Lx, Ly, local_dim=0)
 
         self.multiplier = multiplier
         
         #map coos to `loopStabOperator` objects
-        coo_stab_map = qlattice.make_coo_stabilizer_map()
+        coo_stab_map = self.qlattice.make_coo_stabilizer_map()
 
         self._stab_gates = self.make_stab_gate_map(coo_stab_map, store='gate')
         self._exp_stab_gates = dict()
