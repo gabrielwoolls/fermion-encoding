@@ -4510,6 +4510,32 @@ class QubitEncodeVector(QubitEncodeNet,
     apply_mpo_ = functools.partialmethod(apply_mpo, inplace=True)
     
 
+    def apply_stabilizer(self, stabs, inplace=False, contract=True):
+        '''Apply each of the 1-site gates making up a stabilizer to
+        the corresponding sites.
+
+        stabs: dict-like
+            Map qubit sites (ints) to 1-site Paulis, e.g.
+            {1: pauli(z), 2: pauli(z), 6: pauli(x), 4: pauli(z),
+             5: pauli(z)} for the stabilizer like
+
+             Z---Z
+         X---:   :
+             Z---Z
+
+        This is a convenience method to efficiently apply an 8-site
+        stabilizer operator as 8 separate 1-site gates (or less than 
+        8, if at the lattice edge) rather than one dense 8-leg tensor
+        '''
+        psi = self if inplace else self.copy()
+
+        stabs = dict(stabs)
+
+        for where, gate in stabs.items():
+            psi.apply_gate_(G=gate, where=where, contract=contract)
+        
+        return psi
+
     def _exact_local_gate_sandwich(self, G, where, contract):
         '''Exactly contract <psi|G|psi>
         '''
