@@ -13,6 +13,7 @@ from quimb.utils import pairwise, check_opt, oset
 import opt_einsum as oe
 from operator import add
 import re
+import numpy as np
 
 
 
@@ -161,14 +162,15 @@ def make_product_state_net(
     state, i.e. `basis_vec(0)`
     
     Every qubit tensor is tagged with:
-        1. 'VERT' or 'FACE' depending on the site
+        1. 'VERT' or 'FACE' according to the site
         2. A 'supergrid' tag (e.g. "S{x}{y}" for supercoo (x, y)
-        3. A qubit 'number' tag (e.g. "Q{k}" for the kth site)
+        3. A qubit-number tag (e.g. "Q{k}" for the kth qubit)
         4. Any additional supplied in ``add_tags``
     '''
     
     add_tags = tags_to_oset(add_tags) #none by default
 
+    
     #default to ``up`` spin at every site
     vertex_data = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
     face_data = vertex_data
@@ -192,11 +194,11 @@ def make_product_state_net(
 
     
     for i,j in product(range(Lx), range(Ly)):
-        
-        if i<=Lx-2:
+     
+        if i <= Lx-2:
             vtensors[i][j].new_bond(vtensors[i+1][j], size=bond_dim)
         
-        if j<=Ly-2:
+        if j <= Ly-2:
             vtensors[i][j].new_bond(vtensors[i][j+1], size=bond_dim)
 
 
@@ -205,14 +207,14 @@ def make_product_state_net(
         return qtn.TensorNetwork(vtensors, structure=site_tag_id, **tn_opts)
 
 
-    # add face sites + bonds
+    ## add face sites + bonds ##
     
     ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
     
     k=0
     for i, j in product(range(Lx-1), range(Ly-1)):
         
-        if i%2 == j%2:
+        if i % 2 == j % 2: #tensors on the 'even' faces
             ind_ij = (phys_ind_id.format(k + Lx * Ly),)
 
             tags_ij = ('FACE', 'QUBIT',
@@ -226,8 +228,6 @@ def make_product_state_net(
 
             ftensors[i][j] = face_ij
             k += 1
-
-    
 
 
     for i, j in product(range(Lx-1), range(Ly-1)):
@@ -246,7 +246,128 @@ def make_product_state_net(
     alltensors = vtensors + [f for f in ftensors if f]
     # return alltensors
     return qtn.TensorNetwork(alltensors, structure=site_tag_id, **tn_opts)
+
+
+
+def local_product_state_net(
+    Lx, 
+    Ly,
+    phys_dim, 
+    bond_dim=3,
+    grid_tag_id='S{},{}',
+    site_tag_id='Q{}',
+    phys_ind_id='q{}',
+    add_tags=None,
+    dtype='complex128',
+    **tn_opts):
+    '''Makes a "local product state" qubit network, for a lattice with 
+    dimensions ``Lx, Ly`` and local site dimension ``phys_dim``.    
+
+    For now, makes each "square" of the form
     
+    ●─────●        
+    │  ●  │  
+    ●─────● 
+    
+    start in a random state, and "products" all the squares together.
+    Entanglement within the squares, but each square unentangled with 
+    the other squares.
+    '''
+
+
+    add_tags = tags_to_oset(add_tags) #none by default
+    spin_up = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
+
+    vtensors = [[None for _ in range(Ly)] for _ in range(Lx)]
+
+    ## make vertex sites ##
+    for i, j in product(range(Lx), range(Ly)):
+
+        ind_ij = (phys_ind_id.format(i * Ly + j),)
+
+        tags_ij = ('VERT', 'QUBIT',
+                   site_tag_id.format(i * Ly + j),
+                   grid_tag_id.format(2*i, 2*j),
+                   *add_tags)
+
+        vertex_ij = qtn.Tensor(data = spin_up, 
+                               inds = ind_ij,
+                               tags = tags_ij)
+        
+        vtensors[i][j] = vertex_ij
+
+    ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
+    
+    ## make all face sites
+    k=0
+    for i, j in product(range(Lx-1), range(Ly-1)):
+
+        if i % 2 == j % 2: #put tensors on 'even' faces
+            ind_ij = (phys_ind_id.format(k + Lx * Ly),)
+            tags_ij = ('FACE', 'QUBIT',
+                        site_tag_id.format(k + Lx * Ly),
+                        grid_tag_id.format(2*i + 1, 2*j + 1),
+                        *add_tags)
+            face_ij = qtn.Tensor(data = spin_up,
+                                 inds = ind_ij,
+                                 tags = tags_ij)
+
+            ftensors[i][j] = face_ij
+            k += 1
+
+    ## connect faces to vertices
+    #NOTE: is there a reason not to do this in previous loop?
+    for i, j in product(range(Lx-1), range(Ly-1)):
+        
+        if i % 2 == j % 2:
+           
+            #connect face tensor to four corner vertices
+            face_tensor = ftensors[i][j]
+            vertex_A = vtensors[i][j]
+            vertex_B = vtensors[i][j+1]
+            vertex_C = vtensors[i+1][j+1]           
+            vertex_D = vtensors[i+1][j]
+
+            
+            face_tensor.new_bond(vertex_A, size=bond_dim)
+            face_tensor.new_bond(vertex_B, size=bond_dim)
+            face_tensor.new_bond(vertex_C, size=bond_dim)
+            face_tensor.new_bond(vertex_D, size=bond_dim)
+            
+            vertex_A.new_bond(vertex_D, size=bond_dim)
+            vertex_A.new_bond(vertex_B, size=bond_dim)
+
+            vertex_C.new_bond(vertex_D, size=bond_dim)
+            vertex_C.new_bond(vertex_B, size=bond_dim)
+    
+    for vt in list(chain.from_iterable(vtensors)):
+        vt.randomize(dtype=dtype, inplace=True)
+    for ft in list(chain.from_iterable(ftensors)):
+        if ft: ft.randomize(dtype=dtype, inplace=True) #excludes `None` tensors (empty faces)
+    
+    ## add zero-entanglement (dim=1) bonds
+    for i,j in product(range(Lx), range(Ly)):
+     
+        if i <= Lx-2 and 0 == len(qtn.bonds(vtensors[i][j], vtensors[i+1][j])):
+            vtensors[i][j].new_bond(vtensors[i+1][j], size=2)
+        
+        if j <= Ly-2 and 0 == len(qtn.bonds(vtensors[i][j], vtensors[i][j+1])):
+            vtensors[i][j].new_bond(vtensors[i][j+1], size=2)
+
+    vtensors = list(chain.from_iterable(vtensors))
+    ftensors = list(chain.from_iterable(ftensors))
+    
+    alltensors = vtensors + [f for f in ftensors if f]
+    return qtn.TensorNetwork(alltensors, structure=site_tag_id, **tn_opts)
+
+
+
+
+
+    
+        
+            
+
 
 
 def make_random_net(Lx, Ly, phys_dim, 
@@ -263,7 +384,7 @@ def make_random_net(Lx, Ly, phys_dim,
 
     Return a `TensorNetwork` made from random tensors
     structured like `qlattice` i.e. with the same local 
-    qu(d)it degrees of freedom. 
+    qudit degrees of freedom. 
     
     Each site has physical index dimension `d = qlattice._local_dim`,
     and is connected to its neighbors with a virtual bond of 
@@ -271,11 +392,7 @@ def make_random_net(Lx, Ly, phys_dim,
 
     Vertex tensors are tagged with 'VERT' and face tensors with 'FACE'.
     In addition, every tensor is tagged with those supplied in ``add_tags``
-
-
     '''
-    # Lx, Ly = qlattice.lattice_shape
-    # phys_dim = qlattice.local_site_dim
 
     #dummy TN, site tensors to be replaced with randomized
     tnet = make_product_state_net(Lx=Lx, Ly=Ly, phys_dim=phys_dim,
@@ -334,53 +451,6 @@ def make_random_net(Lx, Ly, phys_dim,
     return tnet
 
 
-# def make_vertex_net(
-#     Lx,
-#     Ly, 
-#     phys_dim=2,
-#     bond_dim=3, 
-#     grid_tag_id='S{},{}',
-#     site_tag_id='Q{}', 
-#     phys_ind_id='q{}',
-#     add_tags=None,
-#     **tn_opts
-# ):
-#     '''Build 2D array of *vertex* tensors, without 
-#     face sites (essentially, a PEPS).
-
-#     Returns: 
-#     -------
-#     vtensors: array [ array [qtn.Tensor] ] ]
-#         (Lx, Ly)-shaped array of qtn.Tensors connected by
-#         bonds of dimension ``bond_dim``. Vertex tensors are tagged 
-#         with 'VERT' *and* those supplied in ``add_tags``
-#     '''
-
-#     add_tags = tags_to_oset(add_tags)
-
-#     # vert_array = [[qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim) 
-#     #                 for j in range(Ly)]
-#     #                 for i in range(Lx)]
-#     vertex_data = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
-
-
-#     vtensors = [[qtn.Tensor(data = vert_array[i][j], 
-#                             inds = [phys_ind_id.format(i*Ly+j)],
-#                             tags = {site_tag_id.format(i*Ly+j),
-#                                     'VERT'} | add_tags) 
-#                 for j in range(Ly)] 
-#                 for i in range(Lx)]
-
-    
-
-#     for i,j in product(range(Lx), range(Ly)):
-#         if i < Lx-1:
-#             vtensors[i][j].new_bond(vtensors[i+1][j],size=bond_dim)
-#         if j < Ly-1:
-#             vtensors[i][j].new_bond(vtensors[i][j+1],size=bond_dim)
-
-#     vtn = qtn.TensorNetwork(vtensors, structure=site_tag_id)
-#     return vtn
 
 
 
@@ -395,7 +465,7 @@ class iTimeTEBD:
         in-place.
     
     `ham`: `----`
-        Hamiltonian for i-time evolution. Should have a
+        Hamiltonian for time evolution. Should have a
         `gen_trotter_gates(tau)` method.
     
     `compute_extra_fns`: callable or dict of callables, optional
@@ -451,7 +521,6 @@ class iTimeTEBD:
         fns: callable, or dict of callables, or None
             Callables should take only `qnet` as parameter, i.e.
             the current `QubitEncodeNetwork` state.
-
         '''
 
         if fns is None:
@@ -1217,9 +1286,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         x, 
         sweep, 
         yrange=None, 
-        split_method='qr', 
-        **compress_opts
-    ):
+        split_method='svd', 
+        **compress_opts):
         
         check_opt('sweep', sweep, ('right', 'left'))
         compress_opts.setdefault('absorb', 'right')
@@ -1232,10 +1300,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         for tag1, tag2 in pairwise(ordered_row_tags):
             self.compress_between(tag1, tag2, **compress_opts)
+            
 
+    def _compress_supergrid_column(
+        self, 
+        y, 
+        sweep, 
+        xrange=None, 
+        split_method='svd', 
+        **compress_opts):
 
-
-    def _compress_supergrid_column(self, y, sweep, xrange=None, split_method='qr', **compress_opts):
         check_opt('sweep', sweep, ('up', 'down'))
         compress_opts.setdefault('absorb', 'right')
         compress_opts.setdefault('method', split_method)
@@ -1245,10 +1319,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         ordered_column_tags = self.supergrid_column_slice(y, xrange, sweep=sweep)
 
+        
         for tag1, tag2 in pairwise(ordered_column_tags):
             self.compress_between(tag1, tag2, **compress_opts)
 
 
+    def comp(self, t1, t2, **compress_opts):
+        self.compress_between(t1, t2, **compress_opts)
 
 
     def supergrid_row_slice(
@@ -1259,9 +1336,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         sweep='right', 
         get='tag'
     ):
-        '''Inclusive, 'directed' slice of the grid, where 
-        `yrange` is INCLUSIVE. Ignores the 'empty' sites
-        in the lattice.
+        '''Directed slice of the grid, where `yrange` is INCLUSIVE. 
+        Ignores the empty sites in the lattice.
 
         Params:
         ------
@@ -1288,7 +1364,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''
         if layer_tag is None:
             coo_tags = self.grid_coo_tag
-        else:
+
+        else: #include layer_tag in every set of tags
             coo_tags = lambda x,y: (layer_tag, self.grid_coo_tag(x,y))
 
 
@@ -1312,7 +1389,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         sweep='down', 
         get='tag'
     ):
-        '''Generate an inclusive, oriented slice of the supergrid, 
+        '''Generate a directed slice of the supergrid, 
         where ``xrange`` is INCLUSIVE and 'empty' sites are omitted.
 
         y: int
@@ -1457,7 +1534,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 bonds_here = scan_for_bonds[x] 
 
                 if tensors_here == (True, True):
-                    # print('CASE 1')
+                    # CASE 1
                     # 
                     #     │  │           ║
                     #     ●──●──   ==>   ●──
@@ -1481,7 +1558,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 elif tensors_here == (True, False):
                     
                     if bonds_here[1] == True:
-                        # print('CASE 2')
+                        # CASE 2
                         # 
                         #     ●──●──     ●──●──      ●──
                         #     │  │       │  │        ║
@@ -1508,7 +1585,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                     
                     else: 
-                        # print('CASE 3')
+                        # CASE 3
                         # 
                         #     ●──●──       ●──
                         #     │            │
@@ -1526,7 +1603,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 elif tensors_here == (False, True):
                     
                     if bonds_here[0] == True:
-                        # print('CASE 4')
+                        # CASE 4
                         # 
                         #     ●──●──        ●──●──         ●──
                         #     │  │          │  │           ║
@@ -1550,7 +1627,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
                     else:
-                        # print('CASE 5')
+                        # CASE 5
                         # 
                         #     ●──●──         ●──
                         #        │           │
@@ -1563,7 +1640,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                 
                 elif tensors_here == (False, False): 
-                    # print('CASE 6')
+                    # CASE 6
                     # no tensor on either side
                     continue
                 
@@ -1680,9 +1757,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         compress_sweep='up',
         layer_tags=None,
         inplace=False,
-        **compress_opts
+        **compress_opts):
 
-    ):
         tn = self if inplace else self.copy()
 
         if xrange is None:
@@ -1936,8 +2012,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         layer_tags,
         canonize=True,
         compress_sweep='down',
-        **compress_opts
-    ):
+        **compress_opts):
+
         ## update?
         self._supergrid = self.calc_supergrid()
         ##
@@ -2175,8 +2251,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
                         dummy_tags = ('AUX', upper_tag)
 
-                        self.insert_identity_between_(where1=grid(x, y-1),
-                                                      where2=grid(x, y+1),
+                        self.insert_identity_between_(where1=grid_tag(x, y-1),
+                                                      where2=grid_tag(x, y+1),
                                                       add_tags=dummy_tags)
 
                         # look for ``layer_tag`` on lower tensor
@@ -2677,7 +2753,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             bottom, left, top and right respectively. If ``around`` is
             specified you will likely need all of these!
         bottom : int, optional
-            The initial bottom boundary row, defaults to ``2 Lx - 2.
+            The initial bottom boundary row, defaults to ``2 Lx - 2``.
         top : int, optional
             The initial top boundary row, defaults to 0.
         left : int, optional
@@ -3168,18 +3244,34 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-    def graph(self, fix_lattice=True, layer_tags=None, with_gate=False, **graph_opts):
+    def graph(
+        self, 
+        fix_lattice=True, 
+        layer_tags=None, 
+        with_gate=False, 
+        auto_detect_layers=True,
+        **graph_opts):
         '''
         TODO: DEBUG ``fix_tags`` PARAM
               GRAPH GATE LAYERS
 
-        Overload ``TensorNetwork.graph`` for aesthetic
-        lattice-fixing if ``fix_lattice==True`` (default).
+        Overload ``TensorNetwork.graph`` for clean/aesthetic lattice-fixing,
+        unless `fix_lattice` is set False. 
+
+        `auto_detect_layers` will check if 'BRA', 'KET' are in `self.tags`,
+        and if so will attempt to graph as a two-layer sandwich.
+        Can also specify `layer_tags` specifically for TNs with other layers.
         '''
         
         graph_opts.setdefault('color', ['VERT','FACE','GATE'])
         graph_opts.setdefault('show_tags', False)
         graph_opts.setdefault('show_inds', True)
+
+        if all((auto_detect_layers == True,
+                'BRA' in self.tags,
+                'KET' in self.tags)):
+            layer_tags=('BRA', 'KET')
+
 
         def get_layer_fix_tags(layer_tag=None, offset=0.0):
             
@@ -3232,7 +3324,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             # try:
             if layer_tags is None:
                 fix_tags = get_layer_fix_tags()
-
+        
             else:
                 fix_tags = dict()
                 for k, layer in enumerate(tags_to_oset(layer_tags)):
@@ -3241,10 +3333,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             super().graph(fix=fix_tags, **graph_opts)
             
-            # except ValueError as e:
-            #     print(f"Graph attempt error: {e}")
-            #     super().graph(**graph_opts)
-
 
     graph_layers = functools.partialmethod(graph, 
                             layer_tags=('BRA','KET'))
@@ -3284,8 +3372,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         # squish together the layers at each 'occupied' grid coo
         for tag_xy in nonempty_coo_tags:
             tn ^= tag_xy
-
-        # tn._supergrid = tn.calc_supergrid() 
 
         if fuse_multibonds:
             tn.fuse_multibonds_()
@@ -3438,10 +3524,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 where=tags_to_oset(new_grid_tag) | tags_to_oset(layer_tag),
                 which='all',)
 
-            # record the unique `new_id_tag` in the supergrid
-            # tn._update_supergrid(*mid_coo, tag=new_grid_tag)
-
-
         # tn._supergrid = tn.calc_supergrid()
         if fuse_multibonds:
             tn.fuse_multibonds_()
@@ -3466,7 +3548,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
             
         
-
 
 
     def insert_identity_between(self, where1, where2, layer_tag=None, add_tags=None, inplace=False):
@@ -4274,6 +4355,13 @@ class QubitEncodeVector(QubitEncodeNet,
         return cls(tn=rand_tn, Lx=Lx, Ly=Ly, phys_dim=phys_dim, **tn_opts)                                
 
 
+    @classmethod
+    def rand_local_product_state(cls, Lx, Ly, phys_dim=2, bond_dim=3, dtype='complex128', **tn_opts):
+        
+        local_prod_state = local_product_state_net(Lx, Ly, phys_dim, bond_dim, dtype=dtype, **tn_opts)
+        
+        return cls(tn=local_prod_state, Lx=Lx, Ly=Ly, phys_dim=phys_dim, **tn_opts)
+
     @property
     def phys_ind_id(self):
         '''Format string for the physical indices
@@ -4536,6 +4624,7 @@ class QubitEncodeVector(QubitEncodeNet,
         
         return psi
 
+
     def _exact_local_gate_sandwich(self, G, where, contract):
         '''Exactly contract <psi|G|psi>
         '''
@@ -4649,7 +4738,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
     
     def compute_ham_expec(self, Ham, normalize=True):
-        '''Return <psi|H|psi>
+        '''Return <psi|H|psi> (inefficiently computed)
 
         Ham: [SimulatorHam]
             Specifies a two- or three-site gate for each edge in
@@ -4996,7 +5085,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
 class MasterHam():
-    '''Commodity class that combines a simulator Ham `Hsim`
+    '''Commodity class to combine a simulator Ham `Hsim`
     and a stabilizer pseudo-Ham `Hstab` to generate each of 
     their gates in order.
 
@@ -6036,11 +6125,11 @@ def main_debug():
 
 
 if __name__ == '__main__':
-    # main_debug()
-    qvec = QubitEncodeVector.rand(3, 3, bond_dim=2)
-    norm = qvec.make_norm()
-    norm.setup_bmps_contraction_(layer_tags=('BRA','KET'))
-    # norm = qvec.make_norm()
+    
+    qvec = QubitEncodeVector.rand(3, 3, bond_dim=4)
+    norm = qvec.make_norm().setup_bmps_contraction_(layer_tags=('BRA','KET'))
+    phi = norm.flatten().contract_boundary_from_left(xrange=(0,4), yrange=(0,2), max_bond=5)
+    phi._compress_supergrid_column(y=2, sweep='down', xrange=(0,4), max_bond=5)
     
     # HubHam = SpinlessSimHam(Lx=3, Ly=3)
     # qubit_terms = dict(HubHam.gen_ham_terms())

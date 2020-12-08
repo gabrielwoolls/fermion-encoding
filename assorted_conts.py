@@ -2,7 +2,7 @@ import numpy as np
 from itertools import product
 import quimb as qu
 import quimb.tensor as qtn
-import qubitNetworks
+import qubit_networks
 from numbers import Integral
 from quimb.utils import check_opt
 import functools
