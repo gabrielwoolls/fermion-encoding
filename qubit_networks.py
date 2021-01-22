@@ -455,8 +455,7 @@ def make_random_net(Lx, Ly, phys_dim,
 
 
 class iTimeTEBD:
-    '''TODO: FIX HAMILTONIAN CLASS
-    Object for TEBD imaginary-time evolution.
+    '''Object for TEBD imaginary-time evolution.
 
     Params:
     ------
@@ -464,7 +463,7 @@ class iTimeTEBD:
         The initial state of the qubits. Will be modified
         in-place.
     
-    `ham`: `----`
+    `ham`: MasterHam, or SimulatorHam, or StabHam
         Hamiltonian for time evolution. Should have a
         `gen_trotter_gates(tau)` method.
     
@@ -526,12 +525,12 @@ class iTimeTEBD:
         if fns is None:
             self._step_callback = None
         
-        #fns is callable or dict of callables
         else:
-
+            #fns is dict of callables
             if isinstance(fns, dict):
                 self._results = {k: [] for k in fns}
 
+                #given state at time t, compute observables
                 def step_callback(psi_t):
                     for k, func in fns.items():
                         fn_result = func(psi_t)
@@ -642,24 +641,17 @@ class iTimeTEBD:
         return np.array(self._results[which])
 
 
-    def get_final_data(self, data):
+    def get_normalized_data(self, data):
         '''Convenience method for testing.
         '''
 
         if data == 'Esim':
             return np.divide(np.real(self.results('sim')),
-                            np.real(self.results('norm'))
-                            )
+                            np.real(self.results('norm')))
         
         elif data == 'Estab':
             return np.divide(np.real(self.results('stab')),
-                            np.real(self.results('norm'))
-                            )
-        
-        
-
-
-
+                            np.real(self.results('norm')))
 
 
 def compute_encnet_ham_expec(qnet, ham):
@@ -682,7 +674,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         Tensors at physical sites are tagged with 'QUBIT' while
         auxiliary tensors (e.g. dummy identities) are tagged with
         'AUX' tag.
-        
         
 
         Attributes:
@@ -985,6 +976,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
         else:
             raise ValueError(f"{i},{j} not a proper vertex coordinate")
+
 
 
     def is_vertex_coo(self, xy):
@@ -1433,6 +1425,16 @@ class QubitEncodeNet(qtn.TensorNetwork):
         more 'PEPS-like'.
         '''
         tn = self if inplace else self.copy()
+        
+        #first check if there are 'AUX'-tagged tensors already
+        
+        maybe_already_rotated = self.check_if_bmps_setup()
+        
+        if maybe_already_rotated:
+            print("'setup_bmps' exited, face qubits already rotated!")
+            return tn
+
+        # otherwise proceed with setup
 
         if layer_tags is None:
             tn.rotate_face_qubits_()
@@ -1451,6 +1453,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
     setup_bmps_contraction_ = functools.partialmethod(
                                     setup_bmps_contraction,
                                     inplace=True)
+
+
+    def check_if_bmps_setup(self):
+        '''Checks whether 'AUX' is in the TN tags, as
+        indication of whether face qubits are rotated.
+        '''
+        return ('AUX' in self.tags)
+
 
     def _contract_boundary_from_left_single(
         self,
@@ -4530,6 +4540,7 @@ class QubitEncodeVector(QubitEncodeNet,
     apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
 
 
+
     def apply_mpo(self, mpo, where, inplace=False, contract=False):
         '''For now assume mpo and self have same tagging conventions
         '''
@@ -4598,11 +4609,16 @@ class QubitEncodeVector(QubitEncodeNet,
     apply_mpo_ = functools.partialmethod(apply_mpo, inplace=True)
     
 
-    def apply_stabilizer(self, stabs, inplace=False, contract=True):
+    def apply_stabilizer(self, qubits, gates, inplace=False, contract=True):
         '''Apply each of the 1-site gates making up a stabilizer to
         the corresponding sites.
 
-        stabs: dict-like
+        qubits: tuple(int)
+            The integer labels of the qubits to act on
+        gates: tuple(gate/array)
+            The 1-qubit gates to apply, in same order
+
+        stab: dict-like
             Map qubit sites (ints) to 1-site Paulis, e.g.
             {1: pauli(z), 2: pauli(z), 6: pauli(x), 4: pauli(z),
              5: pauli(z)} for the stabilizer like
@@ -4617,12 +4633,54 @@ class QubitEncodeVector(QubitEncodeNet,
         '''
         psi = self if inplace else self.copy()
 
-        stabs = dict(stabs)
-
-        for where, gate in stabs.items():
+        for where, gate in zip(qubits, gates):
             psi.apply_gate_(G=gate, where=where, contract=contract)
         
         return psi
+
+    
+
+    apply_stabilizer_ = functools.partialmethod(apply_stabilizer, inplace=True)
+
+    #TODO: make efficient (compute norm separately?)
+    #      check whether setup_bmps is necessary?
+    def compute_stabilizer_expec(self, qubits, gates, setup_bmps=True, norm=None):
+        '''Returns <psi|S|psi> for a specified stabilizer. Not inplace. 
+
+        qubits: tuple(int)
+            Integer labels of the qubits to act on (in order)
+        
+        gates: tuple(array)
+            1-qubit gates to apply on qubits (in order)
+        
+        setup_bmps: bool, optional (defaults True)
+            Whether to rotate face-qubits. If state is
+            already face-rotated, can specify False.
+        
+        norm: float, optional
+            If given a norm, will return the normalized 
+            expectation <psi|S|psi> / norm
+        '''
+        ket = self.copy()
+        
+        # Need to rotate face qubits before applying layer tags
+        if setup_bmps:
+            ket.setup_bmps_contraction_()
+        
+        ket.add_tag('KET')
+        bra = ket.H.retag({'KET': 'BRA'})
+        boundary_contract_opts = {'layer_tags': ('KET', 'BRA')}
+
+        S_ket = ket.apply_stabilizer(qubits, gates, contract=True)
+
+        expectation = (bra | S_ket).contract_boundary(**boundary_contract_opts)
+
+        if norm is None:
+            return expectation 
+
+        return expectation / norm
+
+
 
 
     def _exact_local_gate_sandwich(self, G, where, contract):
@@ -4799,16 +4857,6 @@ class QubitEncodeVector(QubitEncodeNet,
         for G, where in zip(gates, inds):
             self.apply_gate_(G, where)
 
-
-
-    def apply_all_stabilizers_(self, H_stab):
-        '''``H_stab`` specifies the active sites and 
-        gates, multiplied by ``StabModifier.multiplier``, 
-        of all loop stabilizer operators in this lattice.
-        '''
-        for where, G in H_stab.gen_stabilizer_gates():
-            self.apply_gate_(G, where)
-
     
     def check_dense_energy(self, Hdense, normalize=True):
         
@@ -4979,6 +5027,8 @@ class QubitEncodeVector(QubitEncodeNet,
         **boundary_contract_opts,
     ):
         """Normalize this ``QubitEncodeVector``.
+        Warning: Needs to be setup for boundary contraction!
+        (i.e. via setup_bmps_contraction())
 
         Params
         ------
@@ -5019,67 +5069,6 @@ class QubitEncodeVector(QubitEncodeNet,
     normalize_ = functools.partialmethod(normalize, inplace=True)
 
 
-####################################################
-
-
-# class QubitEncodeNetFlat(QubitEncodeNet, 
-#                         qtn.TensorNetwork):
-#     ''' Mixin class for flat networks with the shape of a QE lattice,
-#     e.g. flattened norms or expectations.
-
-#     '''
-    
-#     _EXTRA_PROPS = (
-#         '_qlattice',
-#         '_site_tag_id',
-#         '_aux_tag_id'
-#     )
-
-#     def __init__(
-#         self, 
-#         tn,
-#         qlattice,
-#         site_tag_id = 'Q{}',
-#         aux_tag_id = 'IX{}Y{}',
-#         **tn_opts):
-
-#         if isinstance(tn, QubitEncodeNetFlat):
-#             self._qlattice = tn.qlattice
-#             self._site_tag_id = tn.site_tag_id
-#             self._aux_tag_id = tn.aux_tag_id
-#             super().__init__(tn)
-#             return
-        
-#         self._qlattice = qlattice
-#         self._site_tag_id = site_tag_id
-#         self._aux_tag_id = aux_tag_id
-
-#         self._vertex_coo_map = self.vertex_coo_map()
-#         self._face_coo_map = self.face_coo_map()
-
-#         super().__init__(tn, **tn_opts)
-    
-
-#     @classmethod
-#     def rand(cls, Lx, Ly, bond_dim=4, **tn_opts):
-#         qlat = denseQubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=1)
-        
-#         rand_tn = make_random_net(qlattice=qlat,
-#                                   bond_dim=bond_dim,
-#                                   **tn_opts)
-#         rand_tn.squeeze_()                                  
-#         return cls(tn=rand_tn, qlattice=qlat)
-
-
-
-    
-
-        
-
-
-
-
-
 
 ####################################################
 
@@ -5098,7 +5087,6 @@ class MasterHam():
     def __init__(self, Hsim, Hstab):
         self.Hsim=Hsim
         self.Hstab = Hstab
-
 
     def gen_ham_terms(self):
         return chain(self.Hsim.gen_ham_terms(),
@@ -6126,10 +6114,13 @@ def main_debug():
 
 if __name__ == '__main__':
     
-    qvec = QubitEncodeVector.rand(3, 3, bond_dim=4)
-    norm = qvec.make_norm().setup_bmps_contraction_(layer_tags=('BRA','KET'))
-    phi = norm.flatten().contract_boundary_from_left(xrange=(0,4), yrange=(0,2), max_bond=5)
-    phi._compress_supergrid_column(y=2, sweep='down', xrange=(0,4), max_bond=5)
+    Hstab = HamStab(Lx=3, Ly=3)
+
+
+    # qvec = QubitEncodeVector.rand(3, 3, bond_dim=4)
+    # norm = qvec.make_norm().setup_bmps_contraction_(layer_tags=('BRA','KET'))
+    # phi = norm.flatten().contract_boundary_from_left(xrange=(0,4), yrange=(0,2), max_bond=5)
+    # phi._compress_supergrid_column(y=2, sweep='down', xrange=(0,4), max_bond=5)
     
     # HubHam = SpinlessSimHam(Lx=3, Ly=3)
     # qubit_terms = dict(HubHam.gen_ham_terms())
