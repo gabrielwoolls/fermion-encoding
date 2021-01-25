@@ -152,6 +152,7 @@ def make_product_state_net(
     site_tag_id='Q{}',
     phys_ind_id='q{}',
     add_tags=None,
+    dtype='complex128',
     vertices_only=False,
     **tn_opts
 ):
@@ -174,8 +175,8 @@ def make_product_state_net(
     # optional additional tags, none by default
     add_tags = tags_to_oset(add_tags) 
     
-    spin_map = {'0': qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim),
-                '1': qu.basis_vec(i=1, dim=phys_dim).reshape(phys_dim)}
+    spin_map = {'0': qu.basis_vec(i=0, dim=phys_dim, dtype=dtype).reshape(phys_dim),
+                '1': qu.basis_vec(i=1, dim=phys_dim, dtype=dtype).reshape(phys_dim)}
 
     #default to spin-up at every site
     if bitstring is None:
@@ -184,7 +185,7 @@ def make_product_state_net(
         face_data = [spin_up] * num_faces
 
 
-    elif all(s in '01' for s in bitstring):
+    elif all(s in '01' for s in bitstring) and len(bitstring) == num_vertices + num_faces:
         vertex_data, face_data = [], []
 
         for k, bit in enumerate(bitstring):
@@ -4364,7 +4365,27 @@ class QubitEncodeVector(QubitEncodeNet,
         
         super().__init__(tn, **tn_opts)
 
-    
+    @classmethod
+    def product_state_from_bitstring(cls, Lx, Ly, bitstring, phys_dim=2, 
+        bond_dim=3, dtype='complex128',**tn_opts):
+        '''Create a product state with local spins specified in the
+        bitstring. 
+        '''
+        
+        all_opts = {'Lx': Lx,
+                    'Ly': Ly,
+                    'bitstring': bitstring,
+                    'phys_dim': phys_dim,
+                    'bond_dim': bond_dim,
+                    'dtype': dtype,
+                    **tn_opts}
+
+        tn = make_product_state_net(**all_opts)
+        
+        return cls(tn=tn, Lx=Lx, Ly=Ly, 
+            phys_dim=phys_dim, **tn_opts)
+
+
     @classmethod
     def rand_from_qlattice(cls, qlattice, bond_dim=3, **tn_opts):
         '''Make a random QubitEncodeVector from specified `qlattice`.
