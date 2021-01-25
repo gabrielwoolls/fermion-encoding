@@ -7,7 +7,7 @@ import qubit_networks as my_qns
 import pytest
 import numpy as np
 
-class TestStability:
+class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
     one of Lx, Ly odd (so Lx, Ly = (2,4) e.g. won't work)
     '''
@@ -55,6 +55,7 @@ class TestStability:
             S_ket.add_tag('KET')
             x = (bra|S_ket).contract_boundary(**boundary_contract_opts)
             x_normalized = x / norm
+            
             expecs_2.append(x_normalized)
         
         

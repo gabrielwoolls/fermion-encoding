@@ -167,33 +167,60 @@ def make_product_state_net(
         3. A qubit-number tag (e.g. "Q{k}" for the kth qubit)
         4. Any additional supplied in ``add_tags``
     '''
-    
-    add_tags = tags_to_oset(add_tags) #none by default
+    # note this only works if either Lx or Ly is odd!
+    num_vertices = Lx * Ly
+    num_faces = int((Lx-1) * (Ly-1) / 2)
 
+    # optional additional tags, none by default
+    add_tags = tags_to_oset(add_tags) 
     
-    #default to ``up`` spin at every site
-    vertex_data = qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim)
-    face_data = vertex_data
+    spin_map = {'0': qu.basis_vec(i=0, dim=phys_dim).reshape(phys_dim),
+                '1': qu.basis_vec(i=1, dim=phys_dim).reshape(phys_dim)}
+
+    #default to spin-up at every site
+    if bitstring is None:
+        spin_up = spin_map['0']
+        vertex_data = [spin_up] * num_vertices
+        face_data = [spin_up] * num_faces
+
+
+    elif all(s in '01' for s in bitstring):
+        vertex_data, face_data = [], []
+
+        for k, bit in enumerate(bitstring):
+
+            if k < num_vertices:
+                vertex_data.append(spin_map[bit])
+            
+            if k >= num_vertices:
+                face_data.append(spin_map[bit])
+                
+    else:
+        raise ValueError(f"{bitstring} is not a proper spin configuration")
+
 
     vtensors = [[None for _ in range(Ly)] for _ in range(Lx)]
 
     for i, j in product(range(Lx), range(Ly)):
+        
+        qubit_number = i * Ly + j
+        supergrid_coo = (2*i, 2*j)
 
-        ind_ij = (phys_ind_id.format(i * Ly + j),)
+        ind_ij = (phys_ind_id.format(qubit_number),)
 
         tags_ij = ('VERT', 'QUBIT',
-                   site_tag_id.format(i * Ly + j),
-                   grid_tag_id.format(2*i, 2*j),
+                   site_tag_id.format(qubit_number),
+                   grid_tag_id.format(*supergrid_coo),
                    *add_tags)
 
-        vertex_ij = qtn.Tensor(data = vertex_data, 
+        vertex_ij = qtn.Tensor(data = vertex_data[qubit_number], 
                                inds = ind_ij,
                                tags = tags_ij)
         
         vtensors[i][j] = vertex_ij
 
     
-    for i,j in product(range(Lx), range(Ly)):
+    for i, j in product(range(Lx), range(Ly)):
      
         if i <= Lx-2:
             vtensors[i][j].new_bond(vtensors[i+1][j], size=bond_dim)
@@ -206,8 +233,9 @@ def make_product_state_net(
         vtensors = list(chain.from_iterable(vtensors))
         return qtn.TensorNetwork(vtensors, structure=site_tag_id, **tn_opts)
 
-
-    ## add face sites + bonds ##
+    ##
+    # add face sites + bonds 
+    ##
     
     ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
     
@@ -215,14 +243,17 @@ def make_product_state_net(
     for i, j in product(range(Lx-1), range(Ly-1)):
         
         if i % 2 == j % 2: #tensors on the 'even' faces
-            ind_ij = (phys_ind_id.format(k + Lx * Ly),)
+            qubit_number = k + Lx * Ly
+            supergrid_coo = (2*i + 1, 2*j + 1)
+
+            ind_ij = (phys_ind_id.format(qubit_number),)
 
             tags_ij = ('FACE', 'QUBIT',
-                        site_tag_id.format(k + Lx * Ly),
-                        grid_tag_id.format(2*i + 1, 2*j + 1),
+                        site_tag_id.format(qubit_number),
+                        grid_tag_id.format(*supergrid_coo),
                         *add_tags)
 
-            face_ij = qtn.Tensor(data = face_data,
+            face_ij = qtn.Tensor(data = face_data[k], #note index k, not k + Lx.Ly
                                  inds = ind_ij,
                                  tags = tags_ij)
 
