@@ -14,6 +14,7 @@ import opt_einsum as oe
 from operator import add
 import re
 import numpy as np
+from random import randint
 
 
 
@@ -4368,8 +4369,8 @@ class QubitEncodeVector(QubitEncodeNet,
     @classmethod
     def product_state_from_bitstring(cls, Lx, Ly, bitstring, phys_dim=2, 
         bond_dim=3, dtype='complex128',**tn_opts):
-        '''Create a product state with local spins specified in the
-        bitstring. 
+        '''Create a product state with local spins *specified* in the
+        given `bitstring`. 
         '''
         
         all_opts = {'Lx': Lx,
@@ -4384,6 +4385,34 @@ class QubitEncodeVector(QubitEncodeNet,
         
         return cls(tn=tn, Lx=Lx, Ly=Ly, 
             phys_dim=phys_dim, **tn_opts)
+
+
+    @classmethod
+    def rand_product_state(cls, Lx, Ly, phys_dim=2, 
+        bond_dim=3, dtype='complex128',**tn_opts):
+        '''Create a product state of local spins, generated from
+        a random bitstring.
+        '''
+
+        #total sites is #vertices + #faces
+        num_sites = Lx * Ly + int((Lx-1) * (Ly-1) / 2)
+        
+        random_bitstring = ''.join(
+            str(randint(0,1)) for _ in range(num_sites))
+
+        all_opts = {'Lx': Lx,
+                    'Ly': Ly,
+                    'bitstring': random_bitstring,
+                    'phys_dim': phys_dim,
+                    'bond_dim': bond_dim,
+                    'dtype': dtype,
+                    **tn_opts}
+
+        tn = make_product_state_net(**all_opts)
+        
+        return cls(tn=tn, Lx=Lx, Ly=Ly, 
+            phys_dim=phys_dim, **tn_opts)
+
 
 
     @classmethod
