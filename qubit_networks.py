@@ -920,7 +920,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         for (x, y), tag_xy in grid_tags.items():
             #at most one tensor should match 'S{x}{y}' tag
             if tag_xy in self.tags:
-                # tid, = self._get_tids_from_tags(tag_xy)
                 supergrid[x][y] = tags_to_oset(tag_xy)
 
         return supergrid
@@ -1057,9 +1056,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             for num, coo in enumerate(face_sites):
                 self._face_coo_map.update({coo: num + n_vertices})
-
-            # self._face_coo_map = dict(np.ndenumerate(
-            #                 self.qlattice().face_array))
 
 
         if (x is None) and (y is None):
@@ -4517,13 +4513,23 @@ class QubitEncodeVector(QubitEncodeNet,
         self,
         G, 
         where,
+        contract=False,
+        tags=['GATE'],
         inplace=False, 
-        contract=False
-        ):
-        '''Apply array `G` acting at sites `where`,
-        preserving physical indices. Uses `self._phys_ind_id`
-        and the integer(s) `where` to apply `G` at the
+        info=None,
+        **compress_opts
+    ):
+        '''Apply dense array ``G`` acting at sites ``where``,
+        preserving physical indices. Uses ``self._phys_ind_id``
+        and the integer(s) ``where`` to apply ``G`` at the
         correct sites.
+
+        By default, tags the new gate tensor with "GATE".
+
+        NOTE: this method doesn't assume only 2-qubit gates, can 
+        handle 3-qubit gates. But it DOES assume the qubits being 
+        acted on are direct nearest neighbors -- skips long-range
+        procedure.
 
         Params:
         ------            
@@ -4539,10 +4545,12 @@ class QubitEncodeVector(QubitEncodeNet,
         inplace: bool, optional
             If False (default), return copy of TN with gate applied
         
-        contract: {False, True, 'split'}, optional
-            False (default) leave all gates uncontracted
-            True contract gates into one tensor in the lattice
-            'split' uses tensor_2d.gate_split method for two-site gates
+        contract: {False, True, 'split', 'reduce_split'}, optional
+            
+            -False: (default) leave all gates uncontracted
+            -True: contract gates into one tensor in the lattice
+            -'split': uses tensor_2d.gate_split method for two-site gates
+            -'reduce_split': TODO
 
         '''
 
@@ -4558,8 +4566,9 @@ class QubitEncodeVector(QubitEncodeNet,
         numsites = len(where) #gate acts on `numsites`
 
         dp = self.phys_dim #local physical dimension
+        tags = qtn.tensor_2d.tags_to_oset(tags)
 
-        G = maybe_factor_gate_into_tensor(G, dp, numsites, where)
+        G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp, numsites, where)
 
         #new physical indices 'q{i}'
         site_inds = [self.phys_ind_id.format(i) for i in where] 
@@ -4570,17 +4579,29 @@ class QubitEncodeVector(QubitEncodeNet,
         #replace physical inds with gate/bond inds
         reindex_map = dict(zip(site_inds, bond_inds))
 
-        TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=['GATE'])
+        TG = qtn.Tensor(G, inds=site_inds+bond_inds, left_inds=bond_inds, tags=tags)
         
         if contract is False:
-            #attach gates w/out contracting any bonds
+            #attach gates without contracting any bonds
+            #
+            #       │   │      <- site_inds
+            #       GGGGG
+            #       │╱  │╱     <- bond_inds
+            #     ──●───●──
+            #      ╱   ╱
+            #
             psi.reindex_(reindex_map)
             psi |= TG
             return psi
 
 
         elif contract is True or numsites==1:
-            #just contract the physical leg(s)
+            #just contract the physical indices
+            #
+            #       │╱  │╱
+            #     ──GGGGG──
+            #      ╱   ╱
+            #
             psi.reindex_(reindex_map)
             
             #sites that used to have physical indices
@@ -4593,14 +4614,22 @@ class QubitEncodeVector(QubitEncodeNet,
 
             return psi
         
-        elif contract == 'split' and numsites==2:
-    
-            original_ts = [psi[k] for k in where]
 
-            bonds_along = [next(iter(qtn.bonds(t1, t2)))
-                       for t1, t2 in qu.utils.pairwise(original_ts)]
+        #the original tensors at sites being acted on
+        original_ts = [psi[q] for q in where]
 
-            
+        #list of (num_sites - 1) elements; the bonds connecting
+        # each site in ``where`` to the next (open boundary)
+        bonds_along = [next(iter(qtn.bonds(t1, t2)))
+                    for t1, t2 in qu.utils.pairwise(original_ts)]
+        
+        if contract == 'split' and numsites==2:
+            #
+            #       │╱  │╱          │╱  │╱
+            #     ──GGGGG──  ==>  ──G┄┄┄G──
+            #      ╱   ╱           ╱   ╱
+            #     <SVD>
+            # 
             gss_opts = {'TG' : TG,
                         'where' : where,
                         'string': where,
@@ -4608,14 +4637,37 @@ class QubitEncodeVector(QubitEncodeNet,
                         'bonds_along' : bonds_along,
                         'reindex_map' : reindex_map,
                         'site_ix' : site_inds,
-                        'info' : None}
+                        'info' : info,
+                        **compress_opts}
 
-            qu.tensor.tensor_2d.gate_string_split_(**gss_opts)
+            qtn.tensor_2d.gate_string_split_(**gss_opts)
             return psi                        
 
 
+        elif contract == 'reduce_split' and numsites == 2:
+            #
+            #       │   │             │ │
+            #       GGGGG             GGG               │ │
+            #       │╱  │╱   ==>     ╱│ │  ╱   ==>     ╱│ │  ╱          │╱  │╱
+            #     ──●───●──       ──>─●─●─<──       ──>─GGG─<──  ==>  ──G┄┄┄G──
+            #      ╱   ╱           ╱     ╱           ╱     ╱           ╱   ╱
+            #    <QR> <LQ>                            <SVD>
+            #
+            gsrs_opts = {'TG': TG,
+                         'where': where,
+                         'string': where,
+                         'original_ts': original_ts,
+                         'bonds_along': bonds_along,
+                         'reindex_map': reindex_map,
+                         'site_ix': site_inds,
+                         'info': info,
+                         **compress_opts}
+            
+            qtn.tensor_2d.gate_string_reduce_split_(**gsrs_opts)
+            return psi
+
         else:
-            raise ValueError('Unknown contraction requested')
+            raise ValueError('Unknown contraction')
 
 
     apply_gate_ = functools.partialmethod(apply_gate, inplace=True)
@@ -4725,8 +4777,8 @@ class QubitEncodeVector(QubitEncodeNet,
 
     #TODO: make efficient (compute norm separately?)
     #      check whether setup_bmps is necessary?
-    def compute_stabilizer_expec(self, qubits, gates, setup_bmps=True, norm=None):
-        '''Returns <psi|S|psi> for a specified stabilizer. Not inplace. 
+    def compute_stabilizer_expec(self, qubits, gates, setup_bmps=True, norm=None, **contract_opts):
+        '''Returns <psi|S|psi> for a specified stabilizer. Does not change TN inplace. 
 
         qubits: tuple(int)
             Integer labels of the qubits to act on (in order)
@@ -4750,7 +4802,8 @@ class QubitEncodeVector(QubitEncodeNet,
         
         ket.add_tag('KET')
         bra = ket.H.retag({'KET': 'BRA'})
-        boundary_contract_opts = {'layer_tags': ('KET', 'BRA')}
+        boundary_contract_opts = {'layer_tags': ('KET', 'BRA'),
+                                  **contract_opts}
 
         S_ket = ket.apply_stabilizer(qubits, gates, contract=True)
 
