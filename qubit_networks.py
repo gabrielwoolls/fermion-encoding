@@ -142,6 +142,7 @@ def insert_identity_between_tensors(T1, T2, add_tags=None):
                       inds=(bond, newbond),
                       tags=add_tags,)
 
+
 # TODO: implement bitstring functionality
 def make_product_state_net(
     Lx, 
@@ -867,6 +868,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
     def aux_tag_id(self):
         '''Format string for the tags of 'auxiliary' tensors
         (e.g. dummy identities) anywhere in supergrid.
+
+        >>> 'IX{}Y{}'
         '''
         return self._aux_tag_id
 
@@ -990,7 +993,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     def vertex_coo_map(self, i=None, j=None):
         '''Maps location (i,j) in vertex lattice
-        to the corresponding site number.
+        to the corresponding site number,  e.g.
+        
+        >>> vertex_coo_map(0, 1)
+        >>> 1
         '''
         if not hasattr(self, '_vertex_coo_map'):
 
@@ -5201,6 +5207,116 @@ class QubitEncodeVector(QubitEncodeNet,
         return n_ket
 
     normalize_ = functools.partialmethod(normalize, inplace=True)
+
+    #************Converting to quimb TensorNetwork2D*************#
+
+    def convert_to_tensor_network_2d(
+        self, 
+        dummy_size=1,
+        insert_physical_indices=False
+    ):
+        '''Not inplace. Returns a qtn.tensor_2d.TensorNetwork2D?
+        
+        dummy_size: int, optional
+            The size of the dummy indices we insert, both physical 
+            and internal.
+        '''
+        psi = self.copy()
+
+        # Properties for new PEPS-like tn
+        new_index_id = 'k{},{}'
+        new_site_id = 'I{},{}'
+        new_Lx = psi.grid_Lx
+        new_Ly = psi.grid_Ly
+
+        # 'rotate' qubits at nonempty faces
+        # (unless already rotated)
+        # 
+        #      ─●───────●─      ─●───●───●──
+        #       │ \   / │        │   │   │ 
+        #       │   ●   │  ==>   ●───●───● 
+        #       │ /   \ │        │   │   │ 
+        #      ─●───────●─      ─●───●───●──
+        #       │       │        │       │  
+        # 
+        already_rotated = psi.check_if_bmps_setup()
+
+        if not already_rotated:
+            psi.setup_bmps_contraction_()
+        
+
+        # now fill in all the empty faces with identities
+
+        for x,y in psi.gen_face_coos(including_empty=True):    
+            
+            coo_tag = psi.grid_coo_tag(x, y)
+            
+            #skip the faces with qubits on them
+            if coo_tag in psi.tags:
+                continue
+                
+            # coos (up, right, down, left) of the face site
+            coos_around = ((x-1, y),
+                           (x, y+1),
+                           (x+1, y),
+                           (x, y-1))
+            
+            # tags around site, e.g. ('S0,1', 'S1,2', ...)
+            tags_around = tuple(starmap(psi.grid_coo_tag, coos_around))
+            
+            new_tensor_tags = (coo_tag, 
+                            psi.row_tag(x),
+                            psi.col_tag(y),
+                            psi.aux_tag_id,
+                            'AUX', 'FACE')
+        
+            # connect `up` and `down` with a new identity
+            # 
+            # x-1   ●───●───●        ●───●───●
+            #       │       │        │   │   │ 
+            # x     ●       ●  ==>   ●   i   ● 
+            #       │       │        │   │   │ 
+            # x+1   ●───●───●        ●───●───● 
+            #
+            tag_up, tag_down = (tags_around[i] for i in (0,2))
+            qtn.new_bond(T1=psi[tag_up], T2=psi[tag_down], size=dummy_size)
+
+            psi.insert_identity_between_(
+                where1=tag_up, 
+                where2=tag_down, 
+                add_tags=new_tensor_tags)
+            
+            # connect new identity tensor to the sides
+            #    ●───●───●        ●───●───●
+            #    │   │   │        │   │   │ 
+            #    ●   i   ●  ==>   ●───i───● 
+            #    │   │   │        │   │   │ 
+            #    ●───●───●        ●───●───● 
+            #
+            tag_right, tag_left = (tags_around[i] for i in (1,3))
+            qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_right], size=dummy_size)
+            qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_left], size=dummy_size)
+
+            if insert_physical_indices:
+                # add a dummy physical index of `dummy_size`
+                # 
+                #    ●───●───●        ●───●───●
+                #    │   │   │        │   │/  │ 
+                #    ●───i───●  ==>   ●───i───● 
+                #    │   │   │        │   │   │ 
+                #    ●───●───●        ●───●───● 
+                #
+                new_index_name = new_index_id.format(x, y)
+                psi[new_tensor_tags].new_ind(name=new_index_name, size=dummy_size)
+
+            #go to next empty face
+            
+        return psi
+
+
+
+
+
 
 
 
