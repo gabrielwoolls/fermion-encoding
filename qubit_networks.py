@@ -999,18 +999,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
         >>> 1
         '''
         if not hasattr(self, '_vertex_coo_map'):
-
             self._vertex_coo_map = {(2*i, 2*j): i * self.Ly + j
-                    for i, j in product(range(self.Lx), range(self.Ly))
-                    }
+                    for i, j in product(range(self.Lx), range(self.Ly))}
             
         if (i is None) and (j is None):
-            return self._vertex_coo_map
-        
+            return self._vertex_coo_map        
 
         elif (i % 2 == 0) and (j % 2 == 0):
-            return self._vertex_coo_map[(i, j)]
-        
+            return self._vertex_coo_map[(i, j)]        
         
         else:
             raise ValueError(f"{i},{j} not a proper vertex coordinate")
@@ -1231,19 +1227,26 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return product(range(2 * self.Lx - 1), range(2 * self.Ly -1))
 
 
-    def gen_occupied_grid_tags(self, with_coo=False):
+    def gen_occupied_grid_tags(self, with_coo=True):
         '''Generate the supergrid tags corresponding to locations
         occupied by tensors. If ``with_coo == True``, also yield
         the coordinate (x,y) along with the tag.
         '''
         coo2tag = {(x, y): self.grid_coo_tag(x, y) 
-            for x,y in product(range(2 * self.Lx -1), range(2 * self.Ly -1))}
+            for x,y in self.gen_supergrid_coos()\
+            if self.grid_coo_tag(x,y) in self.tags}
         
-        for (x, y), tag_xy in coo2tag.items():
-            # if there is a tensor matching this grid location
-            if self.check_for_matching_tags(tag_xy):
+        
+        return coo2tag.items() if with_coo else coo2tag.values()
 
-                yield ((x, y), tag_xy) if with_coo else tag_xy
+        
+
+
+        # for (x, y), tag_xy in coo2tag.items():
+        #     # if there is a tensor matching this grid location
+        #     if self.check_for_matching_tags(tag_xy):
+
+        #         yield ((x, y), tag_xy) if with_coo else tag_xy
             
                     
 
@@ -3140,13 +3143,11 @@ class QubitEncodeNet(qtn.TensorNetwork):
         occupied supergrid location.
         '''
         for (x, y), tag_xy in self.gen_occupied_grid_tags(with_coo=True):
+            if rows:
+                self.add_tag(tag=self.row_tag(x), where=tag_xy)
+            if cols:
+                self.add_tag(tag=self.col_tag(y), where=tag_xy)
                 
-                if rows:
-                    self.add_tag(tag=f'ROW{x}', where=tag_xy)
-                
-                if cols:
-                    self.add_tag(tag=f'COL{y}', where=tag_xy)
-                   
     
     def get_edges(self, which):
         '''
@@ -5208,26 +5209,36 @@ class QubitEncodeVector(QubitEncodeNet,
 
     normalize_ = functools.partialmethod(normalize, inplace=True)
 
+
     #************Converting to quimb TensorNetwork2D*************#
+
 
     def convert_to_tensor_network_2d(
         self, 
         dummy_size=1,
-        insert_physical_indices=False
+        remap_coordinate_tags=True,
+        relabel_physical_inds=True,
+        insert_physical_inds=False,
+        new_index_id='k{},{}'
     ):
-        '''Not inplace. Returns a qtn.tensor_2d.TensorNetwork2D?
-        
+        '''Returns a qtn.tensor_2d.TensorNetwork2D. 
+               
         dummy_size: int, optional
             The size of the dummy indices we insert, both physical 
             and internal.
+        insert_physical_indices: bool, optional
+            Whether to add physical indices to the new face sites.
+        new_index_id: str, optional
+            If new indices are added, this is the labeling scheme
+            to be used. e.g. "k1,4"
+        remap_coordinate_tags: bool, optional
+            Whether to relabel the coordinate tags to fit Johnny's
+            convention i.e. (0,0) at bottom left rather than top.
+        relabel_physical_inds: bool, optional
+            Whether to reindex the qubits to match the PEPS 
+            coordinate-style indexing scheme.
         '''
         psi = self.copy()
-
-        # Properties for new PEPS-like tn
-        new_index_id = 'k{},{}'
-        new_site_id = 'I{},{}'
-        new_Lx = psi.grid_Lx
-        new_Ly = psi.grid_Ly
 
         # 'rotate' qubits at nonempty faces
         # (unless already rotated)
@@ -5240,18 +5251,15 @@ class QubitEncodeVector(QubitEncodeNet,
         #       │       │        │       │  
         # 
         already_rotated = psi.check_if_bmps_setup()
-
         if not already_rotated:
             psi.setup_bmps_contraction_()
         
-
         # now fill in all the empty faces with identities
 
         for x,y in psi.gen_face_coos(including_empty=True):    
             
+            #skip the non-empty faces 
             coo_tag = psi.grid_coo_tag(x, y)
-            
-            #skip the faces with qubits on them
             if coo_tag in psi.tags:
                 continue
                 
@@ -5267,10 +5275,9 @@ class QubitEncodeVector(QubitEncodeNet,
             new_tensor_tags = (coo_tag, 
                             psi.row_tag(x),
                             psi.col_tag(y),
-                            psi.aux_tag_id,
                             'AUX', 'FACE')
         
-            # connect `up` and `down` with a new identity
+            # connect `up` and `down` with a new identity tensor
             # 
             # x-1   ●───●───●        ●───●───●
             #       │       │        │   │   │ 
@@ -5297,7 +5304,7 @@ class QubitEncodeVector(QubitEncodeNet,
             qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_right], size=dummy_size)
             qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_left], size=dummy_size)
 
-            if insert_physical_indices:
+            if insert_physical_inds:
                 # add a dummy physical index of `dummy_size`
                 # 
                 #    ●───●───●        ●───●───●
@@ -5309,19 +5316,110 @@ class QubitEncodeVector(QubitEncodeNet,
                 new_index_name = new_index_id.format(x, y)
                 psi[new_tensor_tags].new_ind(name=new_index_name, size=dummy_size)
 
-            #go to next empty face
+            
+        if remap_coordinate_tags:
+            psi.remap_coordinates_()
+        
+        if relabel_physical_inds:
+            psi.relabel_qubit_indices_()
             
         return psi
 
 
+    def remap_coordinates(self, new_coo_tag=None, inplace=False):
+        '''Retag the coordinate tags of every tensor to match Johnny's
+        convention of grid.
+
+        new_coo_tag: string, optional
+            New format for the tag id, if desired e.g. "I{},{}"
+            If unspecified, will use self.grid_tag_id
+        
+        inplace: bool, optional
+            Whether to retag this TN in place
+        '''
+        psi = self if inplace else self.copy()
+
+        # Make sure the "ROWX" and "COLY" tags are in place
+        psi._add_row_col_tags()
+
+        # Choose current row tag "S{},{}" by default
+        if new_coo_tag is None:
+            new_coo_tag = psi.grid_tag_id
+
+        retag_map = dict()
+        for x_old, y in psi.gen_supergrid_coos():
+
+            old_tag_xy = psi.grid_coo_tag(x_old, y)
+
+            # skip empty sites
+            if old_tag_xy not in psi.tags:
+                continue
+            
+            # Relabel the x-coordinates to run "upwards"
+            # 
+            #  0    ●───●───●─        ●───●───●─  L-1
+            #       │   │   │         │   │   │ 
+            #  1    ●───●───●─  ==>   ●───●───●─  L-2
+            #       │   │   │         │   │   │ 
+            # ...   :   :   :         :   :   :   ...
+            #       │   │   │         │   │   │   
+            # L-1   ●───●───●─        ●───●───●─   0
+            # 
+            x_new = psi.grid_Lx - 1 - x_old
+
+            #"S{xold},{y}" --> "S{xnew}{y}"
+
+            retag_map.update({old_tag_xy: new_coo_tag.format(x_new, y),
+                         psi.row_tag(x_old): psi.row_tag(x_new)})
 
 
+        #Retag this tn, and reset internal attribute!
+        psi.retag_(retag_map)
+        psi._grid_tag_id = new_coo_tag
+    
+        return psi
 
+    remap_coordinates_ = functools.partialmethod(remap_coordinates,
+                                                inplace=True)
+
+    
+    def relabel_qubit_indices(self, inplace=False, new_index_id='k{},{}'):
+        '''For the qubit indices like 'q0', 'q1', ..., etc, rename
+        the indices as 'k{x},{y}'
+        '''
+        
+        psi = self if inplace else self.copy()
+        old_index_id = psi.phys_ind_id
+
+        # use dict mapping ints to coordinates, 
+        # e.g. {0: (0,0), 1: (0,2), ...}
+        old_qubit_coos = psi.qubit_to_coo_map()
+        reindex_map = dict()
+
+        for q, (x_old, y) in old_qubit_coos.items():
+            #switch to Johnny's convention
+            x_new = psi.grid_Lx - 1 - x_old
+            reindex_map.update({old_index_id.format(q): 
+                                new_index_id.format(x_new, y)})
+        
+        psi.reindex_(reindex_map)
+        return psi
+
+    relabel_qubit_indices_ = functools.partialmethod(relabel_qubit_indices, 
+                                                    inplace=True)
 
 
 
 ####################################################
 
+# class ePEPS(qtn.TensorNetwork2D):
+
+#     def __init__(self, )
+
+
+
+
+#************* Hamiltonian Classes *****************#
 
 class MasterHam():
     '''Commodity class to combine a simulator Ham `Hsim`
