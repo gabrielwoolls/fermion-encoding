@@ -7,6 +7,7 @@ import qubit_networks as my_qns
 import pytest
 import numpy as np
 from random import randint
+from itertools import starmap
 
 class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
@@ -14,7 +15,8 @@ class TestStabilizerEval:
     '''
     @pytest.mark.parametrize('Lx,Ly', [(1,3), (3,1), (2,3), (3,2)])
     def test_compute_stabilizer_expec(self, Lx, Ly):
-        
+        '''Use `compare_stabilizer_expecs` for testing
+        '''
         #make the stabilizers
         Hstab = my_qns.HamStab(Lx=Lx, Ly=Ly)
         
@@ -31,7 +33,8 @@ class TestStabilizerEval:
 
     @pytest.mark.parametrize('Lx,Ly', [(1,3), (2,3), (3,2), (3,3)])
     def test_stabilizer_expec_product_states(self, Lx, Ly):
-        
+        '''Use `compare_stabilizer_expecs` for testing
+        '''
         # get the number qubits (vertices + faces)
         num_vertices = Lx * Ly
         num_faces = int((Lx-1) * (Ly-1) / 2)
@@ -54,7 +57,8 @@ class TestStabilizerEval:
 
 
 def compare_stabilizer_expecs(psi, Hstab, get_expecs=False):
-    '''Test psi.compute_stabilizer_expec() method by 
+    '''Commodity function.
+    Test ``psi.compute_stabilizer_expec`` method by 
     comparing to an "explicit" computation of the expectation
     values <psi|S|psi> for each stabilizer S.
     '''
@@ -102,6 +106,52 @@ def compare_stabilizer_expecs(psi, Hstab, get_expecs=False):
 
     if get_expecs:
         return np.real(expecs_1)
+
+
+class TestConversionTo2D():
+
+    @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
+    def test_transpose_tensors(self, Lx, Ly):
+        psi = my_qns.QubitEncodeVector.rand_product_state(Lx, Ly)
+        psi = psi.convert_to_tensor_network_2d(
+                    remap_coordinate_tags=True,
+                    relabel_physical_inds=False)
+        
+        shape = 'urdl'
+        psi.transpose_tensors_to_shape(shape=shape)
+
+        for (x,y), tag_xy in psi.gen_occupied_grid_tags(with_coo=True):
+            
+            tensor_xy, = [psi[tag_xy]]
+            txy_inds = tensor_xy.inds
+
+            array_order = shape
+            if x == 0:
+                array_order = array_order.replace('d', '')
+            if x == psi.grid_Lx - 1:
+                array_order = array_order.replace('u', '')
+            if y == 0:
+                array_order = array_order.replace('l', '')
+            if y == psi.grid_Ly - 1:
+                array_order = array_order.replace('r', '')
+
+            num_physical_inds = len(tensor_xy.shape) - len(array_order)            
+            assert num_physical_inds in (0, 1)
+
+            coos_around = ((x-1, y),
+                           (x, y+1),
+                           (x+1, y),
+                           (x, y-1))            
+
+            tags_around = tuple(starmap(psi.grid_coo_tag, coos_around))
+            dir_to_tag = dict(zip(('d','r','u','l'), tags_around))
+            
+            # check bonds are in correct order                
+            for k, direction in enumerate(array_order):
+                bond = psi.bond(where1=tag_xy, where2 = dir_to_tag[direction])
+                assert bond == tensor_xy.inds[k]
+
+            
 
 
 

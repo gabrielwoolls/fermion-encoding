@@ -3304,6 +3304,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
         Overload ``TensorNetwork.graph`` for clean/aesthetic lattice-fixing,
         unless `fix_lattice` is set False. 
 
+        NOTE: now graphs with (0,0)-coordinate origin at bottom left.
+
         `auto_detect_layers` will check if 'BRA', 'KET' are in `self.tags`,
         and if so will attempt to graph as a two-layer sandwich.
         Can also specify `layer_tags` specifically for TNs with other layers.
@@ -3342,7 +3344,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             for (x,y), tags in nonempty_sites.items():
                 tags_xy = tags_to_oset(tags) | tags_to_oset(layer_tag)
                 fix_tags.update({tuple(tags_xy): (LATY * (y + 0.5 * offset), 
-                                                 -LATX * (x + offset))})
+                                                 LATX * (x + offset))})
         
             return fix_tags
         
@@ -5221,7 +5223,10 @@ class QubitEncodeVector(QubitEncodeNet,
         insert_physical_inds=False,
         new_index_id='k{},{}'
     ):
-        '''Returns a qtn.tensor_2d.TensorNetwork2D. 
+        '''Given a (Lx, Ly) lattice `self`, returns a ``QubitEncodeVector`` 
+        object on a (2Lx-1, 2Ly-1) lattice that's structured like a 
+        ``qtn.tensor_2d.TensorNetwork2D``, i.e. it has a single tensor per 
+        site. 
                
         dummy_size: int, optional
             The size of the dummy indices we insert, both physical 
@@ -5408,7 +5413,74 @@ class QubitEncodeVector(QubitEncodeNet,
     relabel_qubit_indices_ = functools.partialmethod(relabel_qubit_indices, 
                                                     inplace=True)
 
+    def transpose_tensors_to_shape(self, shape='urdl'):
+        '''(Inplace) transpose the indices of every tensor in this tn
+        to match the order ``shape``. Automatically puts the physical
+        index (if it exists) as the last dimension, e.g. 
+        
+        "urdl" --> "urdlp" for tensors with physical index 'p'.
 
+                  u                     u p
+                  │                     │/       (if there's a physical ind)
+             l ───●─── r    or     l ───●─── r    
+                  │                     │
+                  d                     d
+        
+        NOTE: (>>> ?) Assumes convention with (0,0)-origin at bottom left.
+
+        NOTE: Only works for square 2D lattices! 
+        '''
+        #iterate over every occupied lattice site
+        for (x,y), tag_xy in self.gen_occupied_grid_tags(with_coo=True):
+            
+            array_order = shape
+
+            if x == 0:
+                array_order = array_order.replace('d', '')
+            if x == self.grid_Lx - 1:
+                array_order = array_order.replace('u', '')
+            if y == 0:
+                array_order = array_order.replace('l', '')
+            if y == self.grid_Ly - 1:
+                array_order = array_order.replace('r', '')
+
+            tensor_xy, = [self[tag_xy]]
+            if len(tensor_xy.shape) == len(array_order) + 1:
+                has_physical_index = True
+
+            elif len(tensor_xy.shape) == len(array_order):
+                has_physical_index = False            
+            
+            else:
+                raise ValueError(f"The tensor at ({x}, {y}) has weird indices")
+
+            
+            #get coordinate tags for sites around this tensor.
+            coos_around = ((x-1, y),
+                           (x, y+1),
+                           (x+1, y),
+                           (x, y-1))
+            
+            tags_around = tuple(starmap(self.grid_coo_tag, coos_around))
+
+            dir_to_tag = dict(zip(('d','r','u','l'), tags_around))
+
+            dir_to_bond = {}
+            for direction in array_order:                
+                #throws an error if there's more than 1 shared index
+                bond = self.bond(where1=tag_xy, where2 = dir_to_tag[direction])
+                dir_to_bond[direction] = bond
+
+            #indices ordered according to original ``shape```
+            ordered_bonds = [dir_to_bond[x] for x in array_order]
+
+            #put physical index last
+            if has_physical_index:
+                phys_index, = set(tensor_xy.inds) - set(ordered_bonds)
+                ordered_bonds.append(phys_index)
+            
+            tensor_xy.transpose_(*ordered_bonds)
+        
 
 ####################################################
 
