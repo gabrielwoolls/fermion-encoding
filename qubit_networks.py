@@ -5219,7 +5219,8 @@ class QubitEncodeVector(QubitEncodeNet,
         self, 
         dummy_size=1,
         remap_coordinate_tags=True,
-        relabel_physical_inds=True,
+        transpose_tensor_shapes=True,
+        relabel_physical_inds=False,
         insert_physical_inds=False,
         new_index_id='k{},{}'
     ):
@@ -5231,17 +5232,21 @@ class QubitEncodeVector(QubitEncodeNet,
         dummy_size: int, optional
             The size of the dummy indices we insert, both physical 
             and internal.
-        insert_physical_indices: bool, optional
+        remap_coordinate_tags: bool, optional
+            Whether to relabel the coordinate tags to fit Johnny's
+            convention i.e. (0,0) at bottom left rather than top.
+        transpose_tensor_shapes: bool, optional
+            Whether to transpose all the tensors to have dimensions
+            ordered like 'urdl' (or 'urdlp' with physical index).
+        relabel_physical_inds: bool, optional
+            Whether to reindex the qubits to match the PEPS 
+            coordinate-style indexing scheme.
+        insert_physical_inds: bool, optional
             Whether to add physical indices to the new face sites.
         new_index_id: str, optional
             If new indices are added, this is the labeling scheme
             to be used. e.g. "k1,4"
-        remap_coordinate_tags: bool, optional
-            Whether to relabel the coordinate tags to fit Johnny's
-            convention i.e. (0,0) at bottom left rather than top.
-        relabel_physical_inds: bool, optional
-            Whether to reindex the qubits to match the PEPS 
-            coordinate-style indexing scheme.
+        
         '''
         psi = self.copy()
 
@@ -5327,6 +5332,9 @@ class QubitEncodeVector(QubitEncodeNet,
         
         if relabel_physical_inds:
             psi.relabel_qubit_indices_()
+        
+        if transpose_tensor_shapes:
+            psi.transpose_tensors_to_shape(shape='urdl')
             
         return psi
 
