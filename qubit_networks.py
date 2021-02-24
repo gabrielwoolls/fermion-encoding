@@ -5492,11 +5492,73 @@ class QubitEncodeVector(QubitEncodeNet,
 
 ####################################################
 
-# class ePEPS(qtn.TensorNetwork2D):
+class ePEPS(#qtn.TensorNetwork2DFlat,
+            qtn.TensorNetwork2D,
+            qtn.TensorNetwork):
+    
+    '''
+    Notice that we are going from the convention 
+    
+       {site_tag_id='Q{}',
+        grid_tag_id='S{},{}',
+        aux_tag_id='IX{}Y{}',
+        phys_ind_id='q{}'} 
+        |
+        |
+        |
+        V  
+       {site_tag_id='S{},{}'}
+    
+    '''
+    _EXTRA_PROPS = (
+        '_Lx',
+        '_Ly',
+        '_site_tag_id',
+        '_site_ind_id',
+        '_row_tag_id',
+        '_col_tag_id',
+        # '_phys_dim',
+        # '_grid_tag_id',
+        # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
+        # '_phys_ind_id',
+    )
+        # _EXTRA_PROPS = (
+        # '_site_tag_id',
+        # '_row_tag_id',
+        # '_col_tag_id',
+        # '_Lx',
+        # '_Ly',
+        # '_site_ind_id',
+    # )
 
-#     def __init__(self, )
+            
+    def __init__(self, tn, *, 
+            Lx=None, Ly=None, 
+            site_tag_id='S{},{}', 
+            site_ind_id='k{},{}',
+            row_tag_id='ROW{}',
+            col_tag_id='COL{}',
+            **tn_opts):
+        
+        if isinstance(tn, ePEPS):
+            super().__init__(tn)
+            return
 
+        # try to infer lattice shape from given tn
+        self._Lx = Lx
+        self._Ly = Ly
 
+        self._site_tag_id = site_tag_id
+        self._site_ind_id = site_ind_id
+        self._row_tag_id = row_tag_id
+        self._col_tag_id = col_tag_id
+
+        # self._phys_dim = phys_dim
+        # self._phys_ind_id = phys_ind_id
+        # self._grid_tag_id = grid_tag_id
+
+        
+        super().__init__(tn, **tn_opts)
 
 
 #************* Hamiltonian Classes *****************#
