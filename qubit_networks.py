@@ -234,7 +234,8 @@ def make_product_state_net(
 
     if vertices_only:
         vtensors = list(chain.from_iterable(vtensors))
-        return qtn.TensorNetwork(vtensors, structure=site_tag_id, **tn_opts)
+        return qtn.TensorNetwork(vtensors, #structure=site_tag_id, 
+                                **tn_opts)
 
     ##
     # add face sites + bonds 
@@ -279,7 +280,8 @@ def make_product_state_net(
     
     alltensors = vtensors + [f for f in ftensors if f]
     # return alltensors
-    return qtn.TensorNetwork(alltensors, structure=site_tag_id, **tn_opts)
+    return qtn.TensorNetwork(alltensors, #structure=site_tag_id, 
+                            **tn_opts)
 
 
 
@@ -392,7 +394,8 @@ def local_product_state_net(
     ftensors = list(chain.from_iterable(ftensors))
     
     alltensors = vtensors + [f for f in ftensors if f]
-    return qtn.TensorNetwork(alltensors, structure=site_tag_id, **tn_opts)
+    return qtn.TensorNetwork(alltensors, #structure=site_tag_id,
+                            **tn_opts)
 
 
 
@@ -3289,7 +3292,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
 
 
-
     def graph(
         self, 
         fix_lattice=True, 
@@ -3385,7 +3387,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
     graph_layers = functools.partialmethod(graph, 
                             layer_tags=('BRA','KET'))
 
-
+    draw = graph
 
     # def exact_projector_from_matrix(self, Udag_matrix):
     #     Nfermi, Nqubit = self.num_verts(), self.num_sites()
@@ -5492,7 +5494,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 ####################################################
 
-class ePEPS(#qtn.TensorNetwork2DFlat,
+class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             qtn.TensorNetwork2D,
             qtn.TensorNetwork):
     
@@ -5533,7 +5535,7 @@ class ePEPS(#qtn.TensorNetwork2DFlat,
 
             
     def __init__(self, tn, *, 
-            Lx=None, Ly=None, 
+            Lx, Ly, 
             site_tag_id='S{},{}', 
             site_ind_id='k{},{}',
             row_tag_id='ROW{}',
@@ -5544,7 +5546,9 @@ class ePEPS(#qtn.TensorNetwork2DFlat,
             super().__init__(tn)
             return
 
-        # try to infer lattice shape from given tn
+
+        # if tn is a QEV object, could infer lattice 
+        # shape from `grid_Lx/y` attributes...
         self._Lx = Lx
         self._Ly = Ly
 
@@ -5553,13 +5557,59 @@ class ePEPS(#qtn.TensorNetwork2DFlat,
         self._row_tag_id = row_tag_id
         self._col_tag_id = col_tag_id
 
-        # self._phys_dim = phys_dim
-        # self._phys_ind_id = phys_ind_id
-        # self._grid_tag_id = grid_tag_id
 
+        #IMPORTANT: pass tn.tensors as a sequence of tensors,
+        # rather than a `TensorNetwork` object, to avoid inheriting
+        # any of the Lx, Ly, tag attributes, etc.
+        super().__init__(tn.tensors, **tn_opts)
+
+
+    def draw(
+        self, 
+        fix_lattice=True, 
+        layer_tags=None, 
+        with_gate=False, 
+        auto_detect_layers=True,
+        **graph_opts):
+        '''
+        TODO: DEBUG ``fix_tags`` PARAM
+              GRAPH GATE LAYERS
+
+        Overload ``TensorNetwork.draw`` for aesthetic lattice-fixing,
+        unless `fix_lattice` is set False. 
+
+        Geometry: coordinate origin at bottom left.
+
+       Lx,0─── ...          ───Lx,Ly                               
+         │                       │  
+         :       :               :   
+         │       │               │  
+       (1,0)───(1,1)─── ... ───(1,Ly)
+         │       │       │       │
+       (0,0)───(0,1)─── ... ───(0,Ly)
+
+
+        `auto_detect_layers` will check if 'BRA', 'KET' are in `self.tags`,
+        and if so will attempt to graph as a two-layer sandwich.
+        Can also specify `layer_tags` specifically for TNs with other layers.
+        '''
         
-        super().__init__(tn, **tn_opts)
+        graph_opts.setdefault('color', ['QUBIT', 'AUX'])
+        graph_opts.setdefault('show_tags', False)
+        graph_opts.setdefault('show_inds', True)
 
+        if all((auto_detect_layers == True,
+                'BRA' in self.tags,
+                'KET' in self.tags)):
+            layer_tags=('BRA', 'KET')
+
+        scale_X, scale_Y = 1, 1.5
+        fix_tags = {self.site_tag_id.format(x,y): (y * scale_Y, x * scale_X) 
+            for (x,y) in product(range(self.Lx), range(self.Ly))}
+        
+        super().draw(fix=fix_tags, **graph_opts)
+        return
+        
 
 #************* Hamiltonian Classes *****************#
 
