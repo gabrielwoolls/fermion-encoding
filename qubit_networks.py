@@ -3427,7 +3427,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
             tn.fuse_multibonds_()
         
         return tn
-        # return tn.view_as_(QubitEncodeNetFlat)
 
     flatten_ = functools.partialmethod(flatten, inplace=True)
 
@@ -5222,7 +5221,8 @@ class QubitEncodeVector(QubitEncodeNet,
         dummy_size=1,
         remap_coordinate_tags=True,
         transpose_tensor_shapes=True,
-        relabel_physical_inds=False,
+        relabel_physical_inds=True,
+        flip_x_direction=False,
         insert_physical_inds=False,
         new_index_id='k{},{}'
     ):
@@ -5330,10 +5330,10 @@ class QubitEncodeVector(QubitEncodeNet,
 
             
         if remap_coordinate_tags:
-            psi.remap_coordinates_()
+            psi.remap_coordinates_(flip_x_direction=flip_x_direction)
         
         if relabel_physical_inds:
-            psi.relabel_qubit_indices_()
+            psi.relabel_qubit_indices_(flip_x_direction=flip_x_direction)
         
         if transpose_tensor_shapes:
             psi.transpose_tensors_to_shape(shape='urdl')
@@ -5341,9 +5341,17 @@ class QubitEncodeVector(QubitEncodeNet,
         return psi
 
 
-    def remap_coordinates(self, new_coo_tag=None, inplace=False):
-        '''Retag the coordinate tags of every tensor to match Johnny's
-        convention of grid.
+    def remap_coordinates(
+        self, 
+        flip_x_direction=False,
+        new_coo_tag=None, 
+        inplace=False):
+        '''Retag the coordinate tags of every tensor (and optionally
+        match Johnny's convention of grid?)
+
+        flip_x_direction: bool, optional
+            Whether to flip the lattice row-coordinates 
+            (i.e. send x --> grid_Lx - 1 - x)
 
         new_coo_tag: string, optional
             New format for the tag id, if desired e.g. "I{},{}"
@@ -5370,7 +5378,7 @@ class QubitEncodeVector(QubitEncodeNet,
             if old_tag_xy not in psi.tags:
                 continue
             
-            # Relabel the x-coordinates to run "upwards"
+            # (Potentially) relabel the x-coordinates to run "upwards"
             # 
             #  0    ●───●───●─        ●───●───●─  L-1
             #       │   │   │         │   │   │ 
@@ -5380,7 +5388,7 @@ class QubitEncodeVector(QubitEncodeNet,
             #       │   │   │         │   │   │   
             # L-1   ●───●───●─        ●───●───●─   0
             # 
-            x_new = psi.grid_Lx - 1 - x_old
+            x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
 
             #"S{xold},{y}" --> "S{xnew}{y}"
 
@@ -5398,8 +5406,12 @@ class QubitEncodeVector(QubitEncodeNet,
                                                 inplace=True)
 
     
-    def relabel_qubit_indices(self, inplace=False, new_index_id='k{},{}'):
-        '''For the qubit indices like 'q0', 'q1', ..., etc, rename
+    def relabel_qubit_indices(
+        self,
+        flip_x_direction=False, 
+        inplace=False, 
+        new_index_id='k{},{}'):
+        '''For each qubit index like 'q0', 'q1', ..., etc, rename
         the indices as 'k{x},{y}'
         '''
         
@@ -5413,7 +5425,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
         for q, (x_old, y) in old_qubit_coos.items():
             #switch to Johnny's convention
-            x_new = psi.grid_Lx - 1 - x_old
+            x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
             reindex_map.update({old_index_id.format(q): 
                                 new_index_id.format(x_new, y)})
         
@@ -5438,9 +5450,9 @@ class QubitEncodeVector(QubitEncodeNet,
         
         NOTE: (>>> ?) Assumes convention with (0,0)-origin at bottom left.
 
-        NOTE: Only works for square 2D lattices! 
+        NOTE: Only works for square/regular 2D lattices! 
         '''
-        #iterate over every occupied lattice site
+        #run over every occupied lattice site
         for (x,y), tag_xy in self.gen_occupied_grid_tags(with_coo=True):
             
             array_order = shape
@@ -5535,7 +5547,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
 
             
     def __init__(self, tn, *, 
-            Lx, Ly, 
+            Lx=None, Ly=None, 
             site_tag_id='S{},{}', 
             site_ind_id='k{},{}',
             row_tag_id='ROW{}',
@@ -5612,6 +5624,42 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         
 
 #************* Hamiltonian Classes *****************#
+class CoordinateHamiltonian():
+    '''Wrapper class for previously-defined Hamiltonians.
+    
+    If `Ham` previously generated terms like 
+        
+        (sequence of qubit numbers, gate),  e.g. ([0, 1, 9] , pauli(XYX))
+    
+    the wrapped `CoordinateHamiltonian(Ham)` will generate terms like
+
+        (sequence of qubit *coordinates*, gate) e.g. 
+        ([(4,0), (4,2), (3,1)], pauli(XYX))
+
+    Obviously depends on a coordinate-choice! Will need to specify a 
+    mapping from qubit numbers `q = 0, 1, ... M` to lattice coordinates
+    `(x0, y0), (x1, y1), ... (xM, yM)`. 
+
+    Attributes:
+    -----------
+    '''
+    def __init__(self, H, qubit_coordinates):
+
+        self._H = H
+        self._q2coo_map = qubit_coordinates
+
+        self._mapped_ham_terms = dict()
+        # for qubits, gate in H._ham_terms.items():
+
+
+#   def gen_ham_terms(self):
+#         '''Generate ``(where, gate)`` pairs for every group 
+#         of qubits (i.e. every graph edge ``where``) to be acted
+#         on with a Ham term.
+#         '''
+#         for (i,j,f), gate in self._ham_terms.items():
+#             where = (i,j) if f is None else (i,j,f)
+#             yield where, gate
 
 class MasterHam():
     '''Commodity class to combine a simulator Ham `Hsim`
