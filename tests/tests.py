@@ -153,9 +153,44 @@ class TestConversionTo2D():
 
             
 
-
-
+class TestCoordinateHamiltonians():
+    
+    @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
+    def test_converting_hubbard_ham(self, Lx, Ly):
+        '''Evaluate energy of the spinless Hubbard model
+        on a random state, using 'qubit numbers' and 
+        qubit coordinates to specify target sites. Check
+        the energies are equal.
+        '''
+        psi_trial = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        psi_trial.setup_bmps_contraction_()
+        norm, bra, ket = psi_trial.make_norm(return_all=True)
+        norm ^= all
         
+        #encoded Fermi-Hubbard with default parameters
+        HubbardHam = my_qns.SpinlessSimHam(Lx, Ly)
+        CooHam = HubbardHam.convert_to_coordinate_ham(
+            qubit_to_coo_map=psi_trial.qubit_to_coo_map)
+        
+        # energy computed with HubbardHam
+        E1 = 0
+        for where, gate in HubbardHam.gen_ham_terms():
+            E1 += (bra | ket.apply_gate(gate, where, 
+                    keys='qnumbers', contract=True))^all
+        
+        # energy computed with CooHam
+        E2 = 0
+        for coos, gate in CooHam.gen_ham_terms():
+            E2 += (bra | ket.apply_gate(gate, where=coos,
+                    keys='coos', contract=True))^all
+        
+        E1 = E1 / norm
+        E2 = E2 / norm
+
+        assert np.allclose(E1, E2)
+
+
+
 
 
 

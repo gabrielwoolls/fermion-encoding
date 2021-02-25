@@ -812,6 +812,9 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     @classmethod
     def random_flat(cls, Lx, Ly, bond_dim=3, **tn_opts):
+        '''Squeeze out the vector indices to make into a flat tn
+        (i.e. a scalar)
+        '''
 
         rand_net = QubitEncodeVector.rand(Lx=Lx, Ly=Ly, phys_dim=1,
                     bond_dim=bond_dim, **tn_opts)
@@ -902,15 +905,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
     # __copy__ = copy
 
 
-    # def _site_tid(self, k):
-    #     '''Given the site index `k` in {0,...,N},
-    #     return the `tid` of the local tensor
-    #     '''
-    #     #'q{k}'
-    #     index = self._phys_ind_id.format(k)
-    #     return self.ind_map[index]    
-
-
     def calc_supergrid(self):
         '''Infer the 'supergrid' of this tensor network by looking
         for tags like 'S{x}{y}' and storing tags in a 2D array.
@@ -948,50 +942,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                 print(f'  {tags}  ', end='')
             
             print('\n')
-
-    
-    # def _update_supergrid(self, x, y, tag):
-    #     '''Add `tag` to the set of tags at supergrid 
-    #     coordinate `x, y`. Does not complain if the
-    #     tag was already there.
-    #     '''
-    #     if not hasattr(self, '_supergrid'):
-    #         self._supergrid = self.calc_supergrid()
-        
-    #     tag = tags_to_oset(tag)
-
-    #     if self._supergrid[x][y] is None:
-    #         self._supergrid[x][y] = tag
-        
-    #     else:
-    #         self._supergrid[x][y].update(tag)
-    
-
-    # def _move_supergrid_tags(self, from_coo, to_coo):
-    #     '''Add the tags at `from_coo` in the supergrid
-    #     to those at `to_coo`. Keeps the previous tags 
-    #     at `to`, and removes the tags at `from`.
-    #     '''
-    #     if not hasattr(self, '_supergrid'):
-    #         self._supergrid = self.calc_supergrid()
-
-    #     x, y = from_coo
-    #     x2, y2 = to_coo
-        
-    #     from_tag = self._supergrid[x][y]
-
-    #     if from_tag is None:
-    #         return
-        
-    #     elif self._supergrid[x2][y2] is None:
-    #         self._supergrid[x2][y2] = from_tag
-    #         self._supergrid[x][y] = None
-        
-    #     else:
-    #         self._supergrid[x2][y2] |= from_tag
-    #         self._supergrid[x][y] = None
-
-
 
 
     def vertex_coo_map(self, i=None, j=None):
@@ -1035,7 +985,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         ))
     
     def is_qubit_coo(self, xy):
-        '''Whether `xy` is a vertex or face coo (not auxiliary)
+        '''Whether `xy` is a vertex OR face coo (not auxiliary)
         Note: will count empty face sites as ``True``
         '''
         x, y = xy
@@ -1103,6 +1053,26 @@ class QubitEncodeNet(qtn.TensorNetwork):
         return self._qubit_to_coo_map
 
 
+    def coo_to_qubit_map(self, xy=None):
+        '''The inverse of qubit_to_coo_map, takes a lattice
+        coordinate and returns the integer label of the qubit
+        (if one exists, otherwise throws error).
+
+        xy: tuple[int]
+            Coordinate x,y = (row, col) of desired qubit
+        '''
+        if not hasattr(self, '_coo_to_qubit_map'):
+            q2coo_map = self.qubit_to_coo_map(qnumber=None)
+            coo2q_map = {coo: q for q, coo in q2coo_map.items()}
+            self._coo_to_qubit_map = coo2q_map
+        
+        if xy is not None:
+            return self._coo_to_qubit_map[xy]
+
+        return self._coo_to_qubit_map
+
+
+
     def set_supergrid(self, arrays):
         self._supergrid = arrays
 
@@ -1125,11 +1095,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             else:
                 return tuple(tags)
-            
-        
+                    
         return self._supergrid
-
-
 
 
     def vert_coo_tag(self, x, y):
@@ -1241,16 +1208,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         
         
         return coo2tag.items() if with_coo else coo2tag.values()
-
-        
-
-
-        # for (x, y), tag_xy in coo2tag.items():
-        #     # if there is a tensor matching this grid location
-        #     if self.check_for_matching_tags(tag_xy):
-
-        #         yield ((x, y), tag_xy) if with_coo else tag_xy
-            
                     
 
     def valid_supercoo(self, xy):
@@ -4253,8 +4210,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
             
 
-
-
     def plaquette_to_site_coos(self, plaq):
         """Turn a plaquette ``((x0, y0), (dx, dy))`` into the grid
         coordinates of the sites it contains.
@@ -4267,8 +4222,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         (x0, y0), (dx, dy) = plaq
         return tuple((x, y) for x in range(x0, x0 + dx)
                             for y in range(y0, y0 + dy))
-
-    # def plaquette_to_grid_tags(self, p):
 
 
 ##                       ##
@@ -4523,6 +4476,7 @@ class QubitEncodeVector(QubitEncodeNet,
         self,
         G, 
         where,
+        keys='qnumbers',
         contract=False,
         tags=['GATE'],
         inplace=False, 
@@ -4547,11 +4501,20 @@ class QubitEncodeVector(QubitEncodeNet,
             Gate to apply, should be compatible with 
             shape ([physical_dim] * 2 * len(where))
         
-        where: sequence of ints
-            The qubits on which to act, using the (default) 
-            custom numbering that labels both face and vertex
-            sites.
+        where: sequence of ints, or sequence of tuple[ints]
+            If ints: The qubits on which to act, using the numbering 
+            scheme that labels both face and vertex sites.
         
+            If tuple[ints]: the *coordinates* of the qubits on
+            which to act
+        
+        keys: {'qnumbers' or 'coos'}, optional
+            If 'coos', ``where`` is a tuple of coordinates for
+            the target qubits, e.g. ((x0,y0), (x1,y1), (x2,y2))
+
+            If 'qnumbers' (the default), ``where`` is a tuple
+            of integers e.g. (q0, q1, q2)
+
         inplace: bool, optional
             If False (default), return copy of TN with gate applied
         
@@ -4563,9 +4526,12 @@ class QubitEncodeVector(QubitEncodeNet,
             -'reduce_split': TODO
 
         '''
+        qu.utils.check_opt('keys', keys, ('qnumbers, coos'))
+        
+        if keys == 'coos':
+            # get the qubit 'number' labels
+            where = tuple(map(self.coo_to_qubit_map, where))
 
-        # if isinstance(G, qtn.TensorNetwork):
-        #     self.apply_mpo(G, where, inplace, contract)
 
         psi = self if inplace else self.copy()
 
@@ -4573,9 +4539,9 @@ class QubitEncodeVector(QubitEncodeNet,
         if isinstance(where, Integral): 
             where = (where,)
 
-        numsites = len(where) #gate acts on `numsites`
+        numsites = len(where) #number of qubits acted on
 
-        dp = self.phys_dim #local physical dimension
+        dp = self.phys_dim #local physical dimension (d=2 for spinless fermions)
         tags = qtn.tensor_2d.tags_to_oset(tags)
 
         G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp, numsites, where)
@@ -4825,8 +4791,6 @@ class QubitEncodeVector(QubitEncodeNet,
         return expectation / norm
 
 
-
-
     def _exact_local_gate_sandwich(self, G, where, contract):
         '''Exactly contract <psi|G|psi>
         '''
@@ -4940,7 +4904,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
     
     def compute_ham_expec(self, Ham, normalize=True):
-        '''Return <psi|H|psi> (inefficiently computed)
+        '''Return <psi|H|psi> with *no truncation*!
 
         Ham: [SimulatorHam]
             Specifies a two- or three-site gate for each edge in
@@ -5643,23 +5607,17 @@ class CoordinateHamiltonian():
     Attributes:
     -----------
     '''
-    def __init__(self, H, qubit_coordinates):
+    def __init__(self, coo_ham_terms, qubit_to_coo_map):
 
-        self._H = H
-        self._q2coo_map = qubit_coordinates
+        self._qubit_to_coo_map = qubit_to_coo_map
+        self._coo_ham_terms = coo_ham_terms
 
-        self._mapped_ham_terms = dict()
-        # for qubits, gate in H._ham_terms.items():
+    def gen_ham_terms(self):
+        return iter(self._coo_ham_terms.items())
 
+    def get_term_at_sites(self, *coos):
+        return self._coo_ham_terms[tuple(coos)]
 
-#   def gen_ham_terms(self):
-#         '''Generate ``(where, gate)`` pairs for every group 
-#         of qubits (i.e. every graph edge ``where``) to be acted
-#         on with a Ham term.
-#         '''
-#         for (i,j,f), gate in self._ham_terms.items():
-#             where = (i,j) if f is None else (i,j,f)
-#             yield where, gate
 
 class MasterHam():
     '''Commodity class to combine a simulator Ham `Hsim`
@@ -5954,7 +5912,30 @@ class SpinlessSimHam(SimulatorHam):
 
         super().__init__(Lx=Lx, Ly=Ly, phys_dim=0, ham_terms=terms)
 
+
+    def convert_to_coordinate_ham(self, qubit_to_coo_map):
+        '''Switch the {qubits: gate} dict for a 
+        {coordinates: gate} dict by mapping all the target 
+        qubits to their lattice coordinates.
+
+        qubit_to_coo_map: callable, int --> tuple[int]
+            Map each qubit number to the corresponding
+            lattice coordinate (x, y)
+
+        Returns:
+        -------
+        Equivalent `CoordinateHamiltonian` object. 
+        '''
+        mapped_ham_terms = dict()
+        for (i,j,f), gate in self._ham_terms.items():
+            qubits = (i,j) if f is None else (i,j,f)
+            qcoos = tuple(map(qubit_to_coo_map, qubits))
+            mapped_ham_terms.update({qcoos: gate})
     
+        return CoordinateHamiltonian(coo_ham_terms=mapped_ham_terms,
+                qubit_to_coo_map = qubit_to_coo_map)
+
+
     def get_term_at(self, i, j, f=None):
         '''Array acting on edge `(i,j,f)`.
         `i,j` are vertex sites, optional `f` is 
