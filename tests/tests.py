@@ -166,9 +166,11 @@ class TestCoordinateHamiltonians():
         psi_trial.setup_bmps_contraction_()
         norm, bra, ket = psi_trial.make_norm(return_all=True)
         norm ^= all
-        
-        #encoded Fermi-Hubbard with default parameters
+
+        # encoded Fermi-Hubbard with default parameters
         HubbardHam = my_qns.SpinlessSimHam(Lx, Ly)
+        
+        # terms specify qubit coos rather than qubit nums
         CooHam = HubbardHam.convert_to_coordinate_ham(
             qubit_to_coo_map=psi_trial.qubit_to_coo_map)
         

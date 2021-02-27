@@ -3167,6 +3167,10 @@ class QubitEncodeNet(qtn.TensorNetwork):
         bond, = self[where1].bonds(self[where2])
         return bond
 
+    def bond_size(self, where1, where2):
+        bx = self.bond(where1, where2)
+        return self[where1].ind_size(bx)
+
 
     def find_bonds_between(self, tags1, tags2):
         '''List of bonds between tensors with given tags.
@@ -4325,9 +4329,24 @@ class QubitEncodeVector(QubitEncodeNet,
         
         super().__init__(tn, **tn_opts)
 
+
+    def maybe_convert_qnum(self, q):
+        '''Check if `q` is an integer label for any of
+        the lattice qubits, convert to the site tag if so.
+        '''
+        if isinstance(q, int):
+            return self.site_tag_id.format(q)
+        
+        return q
+
+    def __getitem__(self, key):
+        '''Check for qubit integer label first
+        '''
+        return super().__getitem__(self.maybe_convert_qnum(key))
+
     @classmethod
     def product_state_from_bitstring(cls, Lx, Ly, bitstring, phys_dim=2, 
-        bond_dim=3, dtype='complex128',**tn_opts):
+        bond_dim=2, dtype='complex128',**tn_opts):
         '''Create a product state with local spins *specified* in the
         given `bitstring`. 
         '''
@@ -4348,7 +4367,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
     @classmethod
     def rand_product_state(cls, Lx, Ly, phys_dim=2, 
-        bond_dim=3, dtype='complex128',**tn_opts):
+        bond_dim=2, dtype='complex128',**tn_opts):
         '''Create a product state of local spins, generated from
         a random bitstring.
         '''
@@ -4375,7 +4394,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
     @classmethod
-    def rand_from_qlattice(cls, qlattice, bond_dim=3, **tn_opts):
+    def rand_from_qlattice(cls, qlattice, bond_dim=2, **tn_opts):
         '''Make a random QubitEncodeVector from specified `qlattice`.
 
         Params:
@@ -4394,7 +4413,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
     @classmethod
-    def rand(cls, Lx, Ly, phys_dim=2, bond_dim=3, dtype='complex128',**tn_opts):
+    def rand(cls, Lx, Ly, phys_dim=2, bond_dim=2, dtype='complex128',**tn_opts):
         
         rand_tn = make_random_net(Lx=Lx, Ly=Ly, 
                                   phys_dim=phys_dim,
@@ -4406,7 +4425,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
 
     @classmethod
-    def rand_local_product_state(cls, Lx, Ly, phys_dim=2, bond_dim=3, dtype='complex128', **tn_opts):
+    def rand_local_product_state(cls, Lx, Ly, phys_dim=2, bond_dim=2, dtype='complex128', **tn_opts):
         
         local_prod_state = local_product_state_net(Lx, Ly, phys_dim, bond_dim, dtype=dtype, **tn_opts)
         
@@ -5187,7 +5206,7 @@ class QubitEncodeVector(QubitEncodeNet,
         transpose_tensor_shapes=True,
         relabel_physical_inds=True,
         flip_x_direction=False,
-        insert_physical_inds=False,
+        insert_vector_inds=False,
         new_index_id='k{},{}'
     ):
         '''Given a (Lx, Ly) lattice `self`, returns a ``QubitEncodeVector`` 
@@ -5207,8 +5226,8 @@ class QubitEncodeVector(QubitEncodeNet,
         relabel_physical_inds: bool, optional
             Whether to reindex the qubits to match the PEPS 
             coordinate-style indexing scheme.
-        insert_physical_inds: bool, optional
-            Whether to add physical indices to the new face sites.
+        insert_vector_inds: bool, optional
+            Whether to add dummy "physical" indices to the new face sites.
         new_index_id: str, optional
             If new indices are added, this is the labeling scheme
             to be used. e.g. "k1,4"
@@ -5280,7 +5299,7 @@ class QubitEncodeVector(QubitEncodeNet,
             qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_right], size=dummy_size)
             qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_left], size=dummy_size)
 
-            if insert_physical_inds:
+            if insert_vector_inds:
                 # add a dummy physical index of `dummy_size`
                 # 
                 #    ●───●───●        ●───●───●
@@ -5466,6 +5485,18 @@ class QubitEncodeVector(QubitEncodeNet,
                 ordered_bonds.append(phys_index)
             
             tensor_xy.transpose_(*ordered_bonds)
+    
+    
+    def convert_to_ePEPS(self, **convert_opts):
+        '''
+        Convert this (Lx, Ly) lattice QEV into an `ePEPS`
+        with corresponding shape (2Lx - 1, 2Ly - 1)
+
+        convert_opts: 
+            Passed to `convert_to_tensor_network_2d`
+        '''
+        psi_2d = self.convert_to_tensor_network_2d(**convert_opts)
+        return ePEPS(psi_2d, Lx=self.grid_Lx, Ly=self.grid_Ly)
         
 
 ####################################################
@@ -5500,15 +5531,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
         # '_phys_ind_id',
     )
-        # _EXTRA_PROPS = (
-        # '_site_tag_id',
-        # '_row_tag_id',
-        # '_col_tag_id',
-        # '_Lx',
-        # '_Ly',
-        # '_site_ind_id',
-    # )
-
             
     def __init__(self, tn, *, 
             Lx=None, Ly=None, 
@@ -5585,7 +5607,13 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         
         super().draw(fix=fix_tags, **graph_opts)
         return
-        
+    
+    # def site_tags(self, which='all'):
+    #     '''
+    #     which: {'all', 'qubit', 'aux'}
+    #     '''
+    #     if which == 
+
 
 #************* Hamiltonian Classes *****************#
 class CoordinateHamiltonian():
@@ -6006,9 +6034,9 @@ class SpinlessSimHam(SimulatorHam):
 
     def _make_ham_terms(self):
         '''Get all terms in Ham as two/three-site gates, 
-        in a dict() mapping edges to qarrays.
+        in a dict mapping edges to qarrays.
         
-        ``terms``:  dict[edge (i,j,f) : gate [qarray] ]
+        Returns:  dict{edge (i,j,f): gate (qarray)}
 
         If `f` is None, the corresponding gate will be two-site 
         (vertices only). Otherwise, gate acts on three sites.
@@ -6092,7 +6120,7 @@ class SpinlessSimHam(SimulatorHam):
         '''Hopping between two vertices, with no face site.
         '''
         X, Y = (qu.pauli(mu) for mu in ['x','y'])
-        return 0.5* ((X&X) + (Y&Y))
+        return 0.5* ((X & X) + (Y & Y))
 
 
     def _three_site_hop_gate(self, edge_dir):
