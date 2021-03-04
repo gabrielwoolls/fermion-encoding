@@ -5238,12 +5238,13 @@ class QubitEncodeVector(QubitEncodeNet,
         # 'rotate' qubits at nonempty faces
         # (unless already rotated)
         # 
+        #       :       :        :       :
         #      ─●───────●─      ─●───●───●──
         #       │ \   / │        │   │   │ 
         #       │   ●   │  ==>   ●───●───● 
         #       │ /   \ │        │   │   │ 
         #      ─●───────●─      ─●───●───●──
-        #       │       │        │       │  
+        #       :       :        :       :
         # 
         already_rotated = psi.check_if_bmps_setup()
         if not already_rotated:
