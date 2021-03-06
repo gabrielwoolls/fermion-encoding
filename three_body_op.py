@@ -1,8 +1,8 @@
 import quimb as qu
 import quimb.tensor as qtn
-
 from quimb.tensor.tensor_core import bonds, tensor_contract
 
+import qubit_networks as beeky
 
 
 def triangle_gate_absorb(
@@ -10,6 +10,9 @@ def triangle_gate_absorb(
     reindex_map,
     vertex_tensors, 
     face_tensor,
+    phys_inds,
+    gate_tags=('GATE',),
+    **compress_opts
     ):
     '''
     #      \ a   b ╱ 
@@ -35,9 +38,18 @@ def triangle_gate_absorb(
         Maps physical inds (e.g. 'q3') to new index ids
         corresponding to site-to-gate bonds.
     
+    phys_inds: sequence of str
+        The physical "qubit" indices ('qA', 'qB', 'qC')
+        at each of the 3 sites.
+
+    gate_tags: sequence of str, optional
+        All 3 site tensors will be tagged with these
+        after being acted on with `gate`.
+
     **compress_opts: will be passed to `tensor_split()`
         for the main `blob` tensors.
     '''
+    compress_opts.setdefault('method', 'svd')    
 
     t_a, t_b = vertex_tensors
     t_c = face_tensor
@@ -46,69 +58,101 @@ def triangle_gate_absorb(
                         'B': t_b,
                         'C': t_c}
 
-    triangle_bonds = {'AC': bonds(t_a, t_c),
-                      'CB': bonds(t_b, t_c),
-                      'AB': bonds(t_a, t_b)}
+    triangle_bonds = {'AC': tuple(bonds(t_a, t_c))[0],
+                      'CB': tuple(bonds(t_b, t_c))[0],
+                      'AB': tuple(bonds(t_a, t_b))[0]}
 
     # map labels A,B,C to physical indices
     physical_bonds = {k: tuple(ix for ix in t.inds 
-        if t.ind_size(ix) == 2)[0] 
+        if ix in phys_inds)[0] 
         for k, t in triangle_tensors.items()}
 
     outer_tensors = []
     inner_tensors = []
 
+    # split 'A' inward
     rix = (triangle_bonds['AC'], physical_bonds['A'])
     Q_a, R_a = t_a.split(left_inds=None, right_inds=rix,
                          method='qr', get='tensors')
     
     # outer_tensors.append(Q_a)
-    inner_tensors.append(R_a.reindex_(reindex_map)) #??
-    # R_a.reindex_(reindex_map)
+    inner_tensors.append(R_a.reindex_(reindex_map)) 
 
+    # split 'C' inward
     lix = (triangle_bonds['AC'], physical_bonds['C'])
     L_c, Q_c = t_c.split(left_inds=lix, method='lq',
                         get='tensors')
 
     # outer_tensors.append(Q_c)
     inner_tensors.append(L_c.reindex_(reindex_map))
-    # L_c.reindex_(reindex_map)
 
-    # merge gate, tL and tR tensors into `blob`
+    # merge gate, R_a and L_c tensors into `blob`
     blob = tensor_contract(*inner_tensors, gate)
-
 
     lix = bonds(blob, Q_a)
     lix.add(physical_bonds['A'])
 
-    # NOTE: delete maybe_svals?
+
     U, *maybe_svals, V = blob.split(left_inds=lix,
             get='tensors', bond_ind=triangle_bonds['AC'], 
             **compress_opts)
     
-    # contract: Q_a with U, structure as t_a
-    #           Q_c with V, structure as t_c
+    # Absorb U into Q_a; this is the new tensor at 'A'
+    # Absorb V into Q_c (this 'C'-site tensor will be changed) 
     new_tensors = {'A': tensor_contract(Q_a, U, output_inds=t_a.inds),
-                   'C': tensor_contract(V, Q_c, output_inds=t_c.inds)}
+                   'C': tensor_contract(V, Q_c)} #, output_inds=t_c.inds)}
 
 
-    t_b.reindex_(reindex_map) # make sure physical_ind_B only appears once
-    rix = (triangle_bonds['CB'], physical_bonds['B'])
+    t_b.reindex_(reindex_map) # make sure physical index 'qB' only appears once
+    
+    rix = bonds(new_tensors['C'], t_b)
+    rix.add(physical_bonds['B'])
     Q_c, R_c = new_tensors['C'].split(left_inds=None, right_inds=rix,
-                                method='qr', get='tensors')
+                                method='qr', get='tensors',)
 
 
     new_tensors['B'] = tensor_contract(t_b, R_c)
     new_tensors['C'] = Q_c
 
     for k in 'ABC':
-        # update to new tensors' data
-        triangle_tensors[k].modify(data=new_tensors[k].data)                                
+        # update the Gate|ket> tensors
+        triangle_tensors[k].modify(
+            data=new_tensors[k].data,
+            inds=new_tensors[k].inds)           
+
+        #add new tags, if any
+        for gt in gate_tags: 
+            triangle_tensors[k].add_tag(gt)
                                     
 
-    
+
+def main_test():
+    psi = beeky.QubitEncodeVector.rand(3, 3)
+    X, Y, Z = (qu.pauli(i) for i in 'xyz')
+    where = (3, 4, 9) #which qubits to act on
+    numsites = len(where) 
+    dp = 2 #phys ind dimension
+    gate = X & X & X
+
+    ## take over from here ##
+    g_xx = qtn.tensor_1d.maybe_factor_gate_into_tensor(gate, dp, numsites, where) #shape (2,2,2,2) or (2,2,2,2,2,2)
+
+    site_inds = [psi.phys_ind_id.format(q) for q in where]
+    bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
+    reindex_map = dict(zip(site_inds, bond_inds))
+
+    TG = qtn.Tensor(g_xx, inds=site_inds + bond_inds, 
+            left_inds=bond_inds, tags=['GATE'])
+
+    original_ts = [psi[q] for q in where]
+    bonds_along = [next(iter(qtn.bonds(t1, t2))) for t1, t2 in qu.utils.pairwise(original_ts)]
 
 
+    triangle_gate_absorb(gate=TG, reindex_map=reindex_map,
+        vertex_tensors=(psi[where[0]], psi[where[1]]), 
+        face_tensor=psi[where[2]], phys_inds=site_inds)
 
 
+if __name__ == '__main__':
 
+    main_test()

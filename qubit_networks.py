@@ -15,7 +15,7 @@ from operator import add
 import re
 import numpy as np
 from random import randint
-
+import three_body_op
 
 
 def make_auxcon_net(
@@ -4334,7 +4334,7 @@ class QubitEncodeVector(QubitEncodeNet,
         '''Check if `q` is an integer label for any of
         the lattice qubits, convert to the site tag if so.
         '''
-        if isinstance(q, int):
+        if isinstance(q, Integral):
             return self.site_tag_id.format(q)
         
         return q
@@ -4497,7 +4497,7 @@ class QubitEncodeVector(QubitEncodeNet,
         where,
         keys='qnumbers',
         contract=False,
-        tags=['GATE'],
+        tags=('GATE',),
         inplace=False, 
         info=None,
         **compress_opts
@@ -4537,30 +4537,32 @@ class QubitEncodeVector(QubitEncodeNet,
         inplace: bool, optional
             If False (default), return copy of TN with gate applied
         
-        contract: {False, True, 'split', 'reduce_split'}, optional
+        contract: {False, True, 'split', 
+            'reduce_split', 'triangle_absorb}, optional
             
             -False: (default) leave all gates uncontracted
             -True: contract gates into one tensor in the lattice
             -'split': uses tensor_2d.gate_split method for two-site gates
             -'reduce_split': TODO
-
+            -'triangle_absorb': absorb 3-body operator
         '''
         qu.utils.check_opt('keys', keys, ('qnumbers, coos'))
         
         if keys == 'coos':
-            # get the qubit 'number' labels
-            where = tuple(map(self.coo_to_qubit_map, where))
+            where = tuple(map(self.coo_to_qubit_map, where)) #get qubit num. labels
 
 
         psi = self if inplace else self.copy()
 
-        #G may be a one-site gate
+        
         if isinstance(where, Integral): 
+            #G may be a one-site gate
             where = (where,)
+
 
         numsites = len(where) #number of qubits acted on
 
-        dp = self.phys_dim #local physical dimension (d=2 for spinless fermions)
+        dp = self.phys_dim # physical dimension, d=2 for qubits
         tags = qtn.tensor_2d.tags_to_oset(tags)
 
         G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp, numsites, where)
@@ -4618,6 +4620,7 @@ class QubitEncodeVector(QubitEncodeNet,
         bonds_along = [next(iter(qtn.bonds(t1, t2)))
                     for t1, t2 in qu.utils.pairwise(original_ts)]
         
+
         if contract == 'split' and numsites==2:
             #
             #       │╱  │╱          │╱  │╱
@@ -4659,6 +4662,17 @@ class QubitEncodeVector(QubitEncodeNet,
                          **compress_opts}
             
             qtn.tensor_2d.gate_string_reduce_split_(**gsrs_opts)
+            return psi
+
+
+        elif contract == 'triangle_absorb' and numsites == 3:
+            # assuming `where` is ordered (vertex, vertex, face),
+            # absorb the 3-body gate into the tn 
+            three_body_op.triangle_gate_absorb(gate=TG, reindex_map=reindex_map, 
+                    vertex_tensors=(psi[where[0]], psi[where[1]]), 
+                    face_tensor=psi[where[2]], phys_inds=site_inds,
+                    gate_tags=tags, **compress_opts)
+            
             return psi
 
         else:
@@ -4987,7 +5001,7 @@ class QubitEncodeVector(QubitEncodeNet,
     
     def check_dense_energy(self, Hdense, normalize=True):
         
-        psi_d = self.net_to_dense()
+        psi_d = self.vec_to_dense()
         
         psiHpsi = (psi_d.H @ Hsim @ psi_d).item()
 
@@ -5002,7 +5016,7 @@ class QubitEncodeVector(QubitEncodeNet,
 
         dense_bra = qu.qu(dense_bra)/np.linalg.norm(dense_bra)
         
-        dense_ket = self.net_to_dense(normalize=True)
+        dense_ket = self.vec_to_dense(normalize=True)
 
         return dense_bra.H @ dense_ket
 

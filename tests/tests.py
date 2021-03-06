@@ -4,10 +4,63 @@ parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 
 import qubit_networks as my_qns
+import quimb as qu
 import pytest
 import numpy as np
 from random import randint
 from itertools import starmap
+
+class TestThreeBodyOps:
+    '''Test methods for absorbing 3-body gates into a tn.
+    '''
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
+    def test_triangle_absorb_method(self, Lx, Ly):
+        '''Test 'triangle_absorb' method, which works for 
+        `QubitEncodeVector`-type geometry without rotating the 
+        face tensors (i.e. non-rectangular lattice geometry).
+        '''
+        # without rotating face tensors!
+        psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        bra = psi.H
+        norm = (bra & psi) ^ all
+
+        # define Hamiltonian, just to get the 3-tuples
+        # of (vertex, vertex, face) qubits to act on
+        LatticeHam = my_qns.SpinlessSimHam(Lx, Ly)
+        for where, _ in LatticeHam.gen_ham_terms():
+            
+            # skip 2-body terms
+            if len(where) == 2: 
+                continue
+            
+            rand_gate = qu.rand_matrix(8)         
+
+            # apply gate both 0) without contracting, and 1) with 'triangle-absorb'
+            G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
+            G_ket_1 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb')
+
+            expec_0 = (bra & G_ket_0) ^ all
+            expec_1 = (bra & G_ket_1) ^ all
+            assert expec_1 == pytest.approx(expec_0, rel=1e-2)
+            
+            # equality_1 = expec_1 == pytest.approx(expec_0, rel=1e-2)
+            # # if not equality_1: print(where, ' failed')
+            # print("{} -- {}".format(where, {False: "failed 1",
+            #                     True: "good 1"}[equality_1]))
+            
+            ## also try with vertex qubits switched!
+            where = (where[1], where[0], where[2])
+            G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
+            G_ket_2 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb')
+            
+            expec_0 = (bra & G_ket_0) ^ all
+            expec_2 = (bra & G_ket_2) ^ all
+            assert expec_2 == pytest.approx(expec_0, rel=1e-2)
+            
+            
+
+
+
 
 class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
