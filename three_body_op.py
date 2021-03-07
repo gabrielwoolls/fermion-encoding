@@ -47,9 +47,24 @@ def triangle_gate_absorb(
         after being acted on with `gate`.
 
     **compress_opts: will be passed to `tensor_split()`
-        for the main `blob` tensors.
+        for the main `blob` tensor. Some keywords are
+        
+        -method: {'svd', 'lq', 'qr', etc}
+            If rank-revealing methods like SVD are 
+            used, the site-to-site bonds will not
+            be equal size.
+        
+        -cutoff: float
+            The threshold below which to discard singular values. 
+            Only applies to rank-revealing methods (not QR or LQ).
+        
+        -max_bond: int
+            Max number of singular values to keep, regardless
+            of ``cutoff``.
+
     '''
     compress_opts.setdefault('method', 'svd')    
+
 
     t_a, t_b = vertex_tensors
     t_c = face_tensor
@@ -67,7 +82,6 @@ def triangle_gate_absorb(
         if ix in phys_inds)[0] 
         for k, t in triangle_tensors.items()}
 
-    outer_tensors = []
     inner_tensors = []
 
     # split 'A' inward
@@ -83,7 +97,6 @@ def triangle_gate_absorb(
     L_c, Q_c = t_c.split(left_inds=lix, method='lq',
                         get='tensors')
 
-    # outer_tensors.append(Q_c)
     inner_tensors.append(L_c.reindex_(reindex_map))
 
     # merge gate, R_a and L_c tensors into `blob`
@@ -100,7 +113,7 @@ def triangle_gate_absorb(
     # Absorb U into Q_a; this is the new tensor at 'A'
     # Absorb V into Q_c (this 'C'-site tensor will be changed) 
     new_tensors = {'A': tensor_contract(Q_a, U, output_inds=t_a.inds),
-                   'C': tensor_contract(V, Q_c)} #, output_inds=t_c.inds)}
+                   'C': tensor_contract(V, Q_c)} 
 
 
     t_b.reindex_(reindex_map) # make sure physical index 'qB' only appears once

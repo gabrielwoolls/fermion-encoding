@@ -14,11 +14,15 @@ class TestThreeBodyOps:
     '''Test methods for absorbing 3-body gates into a tn.
     '''
     @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
-    def test_triangle_absorb_method(self, Lx, Ly):
+    @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
+    def test_triangle_absorb_method(self, Lx, Ly, method):
         '''Test 'triangle_absorb' method, which works for 
         `QubitEncodeVector`-type geometry without rotating the 
         face tensors (i.e. non-rectangular lattice geometry).
         '''
+        # opts for splitting 'blob' in `triangle_absorb` method
+        compress_opts = {'method': method}
+
         # without rotating face tensors!
         psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         bra = psi.H
@@ -37,7 +41,7 @@ class TestThreeBodyOps:
 
             # apply gate both 0) without contracting, and 1) with 'triangle-absorb'
             G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
-            G_ket_1 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb')
+            G_ket_1 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
 
             expec_0 = (bra & G_ket_0) ^ all
             expec_1 = (bra & G_ket_1) ^ all
@@ -51,7 +55,7 @@ class TestThreeBodyOps:
             ## also try with vertex qubits switched!
             where = (where[1], where[0], where[2])
             G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
-            G_ket_2 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb')
+            G_ket_2 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
             
             expec_0 = (bra & G_ket_0) ^ all
             expec_2 = (bra & G_ket_2) ^ all

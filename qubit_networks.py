@@ -6723,12 +6723,23 @@ def main_debug():
     row2.compute_col_environments()
 
 
+def test_triangle_absorb():
+    from quimb.tensor.tensor_2d import bonds
+    psi = QubitEncodeVector.rand(3, 3, bond_dim=3)
+    
+    current_bonds = {tuple(bonds(psi[8], psi[5]))[0]: 'bond-q8-q5',
+                    tuple(bonds(psi[5], psi[10]))[0]: 'bond-q5-q10',   
+                    tuple(bonds(psi[10], psi[8]))[0]: 'bond-q10-q8'}
+    psi.reindex_(current_bonds)
+    
+    psi.apply_gate(G=qu.rand_matrix(8), where=(8,5,10), contract='triangle_absorb')
+
 
 if __name__ == '__main__':
+    test_triangle_absorb()
     
-    Hstab = HamStab(Lx=3, Ly=3)
-
-
+    
+    # Hstab = HamStab(Lx=3, Ly=3)
     # qvec = QubitEncodeVector.rand(3, 3, bond_dim=4)
     # norm = qvec.make_norm().setup_bmps_contraction_(layer_tags=('BRA','KET'))
     # phi = norm.flatten().contract_boundary_from_left(xrange=(0,4), yrange=(0,2), max_bond=5)
