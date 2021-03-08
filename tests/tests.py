@@ -4,10 +4,166 @@ parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 
 import qubit_networks as my_qns
+import quimb as qu
 import pytest
 import numpy as np
 from random import randint
-from itertools import starmap
+from itertools import starmap, product
+
+class TestThreeBodyOps:
+    '''Test methods for absorbing 3-body gates into a tn.
+    '''
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
+    @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
+    def test_triangle_absorb_method(self, Lx, Ly, method):
+        '''Test 'triangle_absorb' method, which works for 
+        `QubitEncodeVector`-type geometry without rotating the 
+        face tensors (i.e. non-rectangular lattice geometry).
+        '''
+        # opts for splitting 'blob' in `triangle_absorb` method
+        compress_opts = {'method': method}
+
+        # without rotating face tensors!
+        psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        bra = psi.H
+        norm = (bra & psi) ^ all
+
+        # define Hamiltonian, just to get the 3-tuples
+        # of (vertex, vertex, face) qubits to act on
+        LatticeHam = my_qns.SpinlessSimHam(Lx, Ly)
+        for where, _ in LatticeHam.gen_ham_terms():
+            
+            # skip 2-body terms
+            if len(where) == 2: 
+                continue
+            
+            rand_gate = qu.rand_matrix(8)         
+
+            # apply gate both 0) without contracting, and 1) with 'triangle-absorb'
+            G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
+            G_ket_1 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
+
+            expec_0 = (bra & G_ket_0) ^ all
+            expec_1 = (bra & G_ket_1) ^ all
+            assert expec_1 == pytest.approx(expec_0, rel=1e-2)
+            
+            # equality_1 = expec_1 == pytest.approx(expec_0, rel=1e-2)
+            # # if not equality_1: print(where, ' failed')
+            # print("{} -- {}".format(where, {False: "failed 1",
+            #                     True: "good 1"}[equality_1]))
+            
+            ## also try with vertex qubits switched!
+            where = (where[1], where[0], where[2])
+            G_ket_0 = psi.apply_gate(G=rand_gate, where=where, contract=False)
+            G_ket_2 = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
+            
+            expec_0 = (bra & G_ket_0) ^ all
+            expec_2 = (bra & G_ket_2) ^ all
+            assert expec_2 == pytest.approx(expec_0, rel=1e-2)
+            
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
+    @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
+    def test_epeps_absorb_3body_gate(self, Lx, Ly, method):
+        '''Currently only tests 3-body ops!
+        '''
+        
+        # opts for splitting 'blob' in `triangle_absorb` method
+        compress_opts = {'method': method}
+        
+        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        bra = epeps.H
+        # norm = (bra & epeps) ^ all
+
+        # use Ham to get (vertex, vertex, face) 'target' qubits
+        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+            convert_to_coordinate_ham(epeps.qubit_to_coo_map)
+        
+        for coos, _ in LatticeCooHam.gen_ham_terms():
+            
+            # SKIP 2-body interactions
+            if len(coos) == 2:
+                continue
+            
+            rand_gate = qu.rand_matrix(8) #use a random 3-body gate
+
+            G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
+            G_ket_1 = epeps.absorb_three_body_gate(G=rand_gate, coos=coos, 
+                                            **compress_opts)
+
+            expec_0 = (bra & G_ket_0) ^ all # `contract=False` reference
+            expec_1 = (bra & G_ket_1) ^ all # `triangle_absorb` reference
+            
+            assert expec_1 == pytest.approx(expec_0, rel=1e-2)
+
+            # now try with the vertex qubits swapped
+            coos = (coos[1], coos[0], coos[2])
+            G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
+            G_ket_2 = epeps.absorb_three_body_gate(G=rand_gate, coos=coos, 
+                                            **compress_opts)
+            
+            expec_0 = (bra & G_ket_0) ^ all 
+            expec_2 = (bra & G_ket_2) ^ all 
+            assert expec_2 == pytest.approx(expec_0, rel=1e-2)                                            
+
+
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
+    @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
+    def test_epeps_vs_qev_absorb_gate(self, Lx, Ly, method):
+        '''Test that we get same result (for 3-body interactions)
+        whether we evaluate with a ``QubitEncodeVector`` or the 
+        2D-regular-lattice version ``ePEPS``.
+
+        Methods tested:
+        ---------------
+            ``QubitEncodeVector.apply_gate(..., contract='triangle_absorb)``
+
+            ``ePEPS.absorb_three_body_gate(...)``
+        '''
+        # opts for splitting 'blob' in `triangle_absorb` method
+        compress_opts = {'method': method}
+
+        # without rotating face tensors!
+        psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        bra = psi.H
+
+        # make into 'regular' 2D-square-lattice TN    
+        psi_2d = psi.convert_to_ePEPS(dummy_size=1)
+        bra_2d = psi_2d.H
+         
+        Ham = my_qns.SpinlessSimHam(Lx, Ly)
+        
+        # LatticeCooHam = Ham.convert_to_coordinate_ham().\
+        #     convert_to_coordinate_ham(psi_2d.qubit_to_coo_map)
+        
+        for where, _ in Ham.gen_ham_terms():
+
+            # skip 2-body interactions
+            if len(where) == 2:
+                continue
+
+            coos = [psi_2d.qubit_to_coo_map(q) for q in where]
+
+            rand_gate = qu.rand_matrix(8) #use a random 3-body gate
+
+            G_psi = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
+            expec_QEV = (bra & G_psi) ^ all
+
+            G_psi_2d = psi_2d.absorb_three_body_gate(G=rand_gate, coos=coos, **compress_opts)
+            expec_ePEPS = (bra_2d & G_psi_2d) ^ all
+
+            assert expec_ePEPS == pytest.approx(expec_QEV, rel=1e-2)
+
+            # now try with vertex qubits swapped
+            where = (where[1], where[0], where[2])
+            coos = [psi_2d.qubit_to_coo_map(q) for q in where]
+
+            # do the same test
+            G_psi = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
+            expec_QEV = (bra & G_psi) ^ all
+            G_psi_2d = psi_2d.absorb_three_body_gate(G=rand_gate, coos=coos, **compress_opts)
+            expec_ePEPS = (bra_2d & G_psi_2d) ^ all
+            assert expec_ePEPS == pytest.approx(expec_QEV, rel=1e-2)
+
 
 class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
@@ -113,9 +269,7 @@ class TestConversionTo2D():
     @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
     def test_transpose_tensors(self, Lx, Ly):
         psi = my_qns.QubitEncodeVector.rand_product_state(Lx, Ly)
-        psi = psi.convert_to_tensor_network_2d(
-                    remap_coordinate_tags=True,
-                    relabel_physical_inds=False)
+        psi = psi.convert_to_tensor_network_2d() #relabel_physical_inds=False)
         
         shape = 'urdl'
         psi.transpose_tensors_to_shape(shape=shape)
@@ -151,11 +305,65 @@ class TestConversionTo2D():
                 bond = psi.bond(where1=tag_xy, where2 = dir_to_tag[direction])
                 assert bond == tensor_xy.inds[k]
 
+    
+    # def test_epeps_aux_tensors(self, Lx, Ly):
+    #     '''Note ``Lx, Ly`` refers to the "underlying" lattice 
+    #     geometry, not the ePEPS lattice (which has dimensions
+    #     2*Lx-1, 2*Ly-1).
+    #     '''
+    #     epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=2) 
+
+    #     for x, y in product(range(2 * Lx - 1), range(2 * Ly -1)):
+    #         # tag_xy = epeps.site_tag_id.format(x,y)
+    #         # tensor_xy = epeps[tag_xy]
+    #         tensor_xy = epeps[x,y]
+            
+    #         if 'AUX' not in tensor_xy.tags:
+    #             continue
             
 
 
 
+class TestCoordinateHamiltonians():
+    
+    @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
+    def test_converting_hubbard_ham(self, Lx, Ly):
+        '''Evaluate energy of the spinless Hubbard model
+        on a random state, using 'qubit numbers' and 
+        qubit coordinates to specify target sites. Check
+        the energies are equal.
+        '''
+        psi_trial = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        psi_trial.setup_bmps_contraction_()
+        norm, bra, ket = psi_trial.make_norm(return_all=True)
+        norm ^= all
+
+        # encoded Fermi-Hubbard with default parameters
+        HubbardHam = my_qns.SpinlessSimHam(Lx, Ly)
         
+        # terms specify qubit coos rather than qubit nums
+        CooHam = HubbardHam.convert_to_coordinate_ham(
+            qubit_to_coo_map=psi_trial.qubit_to_coo_map)
+        
+        # energy computed with HubbardHam
+        E1 = 0
+        for where, gate in HubbardHam.gen_ham_terms():
+            E1 += (bra | ket.apply_gate(gate, where, 
+                    keys='qnumbers', contract=True))^all
+        
+        # energy computed with CooHam
+        E2 = 0
+        for coos, gate in CooHam.gen_ham_terms():
+            E2 += (bra | ket.apply_gate(gate, where=coos,
+                    keys='coos', contract=True))^all
+        
+        E1 = E1 / norm
+        E2 = E2 / norm
+
+        assert np.allclose(E1, E2)
+
+
+
 
 
 
