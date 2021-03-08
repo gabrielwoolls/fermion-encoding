@@ -1,21 +1,36 @@
 import quimb as qu
 import quimb.tensor as qtn
-from itertools import product, chain, starmap, cycle, combinations
-import dense_qubits
 from quimb.tensor.tensor_1d import maybe_factor_gate_into_tensor
-from collections import defaultdict
-from numbers import Integral
+from quimb.tensor.tensor_2d import is_lone_coo
+from quimb.tensor.tensor_core import tags_to_oset
+from quimb.utils import pairwise, check_opt, oset
+
 from autoray import do, dag
 import tqdm
 import functools
-from quimb.tensor.tensor_core import tags_to_oset
-from quimb.utils import pairwise, check_opt, oset
 import opt_einsum as oe
 from operator import add
-import re
+
 import numpy as np
+# import re
 from random import randint
+from collections import defaultdict
+from numbers import Integral
+from itertools import product, chain, starmap, cycle, combinations
+
+import dense_qubits
 import three_body_op
+
+
+def check_valid_lattice_shape(Lx, Ly):
+    '''Have only implemented Derby-Klassen encoding for
+    EVEN # of faces. One of {Lx, Ly} must be odd!
+    '''
+    if (Lx % 2 == 0) and (Ly % 2 == 0):
+        
+        raise ValueError(
+        f'''The lattice must have an even number of faces,
+        but the ({Lx}, {Ly})-lattice has an odd # faces.''')
 
 
 def make_auxcon_net(
@@ -169,8 +184,14 @@ def make_product_state_net(
         2. A 'supergrid' tag (e.g. "S{x}{y}" for supercoo (x, y)
         3. A qubit-number tag (e.g. "Q{k}" for the kth qubit)
         4. Any additional supplied in ``add_tags``
+    
+    bistring: str, optional
+        String of bits, 0->up and 1->down, to initialize
+        the local spin degrees of freedom. If none is 
+        given, default to `000..0` i.e. all spins up.
     '''
-    # note this only works if either Lx or Ly is odd!
+    check_valid_lattice_shape(Lx, Ly) # either Lx or Ly must be odd!
+    
     num_vertices = Lx * Ly
     num_faces = int((Lx-1) * (Ly-1) / 2)
 
@@ -186,7 +207,7 @@ def make_product_state_net(
         vertex_data = [spin_up] * num_vertices
         face_data = [spin_up] * num_faces
 
-
+    # or, if a valid bitstring was specified
     elif all(s in '01' for s in bitstring) and len(bitstring) == num_vertices + num_faces:
         vertex_data, face_data = [], []
 
@@ -234,12 +255,10 @@ def make_product_state_net(
 
     if vertices_only:
         vtensors = list(chain.from_iterable(vtensors))
-        return qtn.TensorNetwork(vtensors, #structure=site_tag_id, 
-                                **tn_opts)
+        return qtn.TensorNetwork(vtensors, **tn_opts)
 
-    ##
-    # add face sites + bonds 
-    ##
+
+    ### add face sites + bonds 
     
     ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
     
@@ -280,8 +299,7 @@ def make_product_state_net(
     
     alltensors = vtensors + [f for f in ftensors if f]
     # return alltensors
-    return qtn.TensorNetwork(alltensors, #structure=site_tag_id, 
-                            **tn_opts)
+    return qtn.TensorNetwork(alltensors, **tn_opts)
 
 
 
@@ -295,7 +313,8 @@ def local_product_state_net(
     phys_ind_id='q{}',
     add_tags=None,
     dtype='complex128',
-    **tn_opts):
+    **tn_opts
+    ):
     '''Makes a "local product state" qubit network, for a lattice with 
     dimensions ``Lx, Ly`` and local site dimension ``phys_dim``.    
 
@@ -309,6 +328,7 @@ def local_product_state_net(
     Entanglement within the squares, but each square unentangled with 
     the other squares.
     '''
+    check_valid_lattice_shape(Lx, Ly) #Lx or Ly must be odd
 
 
     add_tags = tags_to_oset(add_tags) #none by default
@@ -335,6 +355,7 @@ def local_product_state_net(
     ftensors = [[None for _ in range(Ly-1)] for _ in range(Lx-1)]
     
     ## make all face sites
+    
     k=0
     for i, j in product(range(Lx-1), range(Ly-1)):
 
@@ -396,14 +417,6 @@ def local_product_state_net(
     alltensors = vtensors + [f for f in ftensors if f]
     return qtn.TensorNetwork(alltensors, #structure=site_tag_id,
                             **tn_opts)
-
-
-
-
-
-    
-        
-            
 
 
 
@@ -780,6 +793,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '_grid_tag_id',
         '_site_tag_id',
         '_aux_tag_id',
+        '_adj_tag_id'
     )
 
     def _is_compatible_lattice(self, other):
@@ -812,15 +826,13 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
     @classmethod
     def random_flat(cls, Lx, Ly, bond_dim=3, **tn_opts):
-        '''Squeeze out the vector indices to make into a flat tn
-        (i.e. a scalar)
+        '''Squeeze out the vector indices to make into a flat TN
+        (i.e. a scalar), like a norm TN.
         '''
 
         rand_net = QubitEncodeVector.rand(Lx=Lx, Ly=Ly, phys_dim=1,
                     bond_dim=bond_dim, **tn_opts)
-
         rand_net.squeeze_()
-        
         return rand_net.view_as(cls, inplace=True)
  
 
@@ -878,6 +890,14 @@ class QubitEncodeNet(qtn.TensorNetwork):
         >>> 'IX{}Y{}'
         '''
         return self._aux_tag_id
+
+    @property
+    def adj_tag_id(self):
+        '''Format string for tags of identity tensors 'adjacent'
+        to vertex V, face F.
+        >>> 'ADJ{V},{F}'
+        '''
+        return self._adj_tag_id
 
     @property
     def grid_tag_id(self):
@@ -3492,14 +3512,15 @@ class QubitEncodeNet(qtn.TensorNetwork):
         tn = self if inplace else self.copy()
 
         face_tag = tn.face_coo_tag(x, y)
+        face_qnumber = tn.face_coo_map(x, y)
 
         corner_coos = ((x - 1, y - 1), 
                        (x - 1, y + 1),
                        (x + 1, y + 1),
                        (x + 1, y - 1),)
-                       
-        # corner_coos = tn.corner_coos_around_face(i, j)
-        corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))        
+
+        # "Q{}" for each corner qubit                       
+        corner_tags = list(starmap(tn.vert_coo_tag, corner_coos))
 
         for k, ctag in enumerate(corner_tags):
             add_tags = tags_to_oset(('AUX', f'TEMP{k}')) | tags_to_oset(layer_tag)
@@ -3507,7 +3528,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             tn.insert_identity_between_(where1=face_tag, where2=ctag, 
                     layer_tag=layer_tag, add_tags=add_tags)
             
-            next_ctag = corner_tags[0] if k==3 else corner_tags[k+1]
+            next_ctag = corner_tags[0] if k == 3 else corner_tags[k+1]
             
             #insert I between this and 'next' corner in the square
             tn.insert_identity_between_(where1=ctag, where2=next_ctag, 
@@ -3516,7 +3537,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
 
         for k, ccoo in enumerate(corner_coos):
 
-            tn ^= f'TEMP{k}'
+            tn ^= f"TEMP{k}"
 
             corner_qnumber = tn.vertex_coo_map(*ccoo)
 
@@ -3529,8 +3550,8 @@ class QubitEncodeNet(qtn.TensorNetwork):
             # replace temporary tag with the proper grid coo tag
             tn.retag_({f'TEMP{k}': new_grid_tag})
         
-            # also add the 'ADJ{k}' tag to know where to reabsorb if necessary
-            tn.add_tag(tag=f"ADJ{corner_qnumber}", 
+            # also add the 'ADJ{V},{F}' tag to know where to reabsorb if necessary
+            tn.add_tag(tag=self.adj_tag_id.format(corner_qnumber, face_qnumber), 
                 where=tags_to_oset(new_grid_tag) | tags_to_oset(layer_tag),
                 which='all',)
 
@@ -3544,19 +3565,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
                                                     inplace=True)
 
 
-    # def reabsorb_face_qubit_identities(self, layer_tag=None, inplace=False):
-
-    #     tn = self if inplace else self.copy()
-
-    #     adj_tags = {k: f'ADJ{k}' for k in range((tn.num_sites) if f'ADJ{k}' in tn.tags)}
-
-    #     for k, tag_k in adj_tags.items():
-    #         # absorb identity into a qubit site
-    #         dummy_tags = tn[tag_k].tags
-    #         tn.contract_tags(tags=(tn.qubit_tag(k), tag_k))
-    #         tn.drop_tags(dummy_tags)
-        
-            
         
 
 
@@ -4292,7 +4300,8 @@ class QubitEncodeVector(QubitEncodeNet,
         '_grid_tag_id',
         '_site_tag_id',
         '_aux_tag_id',
-        '_phys_ind_id'
+        '_adj_tag_id',
+        '_phys_ind_id',
     )
     
             
@@ -4307,6 +4316,7 @@ class QubitEncodeVector(QubitEncodeNet,
             site_tag_id='Q{}',
             phys_ind_id='q{}',
             aux_tag_id='IX{}Y{}',
+            adj_tag_id='ADJ{},{}',
             **tn_opts
         ):
         
@@ -4323,6 +4333,7 @@ class QubitEncodeVector(QubitEncodeNet,
         self._grid_tag_id = grid_tag_id
         self._site_tag_id = site_tag_id
         self._aux_tag_id = aux_tag_id
+        self._adj_tag_id = adj_tag_id
 
         self._phys_ind_id = phys_ind_id
 
@@ -5216,10 +5227,9 @@ class QubitEncodeVector(QubitEncodeNet,
     def convert_to_tensor_network_2d(
         self, 
         dummy_size=1,
-        remap_coordinate_tags=True,
+        remap_coordinate_tag=None,
         transpose_tensor_shapes=True,
         relabel_physical_inds=True,
-        flip_x_direction=False,
         insert_vector_inds=False,
         new_index_id='k{},{}'
     ):
@@ -5231,9 +5241,9 @@ class QubitEncodeVector(QubitEncodeNet,
         dummy_size: int, optional
             The size of the dummy indices we insert, both physical 
             and internal.
-        remap_coordinate_tags: bool, optional
-            Whether to relabel the coordinate tags to fit Johnny's
-            convention i.e. (0,0) at bottom left rather than top.
+        remap_coordinate_tag: str or None, optional
+            If given, the coordinate tags like "S{x},{y}" will 
+            be overwritten to ``remap_coordinate_tag.format(x,y)``
         transpose_tensor_shapes: bool, optional
             Whether to transpose all the tensors to have dimensions
             ordered like 'urdl' (or 'urdlp' with physical index).
@@ -5327,11 +5337,11 @@ class QubitEncodeVector(QubitEncodeNet,
                 psi[new_tensor_tags].new_ind(name=new_index_name, size=dummy_size)
 
             
-        if remap_coordinate_tags:
-            psi.remap_coordinates_(flip_x_direction=flip_x_direction)
+        if remap_coordinate_tag is not None:
+            psi.remap_coordinates_(new_coo_tag=remap_coordinate_tag)
         
         if relabel_physical_inds:
-            psi.relabel_qubit_indices_(flip_x_direction=flip_x_direction)
+            psi.relabel_qubit_indices_()
         
         if transpose_tensor_shapes:
             psi.transpose_tensors_to_shape(shape='urdl')
@@ -5341,15 +5351,10 @@ class QubitEncodeVector(QubitEncodeNet,
 
     def remap_coordinates(
         self, 
-        flip_x_direction=False,
-        new_coo_tag=None, 
+        new_coo_tag, 
         inplace=False):
         '''Retag the coordinate tags of every tensor (and optionally
         match Johnny's convention of grid?)
-
-        flip_x_direction: bool, optional
-            Whether to flip the lattice row-coordinates 
-            (i.e. send x --> grid_Lx - 1 - x)
 
         new_coo_tag: string, optional
             New format for the tag id, if desired e.g. "I{},{}"
@@ -5363,14 +5368,14 @@ class QubitEncodeVector(QubitEncodeNet,
         # Make sure the "ROWX" and "COLY" tags are in place
         psi._add_row_col_tags()
 
-        # Choose current row tag "S{},{}" by default
-        if new_coo_tag is None:
-            new_coo_tag = psi.grid_tag_id
+        # Choose current coo tag "S{},{}" by default
+        # if new_coo_tag is None:
+        #     new_coo_tag = psi.grid_tag_id
 
         retag_map = dict()
-        for x_old, y in psi.gen_supergrid_coos():
+        for x, y in psi.gen_supergrid_coos():
 
-            old_tag_xy = psi.grid_coo_tag(x_old, y)
+            old_tag_xy = psi.grid_coo_tag(x, y)
 
             # skip empty sites
             if old_tag_xy not in psi.tags:
@@ -5386,12 +5391,12 @@ class QubitEncodeVector(QubitEncodeNet,
             #       │   │   │         │   │   │   
             # L-1   ●───●───●─        ●───●───●─   0
             # 
-            x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
+
+            # x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
 
             #"S{xold},{y}" --> "S{xnew}{y}"
 
-            retag_map.update({old_tag_xy: new_coo_tag.format(x_new, y),
-                         psi.row_tag(x_old): psi.row_tag(x_new)})
+            retag_map.update({old_tag_xy: new_coo_tag.format(x, y)})
 
 
         #Retag this tn, and reset internal attribute!
@@ -5406,11 +5411,11 @@ class QubitEncodeVector(QubitEncodeNet,
     
     def relabel_qubit_indices(
         self,
-        flip_x_direction=False, 
         inplace=False, 
-        new_index_id='k{},{}'):
+        new_index_id='k{},{}'
+    ):
         '''For each qubit index like 'q0', 'q1', ..., etc, rename
-        the indices as 'k{x},{y}'
+        the indices as "k{x},{y}"
         '''
         
         psi = self if inplace else self.copy()
@@ -5421,11 +5426,10 @@ class QubitEncodeVector(QubitEncodeNet,
         old_qubit_coos = psi.qubit_to_coo_map()
         reindex_map = dict()
 
-        for q, (x_old, y) in old_qubit_coos.items():
-            #switch to Johnny's convention
-            x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
+        for q, (x, y) in old_qubit_coos.items():
+            # x_new = psi.grid_Lx - 1 - x_old if flip_x_direction else x_old
             reindex_map.update({old_index_id.format(q): 
-                                new_index_id.format(x_new, y)})
+                                new_index_id.format(x, y)})
         
         psi.reindex_(reindex_map)
         return psi
@@ -5511,7 +5515,8 @@ class QubitEncodeVector(QubitEncodeNet,
             Passed to `convert_to_tensor_network_2d`
         '''
         psi_2d = self.convert_to_tensor_network_2d(**convert_opts)
-        return ePEPS(psi_2d, Lx=self.grid_Lx, Ly=self.grid_Ly)
+        return ePEPS(psi_2d, Lx=self.grid_Lx, Ly=self.grid_Ly,
+                    qubit_to_coo_map=self.qubit_to_coo_map())
         
 
 ####################################################
@@ -5532,8 +5537,15 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         |
         V  
        {site_tag_id='S{},{}'}
-    
+
+        --------------
+        _SPECIAL_TAGS:
+            -'aux_identity' is used for any dummy identity tensors
+            -'adj_to_vertex_face'.format(V,F) is used if a dummy 
+            identity `I` is 'paired with', or adjacent to, vertex and
+            face sites with qubit numbers V, F, resp.
     '''
+
     _EXTRA_PROPS = (
         '_Lx',
         '_Ly',
@@ -5541,14 +5553,21 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         '_site_ind_id',
         '_row_tag_id',
         '_col_tag_id',
+        '_qubit_to_coo_map',
         # '_phys_dim',
         # '_grid_tag_id',
         # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
         # '_phys_ind_id',
     )
-            
+    
+    _SPECIAL_TAGS = {
+        'aux_identity': 'AUX', 
+        'adj_to_vertex_face': 'ADJ{},{}' 
+    }
+
     def __init__(self, tn, *, 
             Lx=None, Ly=None, 
+            qubit_to_coo_map=None,
             site_tag_id='S{},{}', 
             site_ind_id='k{},{}',
             row_tag_id='ROW{}',
@@ -5559,22 +5578,64 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             super().__init__(tn)
             return
 
-
-        # if tn is a QEV object, could infer lattice 
-        # shape from `grid_Lx/y` attributes...
         self._Lx = Lx
         self._Ly = Ly
 
-        self._site_tag_id = site_tag_id
-        self._site_ind_id = site_ind_id
-        self._row_tag_id = row_tag_id
-        self._col_tag_id = col_tag_id
+        self._site_tag_id = site_tag_id # "S{x},{y}"
+        self._site_ind_id = site_ind_id # "k{x},{y}"
+        self._row_tag_id = row_tag_id # "ROW{x}"
+        self._col_tag_id = col_tag_id # "COL{y}"
 
 
-        #IMPORTANT: pass tn.tensors as a sequence of tensors,
-        # rather than a `TensorNetwork` object, to avoid inheriting
-        # any of the Lx, Ly, tag attributes, etc.
+
+        # map {q: (x,y)}
+        self._qubit_to_coo_map = qubit_to_coo_map
+        
+        # inverse map {(x,y): q}
+        self._coo_to_qubit_map = {coo: q for q, coo in 
+                            self._qubit_to_coo_map.items()}
+
+
+        # Pass tn.tensors, i.e. a raw sequence of tensors, to avoid
+        # inheriting any of the Lx, Ly, tag attributes, etc, from `tn`
         super().__init__(tn.tensors, **tn_opts)
+
+
+    @property
+    def aux_identity_tag(self):
+        # Tags on dummy identity tensors, e.g. "AUX"
+        return self.__class__._SPECIAL_TAGS['aux_identity']
+
+    
+    @property
+    def adjacent_aux_tag(self):
+        # Tag like "ADJ{V},{F}", used for a dummy identity that may
+        # be 'reabsorbed' into qubit site "Q{V}"
+        return self.__class__._SPECIAL_TAGS['adj_to_vertex_face']
+
+    def qubit_to_coo_map(self, qnum=None):
+        '''The coordinate (x,y) of the qubit with 
+        integer label ``qnum``.
+        '''                    
+        if qnum is None:
+            return self._qubit_to_coo_map
+        
+        return self._qubit_to_coo_map[qnum]
+
+
+    def coo_to_qubit_map(self, coo=None):
+        '''The integer label ``q`` of the qubit at
+        (x,y)-coordinate ``coo``.
+        '''       
+        if not hasattr(self, '_coo_to_qubit_map'):
+            self._coo_to_qubit_map = {coo: q 
+                for q, coo in self.qubit_to_coo_map().items()}
+
+
+        if coo is None:
+            return self._coo_to_qubit_map
+        
+        return self._coo_to_qubit_map[coo]
 
 
     def draw(
@@ -5623,11 +5684,176 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         super().draw(fix=fix_tags, **graph_opts)
         return
     
-    # def site_tags(self, which='all'):
-    #     '''
-    #     which: {'all', 'qubit', 'aux'}
-    #     '''
-    #     if which == 
+
+    @property
+    def site_tag_id(self):
+        '''Format string for the tag identifiers of local sites,
+        i.e. the coordinates 'S{x},{y}'
+        '''
+        return self._site_tag_id
+    
+
+    def qubit_site_tags(self):
+        '''
+        The site 'Sx,y' tags, only for qubit
+        sites (i.e. non-identity tensors)
+        '''
+        return (t for t in self.site_tags if ('QUBIT' in self[t].tags))
+
+    def gate(
+        self, 
+        G,
+        coos,
+        contract=False,
+        tags=("GATE",),
+        inplace=False,
+    ):
+        check_opt("contract", contract, (False, 'triangle_absorb'))
+
+        psi = self if inplace else self.copy()
+
+        if is_lone_coo(coos):
+            coos = (coos,)
+        else:
+            coos = tuple(coos)
+
+        numsites = len(coos) #num qubits acted on
+        site_inds = [self._site_ind_id.format(*c) for c in coos] #inds like 'k{x},{y}'
+        dp = self.ind_size(site_inds[0]) # physical dimension, d=2 for qubits
+        gate_tags = tags_to_oset(tags)
+
+        G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp, numsites, coos)
+
+        #old physical indices joined to new gate
+        bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
+        reindex_map = dict(zip(site_inds, bond_inds))
+
+        TG = qtn.Tensor(G, inds=site_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
+        
+        if contract == False:
+            #attach gates without contracting any bonds
+            #
+            #       │   │      <- site_inds
+            #       GGGGG
+            #       │╱  │╱     <- bond_inds
+            #     ──●───●──
+            #      ╱   ╱
+            #
+            psi.reindex_(reindex_map)
+            psi |= TG
+            return psi
+        
+        elif contract == 'triangle_absorb':
+            raise NotImplementedError()
+
+
+    def absorb_three_body_gate(
+        self, 
+        G, 
+        coos, 
+        gate_tags=['GATE'],
+        inplace=False,
+        **compress_opts
+        ):
+        '''
+        G: dense array
+            3-body operator to apply.
+
+        coos: sequence of tuples (x,y)
+            The three coordinate pairs of qubits to
+            act on. The 'face' qubit should be last!
+        '''
+        psi = self if inplace else self.copy()
+
+        vertex_a, vertex_b, face_coo = coos
+        
+        face_qnum = psi.coo_to_qubit_map(face_coo)
+        
+        ## keep dummies' tags, inds, etc to restore them later
+        dummy_identities_info = {}
+
+        # absorb appropriate identity tensors into vertex sites
+        for k, vcoo in enumerate((vertex_a, vertex_b)):
+
+            vertex_qnum = psi.coo_to_qubit_map(vcoo)            
+            
+            # tag of identity to be absorbed
+            adjacent_tag = psi.adjacent_aux_tag.format(
+                                    vertex_qnum, 
+                                    face_qnum) # "AUX{V},{F}"
+            
+            vertex_tag = psi._site_tag_id.format(*vcoo)
+            
+            dummy_identities_info.update({
+                (k, 'neighbor_tags'): tuple(t.tags for t in 
+                    psi.select_neighbors(adjacent_tag))
+            })
+
+            tids = psi._get_tids_from_tags(
+                tags=(vertex_tag, adjacent_tag), which='any')
+            
+            # pop and reattach the contracted tensors
+            pts = [psi._pop_tensor(tid) for tid in tids]
+            new_vertex = qtn.tensor_contract(*pts)
+            
+            dummy_identities_info.update({
+                (k, 'tags'): pts[1].tags, #dummy tags 
+                (k, 'inds'): pts[1].inds, #dummy indices
+            })
+            
+            new_vertex.drop_tags(pts[1].tags) # drop dummy tags from vertex site
+            psi |= new_vertex
+
+        # return psi, dummy_identities_info
+
+        vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
+        face_tensor = psi[face_coo] 
+        
+        gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
+
+        # assuming physical dimension = 2
+        G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
+
+        #new physical indices "k{x},{y}"
+        phys_inds = [psi._site_ind_id.format(*c) for c in coos] 
+        # old physical indices joined to new gate
+        bond_inds = [qtn.rand_uuid() for _ in range(3)] 
+        # replace physical inds with gate bonds
+        reindex_map = dict(zip(phys_inds, bond_inds)) 
+
+        TG = qtn.Tensor(G, inds=phys_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
+        
+        # apply gate!
+        three_body_op.triangle_gate_absorb(gate=TG, reindex_map=reindex_map, 
+                    vertex_tensors=vertex_tensors, 
+                    face_tensor=face_tensor, phys_inds=phys_inds,
+                    gate_tags=gate_tags, **compress_opts)
+
+
+        # now insert new dummy identities where they used to be
+
+        for k in range(2):
+            vt = vertex_tensors[k]
+            
+            ts_to_connect = set(
+                psi[tags] for tags in dummy_identities_info[(k, 'neighbor_tags')]
+                ) - set([vt])
+
+            for T2 in ts_to_connect:
+                psi |= insert_identity_between_tensors(T1=vt, T2=T2, add_tags='TEMP')
+
+            # contract new dummies into a single identity
+            psi ^= 'TEMP'
+            # restore previous tags, and drop temporary tag
+            for tag in dummy_identities_info[(k, 'tags')]:
+                psi['TEMP'].add_tag(tag)
+            psi.drop_tags('TEMP')
+
+        return psi
+
+    ## ** ##
+    absorb_three_body_gate_ = functools.partialmethod(absorb_three_body_gate, 
+                                inplace=True)
 
 
 #************* Hamiltonian Classes *****************#
@@ -5640,7 +5866,7 @@ class CoordinateHamiltonian():
     
     the wrapped `CoordinateHamiltonian(Ham)` will generate terms like
 
-        (sequence of qubit *coordinates*, gate) e.g. 
+        (sequence of qubit coordinates, gate) e.g. 
         ([(4,0), (4,2), (3,1)], pauli(XYX))
 
     Obviously depends on a coordinate-choice! Will need to specify a 
@@ -6734,9 +6960,14 @@ def test_triangle_absorb():
     
     psi.apply_gate(G=qu.rand_matrix(8), where=(8,5,10), contract='triangle_absorb')
 
+def test_epeps_3body():
+    epeps = QubitEncodeVector.rand(3, 3).convert_to_ePEPS(dummy_size=2) 
+    where_coos=((0,0), (0,2), (1,1))
+    apeps, dinfo = epeps.absorb_three_body_gate(G=1, coos=where_coos)
+
 
 if __name__ == '__main__':
-    test_triangle_absorb()
+    test_epeps_3body()
     
     
     # Hstab = HamStab(Lx=3, Ly=3)

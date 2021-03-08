@@ -15,28 +15,35 @@ def triangle_gate_absorb(
     **compress_opts
     ):
     '''
+    Absorbs 3-body operator ``gate`` into a triangle of tensors, 
+    like we have in a ``QubitEncodeVector`` TN (i.e. a non-rectangular
+    lattice geometry).
+
+    ``gate`` is assumed to act on a 3-tuple (vertex_a, vertex_b, face_c) of
+    qubits on the lattice. 
+
     #      \ a   b ╱ 
     #      ─●─────●─      
     #       │ \│╱ │       
     #       │  ● c│  
     #      \│ ╱ \ │╱      
     #      ─●─────●─      
-    #       │     │ 
-
-    vertex_tensors: sequence of 2 Tensors
-        The vertex-site tensors getting acted on,
-        shape [2] + [D]*6 (in the lattice bulk).
-    
-    face_tensor: Tensor, shape [2] + [D]*4
-        The face-site tensor.
+    #       :     : 
 
     gate: Tensor, shape [2]*6 
         Operator to be applied. Should be factorizable
         into shape (2,2, 2,2, 2,2)
-    
+
     reindex_map: dict[physical_inds: gate_bond_inds]
         Maps physical inds (e.g. 'q3') to new index ids
         corresponding to site-to-gate bonds.
+    
+    vertex_tensors: sequence of 2 Tensors
+        The vertex-site tensors getting acted on,
+        shape [2] + [D]*6 (in the lattice bulk).
+
+    face_tensor: Tensor, shape [2] + [D]*4
+        The face-site tensor.
     
     phys_inds: sequence of str
         The physical "qubit" indices ('qA', 'qB', 'qC')
@@ -61,7 +68,6 @@ def triangle_gate_absorb(
         -max_bond: int
             Max number of singular values to keep, regardless
             of ``cutoff``.
-
     '''
     compress_opts.setdefault('method', 'svd')    
 
@@ -137,6 +143,8 @@ def triangle_gate_absorb(
         for gt in gate_tags: 
             triangle_tensors[k].add_tag(gt)
                                     
+
+
 
 
 def main_test():
