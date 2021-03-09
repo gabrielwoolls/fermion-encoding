@@ -4679,7 +4679,7 @@ class QubitEncodeVector(QubitEncodeNet,
         elif contract == 'triangle_absorb' and numsites == 3:
             # assuming `where` is ordered (vertex, vertex, face),
             # absorb the 3-body gate into the tn 
-            three_body_op.triangle_gate_absorb(gate=TG, reindex_map=reindex_map, 
+            three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
                     vertex_tensors=(psi[where[0]], psi[where[1]]), 
                     face_tensor=psi[where[2]], phys_inds=site_inds,
                     gate_tags=tags, **compress_opts)
@@ -5586,8 +5586,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         self._row_tag_id = row_tag_id # "ROW{x}"
         self._col_tag_id = col_tag_id # "COL{y}"
 
-
-
         # map {q: (x,y)}
         self._qubit_to_coo_map = qubit_to_coo_map
         
@@ -5612,6 +5610,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         # Tag like "ADJ{V},{F}", used for a dummy identity that may
         # be 'reabsorbed' into qubit site "Q{V}"
         return self.__class__._SPECIAL_TAGS['adj_to_vertex_face']
+
 
     def qubit_to_coo_map(self, qnum=None):
         '''The coordinate (x,y) of the qubit with 
@@ -5705,8 +5704,9 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         G,
         coos,
         contract=False,
-        tags=("GATE",),
+        tags=('GATE',),
         inplace=False,
+        **compress_opts,
     ):
         check_opt("contract", contract, (False, 'triangle_absorb'))
 
@@ -5743,15 +5743,20 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             psi |= TG
             return psi
         
-        elif contract == 'triangle_absorb':
-            raise NotImplementedError()
+        elif contract == 'triangle_absorb' and numsites == 3:
+            
+            psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
+            reindex_map=reindex_map, phys_inds=site_inds,
+            gate_tags=gate_tags, **compress_opts)
+
+            return psi
 
 
     def absorb_three_body_gate(
         self, 
         G, 
         coos, 
-        gate_tags=['GATE'],
+        gate_tags=('GATE',),
         inplace=False,
         **compress_opts
         ):
@@ -5762,6 +5767,15 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         coos: sequence of tuples (x,y)
             The three coordinate pairs of qubits to
             act on. The 'face' qubit should be last!
+        
+        gate_tags: None or sequence of str, optional
+            Sites acted on with ``G`` will be tagged 
+            with these.
+
+        **compress_opts:            
+            Passed to `triangle_gate_absorb`, which 
+            passes it to `qtn.tensor.split`.
+
         '''
         psi = self if inplace else self.copy()
 
@@ -5804,7 +5818,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             new_vertex.drop_tags(pts[1].tags) # drop dummy tags from vertex site
             psi |= new_vertex
 
-        # return psi, dummy_identities_info
 
         vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
         face_tensor = psi[face_coo] 
@@ -5823,8 +5836,111 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
 
         TG = qtn.Tensor(G, inds=phys_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
         
+        three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
+                    vertex_tensors=vertex_tensors, 
+                    face_tensor=face_tensor, phys_inds=phys_inds,
+                    gate_tags=gate_tags, **compress_opts) # apply gate!
+
+
+        # now insert new dummy identities where they used to be
+
+        for k in range(2):
+            vt = vertex_tensors[k]
+            
+            ts_to_connect = set(
+                psi[tags] for tags in dummy_identities_info[(k, 'neighbor_tags')]
+                ) - set([vt])
+
+            for T2 in ts_to_connect:
+                psi |= insert_identity_between_tensors(T1=vt, T2=T2, add_tags='TEMP')
+
+            # contract new dummies into a single identity
+            psi ^= 'TEMP'
+            # restore previous tags, and drop temporary tag
+            for tag in dummy_identities_info[(k, 'tags')]:
+                psi['TEMP'].add_tag(tag)
+            psi.drop_tags('TEMP')
+
+        return psi
+
+    absorb_three_body_gate_ = functools.partialmethod(absorb_three_body_gate, 
+                                inplace=True)
+
+    def absorb_three_body_tensor(
+        self,
+        TG,
+        coos,
+        reindex_map,
+        phys_inds,
+        gate_tags,
+        inplace=False,
+        **compress_opts
+    ):
+        '''
+        
+        phys_inds: sequence of str
+            The target qubits' physical indices "k{x},{y}"
+        
+        reindex_map: dict[str: str]
+            Map `phys_inds` to the bonds between sites and
+            gate acting on those sites.
+        '''
+        psi = self if inplace else self.copy()
+
+        vertex_a, vertex_b, face_coo = coos
+        
+        face_qnum = psi.coo_to_qubit_map(face_coo)
+        
+        ## keep track of dummies' tags & neighbor tensors
+        dummy_identities_info = {}
+
+        # absorb appropriate identity tensors into vertex sites
+        for k, vcoo in enumerate((vertex_a, vertex_b)):
+
+            vertex_qnum = psi.coo_to_qubit_map(vcoo)            
+            
+            # tag of identity to be absorbed
+            adjacent_tag = psi.adjacent_aux_tag.format(
+                            vertex_qnum, face_qnum) # "AUX{V},{F}"
+            
+            # tag of vertex to absorb identity _into_
+            vertex_tag = psi._site_tag_id.format(*vcoo)
+            
+            dummy_identities_info.update({
+                (k, 'neighbor_tags'): tuple(t.tags for t in 
+                    psi.select_neighbors(adjacent_tag))
+            })
+
+            tids = psi._get_tids_from_tags(
+                tags=(vertex_tag, adjacent_tag), which='any')
+            
+            # pop and reattach the contracted tensors
+            pts = [psi._pop_tensor(tid) for tid in tids]
+            new_vertex = qtn.tensor_contract(*pts)
+            
+            dummy_identities_info.update({
+                (k, 'tags'): pts[1].tags, #dummy tags 
+                (k, 'inds'): pts[1].inds, #dummy indices
+            })
+            
+            new_vertex.drop_tags(pts[1].tags) # drop dummy tags from vertex site
+            psi |= new_vertex
+
+        vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
+        face_tensor = psi[face_coo] 
+        
+        # gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
+        # G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
+
+        # phys_inds = [psi._site_ind_id.format(*c) for c in coos] 
+        # old physical indices joined to new gate
+        # bond_inds = [qtn.rand_uuid() for _ in range(3)] 
+        # replace physical inds with gate bonds
+        # reindex_map = dict(zip(phys_inds, bond_inds)) 
+        # TG = qtn.Tensor(G, inds=phys_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
+        
         # apply gate!
-        three_body_op.triangle_gate_absorb(gate=TG, reindex_map=reindex_map, 
+        three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
                     vertex_tensors=vertex_tensors, 
                     face_tensor=face_tensor, phys_inds=phys_inds,
                     gate_tags=gate_tags, **compress_opts)
@@ -5850,11 +5966,10 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             psi.drop_tags('TEMP')
 
         return psi
+    
 
-    ## ** ##
-    absorb_three_body_gate_ = functools.partialmethod(absorb_three_body_gate, 
-                                inplace=True)
-
+    absorb_three_body_tensor_ = functools.partialmethod(absorb_three_body_tensor,
+                                    inplace=True)
 
 #************* Hamiltonian Classes *****************#
 class CoordinateHamiltonian():

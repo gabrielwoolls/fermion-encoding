@@ -6,7 +6,7 @@ import qubit_networks as beeky
 
 
 def triangle_gate_absorb(
-    gate,
+    TG,
     reindex_map,
     vertex_tensors, 
     face_tensor,
@@ -15,11 +15,11 @@ def triangle_gate_absorb(
     **compress_opts
     ):
     '''
-    Absorbs 3-body operator ``gate`` into a triangle of tensors, 
+    Absorbs 3-body operator ``TG`` into a triangle of tensors, 
     like we have in a ``QubitEncodeVector`` TN (i.e. a non-rectangular
     lattice geometry).
 
-    ``gate`` is assumed to act on a 3-tuple (vertex_a, vertex_b, face_c) of
+    ``TG`` is assumed to act on a 3-tuple (vertex_a, vertex_b, face_c) of
     qubits on the lattice. 
 
     #      \ a   b ╱ 
@@ -30,7 +30,7 @@ def triangle_gate_absorb(
     #      ─●─────●─      
     #       :     : 
 
-    gate: Tensor, shape [2]*6 
+    TG: Tensor, shape [2]*6 
         Operator to be applied. Should be factorizable
         into shape (2,2, 2,2, 2,2)
 
@@ -51,7 +51,7 @@ def triangle_gate_absorb(
 
     gate_tags: sequence of str, optional
         All 3 site tensors will be tagged with these
-        after being acted on with `gate`.
+        after being acted on with `TG`.
 
     **compress_opts: will be passed to `tensor_split()`
         for the main `blob` tensor. Some keywords are
@@ -69,7 +69,7 @@ def triangle_gate_absorb(
             Max number of singular values to keep, regardless
             of ``cutoff``.
     '''
-    compress_opts.setdefault('method', 'svd')    
+    compress_opts.setdefault('method', 'qr')    
 
 
     t_a, t_b = vertex_tensors
@@ -106,7 +106,7 @@ def triangle_gate_absorb(
     inner_tensors.append(L_c.reindex_(reindex_map))
 
     # merge gate, R_a and L_c tensors into `blob`
-    blob = tensor_contract(*inner_tensors, gate)
+    blob = tensor_contract(*inner_tensors, TG)
 
     lix = bonds(blob, Q_a)
     lix.add(physical_bonds['A'])
@@ -169,7 +169,7 @@ def main_test():
     bonds_along = [next(iter(qtn.bonds(t1, t2))) for t1, t2 in qu.utils.pairwise(original_ts)]
 
 
-    triangle_gate_absorb(gate=TG, reindex_map=reindex_map,
+    triangle_gate_absorb(TG=TG, reindex_map=reindex_map,
         vertex_tensors=(psi[where[0]], psi[where[1]]), 
         face_tensor=psi[where[2]], phys_inds=site_inds)
 

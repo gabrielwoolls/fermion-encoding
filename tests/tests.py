@@ -15,7 +15,7 @@ class TestThreeBodyOps:
     '''
     @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
     @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
-    def test_triangle_absorb_method(self, Lx, Ly, method):
+    def test_qev_triangle_absorb_method(self, Lx, Ly, method):
         '''Test 'triangle_absorb' method, which works for 
         `QubitEncodeVector`-type geometry without rotating the 
         face tensors (i.e. non-rectangular lattice geometry).
@@ -26,10 +26,10 @@ class TestThreeBodyOps:
         # without rotating face tensors!
         psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         bra = psi.H
-        norm = (bra & psi) ^ all
+        # norm = (bra & psi) ^ all
 
-        # define Hamiltonian, just to get the 3-tuples
-        # of (vertex, vertex, face) qubits to act on
+
+        # compile all 3-tuples (vertex, vertex, face) qubits to act on
         LatticeHam = my_qns.SpinlessSimHam(Lx, Ly)
         for where, _ in LatticeHam.gen_ham_terms():
             
@@ -46,11 +46,6 @@ class TestThreeBodyOps:
             expec_0 = (bra & G_ket_0) ^ all
             expec_1 = (bra & G_ket_1) ^ all
             assert expec_1 == pytest.approx(expec_0, rel=1e-2)
-            
-            # equality_1 = expec_1 == pytest.approx(expec_0, rel=1e-2)
-            # # if not equality_1: print(where, ' failed')
-            # print("{} -- {}".format(where, {False: "failed 1",
-            #                     True: "good 1"}[equality_1]))
             
             ## also try with vertex qubits switched!
             where = (where[1], where[0], where[2])
@@ -164,6 +159,54 @@ class TestThreeBodyOps:
             expec_ePEPS = (bra_2d & G_psi_2d) ^ all
             assert expec_ePEPS == pytest.approx(expec_QEV, rel=1e-2)
 
+    
+
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
+    @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
+    def test_epeps_absorb_3body_tensor(self, Lx, Ly, method):
+        '''Currently only tests 3-body ops!
+
+        contract_methods = {0: False,  1: 'triangle_absorb'}
+        '''
+        
+        # opts for splitting 'blob' in `triangle_absorb` method
+        compress_opts = {'method': method}
+        
+        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        bra = epeps.H
+
+
+        # compile (vertex, vertex, face) 'target' qubits
+        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+            convert_to_coordinate_ham(epeps.qubit_to_coo_map)        
+
+        for coos, _ in LatticeCooHam.gen_ham_terms():
+            
+            # SKIP 2-body interactions
+            if len(coos) == 2:
+                continue
+            
+            rand_gate = qu.rand_matrix(8) #use a random 3-body gate
+
+            G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
+            G_ket_1 = epeps.gate(G=rand_gate, coos=coos, contract='triangle_absorb', 
+                                **compress_opts)
+
+            expec_0 = (bra & G_ket_0) ^ all # `contract=False` reference
+            expec_1 = (bra & G_ket_1) ^ all # `triangle_absorb` reference
+            
+            assert expec_1 == pytest.approx(expec_0, rel=1e-2)
+
+    
+            coos = (coos[1], coos[0], coos[2]) # now try w/ vertex qubits swapped
+
+            G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
+            G_ket_2 = epeps.gate(G=rand_gate, coos=coos, contract='triangle_absorb', 
+                                    **compress_opts)
+            
+            expec_0 = (bra & G_ket_0) ^ all 
+            expec_2 = (bra & G_ket_2) ^ all 
+            assert expec_2 == pytest.approx(expec_0, rel=1e-2)  
 
 class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
@@ -196,15 +239,14 @@ class TestStabilizerEval:
         num_faces = int((Lx-1) * (Ly-1) / 2)
         num_sites = num_vertices + num_faces
 
-        # we will choose (random) product state configurations
-        # 0 is spin-up, 1 is spin-down
+        # random product state configurations
         rand_bin_string = lambda: ''.join(
             str(randint(0,1)) for _ in range(num_sites))
 
         #make the stabilizers
         Hstab = my_qns.HamStab(Lx=Lx, Ly=Ly)
         
-        #take a product state wavefunction
+        #make the product state wavefunction
         psi = my_qns.QubitEncodeVector.product_state_from_bitstring(
             Lx=Lx, Ly=Ly, bitstring=rand_bin_string())
 
@@ -220,7 +262,7 @@ def compare_stabilizer_expecs(psi, Hstab, get_expecs=False):
     '''
 
     #get norm of state, exactly contracted
-    norm = psi.make_norm()^all
+    norm = psi.make_norm() ^ all
 
     #(1) compute with method 'compute_stabilizer_expec'
     expecs_1 = []
