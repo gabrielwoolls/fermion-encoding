@@ -5699,6 +5699,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         '''
         return (t for t in self.site_tags if ('QUBIT' in self[t].tags))
 
+
     def gate(
         self, 
         G,
@@ -5706,9 +5707,24 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         contract=False,
         tags=('GATE',),
         inplace=False,
+        info=None,
         **compress_opts,
     ):
-        check_opt("contract", contract, (False, 'triangle_absorb'))
+        '''
+        contract: {False, 'reduce_split', 'triangle_absorb', 'reduce_split_lr'}
+                -False: leave gate uncontracted at sites
+            [For 2 body ops:]
+                -reduce_split: Absorb dummy, apply gate with `qtn.tensor_2d.reduce_split`, 
+                    then reinsert dummy.
+                -reduce_split_lr: leave dummy as-is, treat gate as a LR interaction.
+                    The final bonds are much smaller this way!
+            [For 3 body ops:]
+                -triangle_absorb: use `three_body_op.triangle_gate_absorb` to 
+                    apply the 3-body gate. Assumes `coos` is ordered like 
+                    ~ (vertex, vertex, face)!
+        '''
+        check_opt("contract", contract, (False, 'reduce_split', 
+                            'triangle_absorb', 'reduce_split_lr'))
 
         psi = self if inplace else self.copy()
 
@@ -5727,12 +5743,12 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         #old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
         reindex_map = dict(zip(site_inds, bond_inds))
-
         TG = qtn.Tensor(G, inds=site_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
-        
+
         if contract == False:
             #attach gates without contracting any bonds
             #
+            #     'qA' 'qB' 
             #       │   │      <- site_inds
             #       GGGGG
             #       │╱  │╱     <- bond_inds
@@ -5743,13 +5759,129 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             psi |= TG
             return psi
         
+
         elif contract == 'triangle_absorb' and numsites == 3:
-            
+            # absorbs 3-body gate into TN while preserving
+            # lattice structure.
             psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
             reindex_map=reindex_map, phys_inds=site_inds,
             gate_tags=gate_tags, **compress_opts)
-
             return psi
+        
+
+        elif contract == 'reduce_split' and numsites == 2:
+            # Uses ``qtn.tensor_2d.gate_string_reduce_split``.
+            # 
+            # There will be an identity tensor between the two sites,
+            # so we first absorb it into one of the sites, then restore
+            # after gate has been applied.
+            # 
+            # 1. Absorb identity step:
+            # 
+            #       │     │    Absorb     │     │
+            #       GGGGGGG     ident.    GGGGGGG    
+            #       │╱  ╱ │╱     ==>      │╱    │╱╱   
+            #     ──●──I──●──           ──●─────●─  
+            #    a ╱  ╱  ╱ b             ╱     ╱╱    
+            #
+            # 2. Gate 'reduce_split' step: 
+            # 
+            #       │   │             │ │
+            #       GGGGG             GGG               │ │
+            #       │╱  │╱   ==>     ╱│ │  ╱   ==>     ╱│ │  ╱          │╱  │╱
+            #     ──●───●──       ──>─●─●─<──       ──>─GGG─<──  ==>  ──G┄┄┄G──
+            #      ╱   ╱           ╱     ╱           ╱     ╱           ╱   ╱
+            #    <QR> <LQ>                            <SVD>
+            #
+            # 3. Reinsert identity:
+            # 
+            #       │╱    │╱╱           │╱  ╱ │╱
+            #     ──G┄┄┄┄┄G──   ==>   ──G┄┄i┄┄G──      
+            #      ╱     ╱╱            ╱  ╱  ╱         
+            # 
+
+            (x1,y1), (x2,y2) = coos
+            mid_coo = (int((x1+x2)/2), int((y1+y2)/2))
+            dummy_coo_tag = psi.site_tag_id.format(*mid_coo)
+
+            # keep track of dummy identity's tags and neighbors
+            prev_dummy_info = {'tags': psi[dummy_coo_tag].tags, 
+                      'neighbor_tags': tuple(t.tags for t in 
+                        psi.select_neighbors(dummy_coo_tag))} 
+            
+
+            which_bond = int(psi.bond_size(coos[0], mid_coo) >= 
+                             psi.bond_size(coos[1], mid_coo))
+
+
+            if which_bond == 0: # (vertex_0 ── identity) bond is larger
+                vertex_tag = psi.site_tag_id.format(*coos[0])
+
+            else:  # (vertex_1 -- identity) bond larger
+                vertex_tag = psi.site_tag_id.format(*coos[1])
+
+            tids = psi._get_tids_from_tags(
+                        tags=(vertex_tag, dummy_coo_tag), which='any')
+        
+            # pop and reattach the (vertex & identity) tensor
+            pts = [psi._pop_tensor(tid) for tid in tids]
+            new_vertex = qtn.tensor_contract(*pts)
+            
+            new_vertex.drop_tags(prev_dummy_info['tags'])
+            
+            psi |= new_vertex # reattach [vertex & identity] 
+
+            # insert 2-body gate!
+            qtn.tensor_2d.gate_string_reduce_split_(TG=TG, where=coos,
+                string=coos, original_ts=[psi[c] for c in coos], 
+                bonds_along=(psi.bond(*coos),), reindex_map=reindex_map,
+                site_ix=site_inds, info=info, **compress_opts)
+
+            #if test_step_1: return psi
+
+            # now restore the dummy identity between vertices
+            vtensor = psi[coos[which_bond]] # the vertex we absorbed dummy into
+            
+            ts_to_connect = set(psi[tags] for tags in 
+                prev_dummy_info['neighbor_tags']) - set([vtensor])
+
+            for T2 in ts_to_connect: # restore previous dummy bonds
+                psi |= insert_identity_between_tensors(T1=vtensor, T2=T2, add_tags='TEMP')
+
+            # contract new dummies into a single identity
+            psi ^= 'TEMP'
+            for t in prev_dummy_info['tags']:
+                psi['TEMP'].add_tag(t) # restore previous dummy tags
+            psi.drop_tags('TEMP')
+
+            return psi.fuse_multibonds_()
+        
+
+
+        elif contract == 'reduce_split_lr' and numsites == 2:
+            # Uses ``qtn.tensor_2d.gate_string_reduce_split``.
+            # There will be a 'dummy' identity tensor between the
+            # sites, so the 2-body operator will look "long-range"
+
+            (x1,y1), (x2,y2) = coos
+            mid_coo = (int((x1 + x2)/2), int((y1 + y2)/2))
+            
+            dummy_coo_tag = psi.site_tag_id.format(*mid_coo)
+            string = (coos[0], mid_coo, coos[1])
+            
+            original_ts = [psi[coo] for coo in string]
+            bonds_along = [next(iter(qtn.bonds(t1, t2)))
+                    for t1, t2 in qu.utils.pairwise(original_ts)]
+
+            qtn.tensor_2d.gate_string_reduce_split_(TG=TG, 
+                where=coos, string=string, original_ts=original_ts, 
+                bonds_along=bonds_along, reindex_map=reindex_map,
+                site_ix=site_inds, info=info, **compress_opts)
+            
+            return psi
+
+
+    gate_ = functools.partialmethod(gate, inplace=True)
 
 
     def absorb_three_body_gate(
@@ -5866,6 +5998,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
     absorb_three_body_gate_ = functools.partialmethod(absorb_three_body_gate, 
                                 inplace=True)
 
+
     def absorb_three_body_tensor(
         self,
         TG,
@@ -5876,14 +6009,31 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         inplace=False,
         **compress_opts
     ):
-        '''
+        '''Serves the same purpose as ``self.absorb_three_body_gate``, 
+        but assumes gate has already been shaped into a tensor and
+        appropriate indices have been gathered.
+
+        TG: qtn.Tensor
+            The 3-body gate (shape [2]*8) as a tensor.
         
+        coos: sequence of tuple[int, int]
+            The (x,y)-coordinates for 3 qubit sites to
+            hit with the gate.
+            
         phys_inds: sequence of str
             The target qubits' physical indices "k{x},{y}"
         
         reindex_map: dict[str: str]
             Map `phys_inds` to the bonds between sites and
             gate acting on those sites.
+        
+        gate_tags: None or sequence of str, optional
+            Sites acted on with ``TG`` will have these
+            tags added to them.
+        
+        inplace: bool
+            If False, will make a copy of ``self`` and
+            act on that instead.
         '''
         psi = self if inplace else self.copy()
 
@@ -5929,16 +6079,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
         face_tensor = psi[face_coo] 
         
-        # gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
-        # G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
-
-        # phys_inds = [psi._site_ind_id.format(*c) for c in coos] 
-        # old physical indices joined to new gate
-        # bond_inds = [qtn.rand_uuid() for _ in range(3)] 
-        # replace physical inds with gate bonds
-        # reindex_map = dict(zip(phys_inds, bond_inds)) 
-        # TG = qtn.Tensor(G, inds=phys_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
-        
         # apply gate!
         three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
                     vertex_tensors=vertex_tensors, 
@@ -5971,7 +6111,8 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
     absorb_three_body_tensor_ = functools.partialmethod(absorb_three_body_tensor,
                                     inplace=True)
 
-#************* Hamiltonian Classes *****************#
+#************* Hamiltonian Classes ***************#
+
 class CoordinateHamiltonian():
     '''Wrapper class for previously-defined Hamiltonians.
     
@@ -5979,7 +6120,7 @@ class CoordinateHamiltonian():
         
         (sequence of qubit numbers, gate),  e.g. ([0, 1, 9] , pauli(XYX))
     
-    the wrapped `CoordinateHamiltonian(Ham)` will generate terms like
+    the equivalent `CoordinateHamiltonian` will generate terms like
 
         (sequence of qubit coordinates, gate) e.g. 
         ([(4,0), (4,2), (3,1)], pauli(XYX))
@@ -6438,7 +6579,7 @@ class SpinlessSimHam(SimulatorHam):
 
         n_op = number_op() #one-site number operator 
 
-        #map each vertex to the list of edges where it appears
+        # map each vertex to the list of edges where it appears
         self._vertices_to_covering_terms = defaultdict(list)
         for edge in terms:
             (i,j,f) = edge
@@ -6914,80 +7055,6 @@ class SpinhalfSimHam(SimulatorHam):
     
     
 
-## ********** ##
-
-
-
-
-def gate_string_split_(TG, where, string, original_ts, bonds_along,
-                       reindex_map, site_ix, **compress_opts):
-
-    # by default this means singuvalues are kept in the string 'blob' tensor
-    compress_opts.setdefault('absorb', 'right')
-
-    # the outer, neighboring indices of each tensor in the string
-    neighb_inds = []
-
-    # tensors we are going to contract in the blob, reindex some to attach gate
-    contract_ts = []
-
-    for t, coo in zip(original_ts, string):
-        neighb_inds.append(tuple(ix for ix in t.inds if ix not in bonds_along))
-        contract_ts.append(t.reindex(reindex_map) if coo in where else t)
-
-    # form the central blob of all sites and gate contracted
-    blob = qtn.tensor_contract(*contract_ts, TG)
-
-    regauged = []
-
-    # one by one extract the site tensors again from each end
-    inner_ts = [None] * len(string)
-    i = 0
-    j = len(string) - 1
-
-    while True:
-        lix = neighb_inds[i]
-        if i > 0:
-            lix += (bonds_along[i - 1],)
-
-        # the original bond we are restoring
-        bix = bonds_along[i]
-
-        # split the blob!
-        inner_ts[i], *maybe_svals, blob = blob.split(
-            left_inds=lix, get='tensors', bond_ind=bix, **compress_opts)
-
-
-        # move inwards along string, terminate if two ends meet
-        i += 1
-        if i == j:
-            inner_ts[i] = blob
-            break
-
-        # extract at end of string
-        lix = neighb_inds[j]
-        if j < len(string) - 1:
-            lix += (bonds_along[j],)
-
-        # the original bond we are restoring
-        bix = bonds_along[j - 1]
-
-        # split the blob!
-        inner_ts[j], *maybe_svals, blob = blob.split(
-            left_inds=lix, get='tensors', bond_ind=bix, **compress_opts)
-
-
-        # move inwards along string, terminate if two ends meet
-        j -= 1
-        if j == i:
-            inner_ts[j] = blob
-            break
-
-
-    # transpose to match original tensors and update original data
-    for to, tn in zip(original_ts, inner_ts):
-        tn.transpose_like_(to)
-        to.modify(data=tn.data)
 
 
 
@@ -7064,7 +7131,7 @@ def main_debug():
     row2.compute_col_environments()
 
 
-def test_triangle_absorb():
+def test_qev_triangle_absorb():
     from quimb.tensor.tensor_2d import bonds
     psi = QubitEncodeVector.rand(3, 3, bond_dim=3)
     
@@ -7080,9 +7147,13 @@ def test_epeps_3body():
     where_coos=((0,0), (0,2), (1,1))
     apeps, dinfo = epeps.absorb_three_body_gate(G=1, coos=where_coos)
 
+def test_epeps_2body():
+    epeps = QubitEncodeVector.rand(3, 3).convert_to_ePEPS(dummy_size=2) 
+    where_coos=((0,0), (0,2))
+    apeps = epeps.gate(G=qu.rand_matrix(4), coos=where_coos, contract='reduce_split')
 
 if __name__ == '__main__':
-    test_epeps_3body()
+    test_epeps_2body()
     
     
     # Hstab = HamStab(Lx=3, Ly=3)

@@ -56,10 +56,11 @@ class TestThreeBodyOps:
             expec_2 = (bra & G_ket_2) ^ all
             assert expec_2 == pytest.approx(expec_0, rel=1e-2)
             
+            
     @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
     @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
     def test_epeps_absorb_3body_gate(self, Lx, Ly, method):
-        '''Currently only tests 3-body ops!
+        '''Test absorbing a 3-body dense, random gate into the tn.
         '''
         
         # opts for splitting 'blob' in `triangle_absorb` method
@@ -110,9 +111,8 @@ class TestThreeBodyOps:
 
         Methods tested:
         ---------------
-            ``QubitEncodeVector.apply_gate(..., contract='triangle_absorb)``
-
-            ``ePEPS.absorb_three_body_gate(...)``
+            QubitEncodeVector.apply_gate(..., contract='triangle_absorb)
+            ePEPS.absorb_three_body_gate(...)
         '''
         # opts for splitting 'blob' in `triangle_absorb` method
         compress_opts = {'method': method}
@@ -207,6 +207,34 @@ class TestThreeBodyOps:
             expec_0 = (bra & G_ket_0) ^ all 
             expec_2 = (bra & G_ket_2) ^ all 
             assert expec_2 == pytest.approx(expec_0, rel=1e-2)  
+
+    
+    @pytest.mark.parametrize('Lx,Ly', [(2,3), (3,3), (3,4), (4,3)])
+    @pytest.mark.parametrize('contract', ['reduce_split', 'reduce_split_lr'])
+    def test_epeps_2body_reduce_split(self, Lx, Ly, contract):
+        
+        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        bra = epeps.H
+
+        # compile (vertex, vertex) 'target' qubit pairs
+        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+            convert_to_coordinate_ham(epeps.qubit_to_coo_map)  
+
+        for coos, _ in LatticeCooHam.gen_ham_terms():
+            
+            # skip 3-body terms here
+            if len(coos) == 3:
+                continue
+
+            rand_gate = qu.rand_matrix(4)
+
+            G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
+            G_ket_1 = epeps.gate(G=rand_gate, coos=coos, contract=contract)
+
+            assert (bra & G_ket_1) ^ all == pytest.approx(
+                   (bra & G_ket_0) ^ all, rel=1e-2)
+
+
 
 class TestStabilizerEval:
     '''Remember for the even DK encoding to work we must have
@@ -370,10 +398,10 @@ class TestCoordinateHamiltonians():
     
     @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
     def test_converting_hubbard_ham(self, Lx, Ly):
-        '''Evaluate energy of the spinless Hubbard model
+        '''Evaluate energy of spinless Hubbard model
         on a random state, using 'qubit numbers' and 
-        qubit coordinates to specify target sites. Check
-        the energies are equal.
+        qubit coordinates to specify target sites. 
+        Check energies are equal.
         '''
         psi_trial = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         psi_trial.setup_bmps_contraction_()
