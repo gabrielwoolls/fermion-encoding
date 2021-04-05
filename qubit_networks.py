@@ -4183,6 +4183,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         interactions.
 
         Args:
+        -----
             plaquettes: sequence of tuple[tuple[int]]
                 Sequence of plaquettes like ((x0, y0), (dx, dy))
 
@@ -5325,7 +5326,7 @@ class QubitEncodeVector(QubitEncodeNet,
             qtn.new_bond(T1=psi[new_tensor_tags], T2=psi[tag_left], size=dummy_size)
 
             if insert_vector_inds:
-                # add a dummy physical index of `dummy_size`
+                # add a dummy physical index of size=`dummy_size`
                 # 
                 #    ●───●───●        ●───●───●
                 #    │   │   │        │   │/  │ 
@@ -5519,6 +5520,18 @@ class QubitEncodeVector(QubitEncodeNet,
                     qubit_to_coo_map=self.qubit_to_coo_map())
         
 
+    def convert_to_ePEPS_vector(self, **convert_opts):
+        '''
+        Like `convert_to_ePEPS`, but returns an `ePEPSvector`
+        which has the stricter property of having physical
+        indices like 'k{x},{y}' at every site, including
+        "identity" tensors.
+        '''
+        convert_opts.setdefault('insert_vector_inds', True)
+        epeps = self.convert_to_ePEPS(**convert_opts)
+        epeps.add_fake_phys_inds(dp=self.phys_dim)
+        return epeps.view_as_(ePEPSvector)
+        
 ####################################################
 
 class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
@@ -5531,12 +5544,14 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
        {site_tag_id='Q{}',
         grid_tag_id='S{},{}',
         aux_tag_id='IX{}Y{}',
-        phys_ind_id='q{}'} 
-        |
-        |
-        |
-        V  
-       {site_tag_id='S{},{}'}
+        phys_ind_id='q{}'
+        } 
+        
+        to 
+        
+       {site_tag_id='S{},{}',
+        site_ind_id='k{},{}
+        }
 
         --------------
         _SPECIAL_TAGS:
@@ -5612,14 +5627,25 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         return self.__class__._SPECIAL_TAGS['adj_to_vertex_face']
 
 
-    def qubit_to_coo_map(self, qnum=None):
-        '''The coordinate (x,y) of the qubit with 
-        integer label ``qnum``.
-        '''                    
-        if qnum is None:
-            return self._qubit_to_coo_map
+    # def qubit_to_coo_map(self, qnum=None):
+    #     '''The coordinate (x,y) of the qubit with 
+    #     integer label ``qnum``.
+    #     '''                    
+    #     if qnum is None:
+    #         return self._qubit_to_coo_map
         
-        return self._qubit_to_coo_map[qnum]
+    #     return self._qubit_to_coo_map[qnum]
+
+    @property
+    def site_ind_id(self):
+        return self._site_ind_id
+
+    @property
+    def qubit_to_coo_map(self):
+        '''Dict mapping coordinates to qubit 
+        integer labels {(x,y): q}
+        '''                            
+        return self._qubit_to_coo_map
 
 
     def coo_to_qubit_map(self, coo=None):
@@ -5628,8 +5654,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         '''       
         if not hasattr(self, '_coo_to_qubit_map'):
             self._coo_to_qubit_map = {coo: q 
-                for q, coo in self.qubit_to_coo_map().items()}
-
+                for q, coo in self.qubit_to_coo_map.items()}
 
         if coo is None:
             return self._coo_to_qubit_map
@@ -5723,7 +5748,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
                     apply the 3-body gate. Assumes `coos` is ordered like 
                     ~ (vertex, vertex, face)!
         '''
-        check_opt("contract", contract, (False, 'reduce_split', 
+        check_opt("contract", contract, (False, True, 'reduce_split', 
                             'triangle_absorb', 'reduce_split_lr'))
 
         psi = self if inplace else self.copy()
@@ -5745,7 +5770,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         reindex_map = dict(zip(site_inds, bond_inds))
         TG = qtn.Tensor(G, inds=site_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
 
-        if contract == False:
+        if contract is False:
             #attach gates without contracting any bonds
             #
             #     'qA' 'qB' 
@@ -5760,9 +5785,25 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             return psi
         
 
+        elif (contract is True) or (numsites == 1):
+            #
+            #       │╱  │╱
+            #     ──GGGGG──
+            #      ╱   ╱
+            #
+            psi.reindex_(reindex_map)
+
+            # get the sites that used to have the physical indices
+            site_tids = psi._get_tids_from_inds(bond_inds, which='any')
+            # pop the sites, contract, then re-add
+            pts = [psi._pop_tensor(tid) for tid in site_tids]
+            psi |= qtn.tensor_contract(*pts, TG)
+            return psi
+
+
         elif contract == 'triangle_absorb' and numsites == 3:
-            # absorbs 3-body gate into TN while preserving
-            # lattice structure.
+            # absorbs 3-body gate while preserving lattice structure.
+            
             psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
             reindex_map=reindex_map, phys_inds=site_inds,
             gate_tags=gate_tags, **compress_opts)
@@ -5770,11 +5811,8 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         
 
         elif contract == 'reduce_split' and numsites == 2:
-            # Uses ``qtn.tensor_2d.gate_string_reduce_split``.
-            # 
-            # There will be an identity tensor between the two sites,
-            # so we first absorb it into one of the sites, then restore
-            # after gate has been applied.
+            # First absorb identity into a site, then 
+            # restore after gate has been applied.
             # 
             # 1. Absorb identity step:
             # 
@@ -5796,7 +5834,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             # 3. Reinsert identity:
             # 
             #       │╱    │╱╱           │╱  ╱ │╱
-            #     ──G┄┄┄┄┄G──   ==>   ──G┄┄i┄┄G──      
+            #     ──G┄┄┄┄┄G──   ==>   ──G┄┄I┄┄G──      
             #      ╱     ╱╱            ╱  ╱  ╱         
             # 
 
@@ -5837,8 +5875,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
                 bonds_along=(psi.bond(*coos),), reindex_map=reindex_map,
                 site_ix=site_inds, info=info, **compress_opts)
 
-            #if test_step_1: return psi
-
             # now restore the dummy identity between vertices
             vtensor = psi[coos[which_bond]] # the vertex we absorbed dummy into
             
@@ -5857,12 +5893,16 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             return psi.fuse_multibonds_()
         
 
-
         elif contract == 'reduce_split_lr' and numsites == 2:
-            # Uses ``qtn.tensor_2d.gate_string_reduce_split``.
             # There will be a 'dummy' identity tensor between the
             # sites, so the 2-body operator will look "long-range"
-
+            # 
+            #       │     │              
+            #       GGGGGGG                 
+            #       │╱  ╱ │╱              │╱  ╱ │╱
+            #     ──●──I──●──    ==>    ──G┄┄I┄┄G── 
+            #      ╱  ╱  ╱               ╱  ╱  ╱
+            #
             (x1,y1), (x2,y2) = coos
             mid_coo = (int((x1 + x2)/2), int((y1 + y2)/2))
             
@@ -6110,6 +6150,54 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
 
     absorb_three_body_tensor_ = functools.partialmethod(absorb_three_body_tensor,
                                     inplace=True)
+    
+
+    def add_fake_phys_inds(self, dp):
+        '''
+        Add "k{x},{y}" indices to all the tensor sites,
+        including auxiliary sites, so that every site 
+        has a 'physical' index. Inplace operation.
+
+        dp: int, the size of the fake physical indices
+        '''
+
+        for x, y in product(range(self.Lx), range(self.Ly)):
+            ind_xy = self._site_ind_id.format(x,y)
+            
+            # skip the 'kx,y' indices that already exist
+            if ind_xy in self.ind_map.keys(): 
+                continue
+
+            # add the new index
+            self[x,y].new_ind(name=ind_xy, size=dp)
+                
+            
+class ePEPSvector(ePEPS, 
+            qtn.tensor_2d.TensorNetwork2DVector,
+            qtn.tensor_2d.TensorNetwork2DFlat,
+            qtn.TensorNetwork2D, 
+            qtn.TensorNetwork):
+    _EXTRA_PROPS = (
+        '_Lx',
+        '_Ly',
+        '_site_tag_id',
+        '_site_ind_id',
+        '_row_tag_id',
+        '_col_tag_id',
+        '_qubit_to_coo_map',
+        # '_phys_dim',
+        # '_grid_tag_id',
+        # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
+        # '_phys_ind_id',
+    )
+    
+    _SPECIAL_TAGS = {
+        'aux_identity': 'AUX', 
+        'adj_to_vertex_face': 'ADJ{},{}' 
+    }
+
+
+
 
 #************* Hamiltonian Classes ***************#
 
