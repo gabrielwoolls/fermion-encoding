@@ -16,7 +16,7 @@ import numpy as np
 from random import randint
 from collections import defaultdict
 from numbers import Integral
-from itertools import product, chain, starmap, cycle, combinations
+from itertools import product, chain, starmap, cycle, combinations, permutations
 
 import dense_qubits
 import three_body_op
@@ -27,7 +27,6 @@ def check_valid_lattice_shape(Lx, Ly):
     EVEN # of faces. One of {Lx, Ly} must be odd!
     '''
     if (Lx % 2 == 0) and (Ly % 2 == 0):
-        
         raise ValueError(
         f'''The lattice must have an even number of faces,
         but the ({Lx}, {Ly})-lattice has an odd # faces.''')
@@ -3115,7 +3114,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
             
             col_envs['right', y] = env_left.select(last_column_tag).copy()
 
-        return col_envs        
+        return col_envs
 
 
     def _add_row_col_tags(self, rows=True, cols=True):
@@ -4198,8 +4197,6 @@ class QubitEncodeNet(qtn.TensorNetwork):
         plqs = sorted(plaquettes, key=lambda p: (-p[1][0] * p[1][1], p))
         
         mapping = dict()
-
-        
         for p in plqs:
             sites = self.plaquette_to_site_coos(p)
         
@@ -5232,7 +5229,8 @@ class QubitEncodeVector(QubitEncodeNet,
         transpose_tensor_shapes=True,
         relabel_physical_inds=True,
         insert_vector_inds=False,
-        new_index_id='k{},{}'
+        new_index_id='k{},{}',
+        add_row_col_tags=True,
     ):
         '''Given a (Lx, Ly) lattice `self`, returns a ``QubitEncodeVector`` 
         object on a (2Lx-1, 2Ly-1) lattice that's structured like a 
@@ -5256,7 +5254,6 @@ class QubitEncodeVector(QubitEncodeNet,
         new_index_id: str, optional
             If new indices are added, this is the labeling scheme
             to be used. e.g. "k1,4"
-        
         '''
         psi = self.copy()
 
@@ -5271,15 +5268,19 @@ class QubitEncodeVector(QubitEncodeNet,
         #      ─●───────●─      ─●───●───●──
         #       :       :        :       :
         # 
-        already_rotated = psi.check_if_bmps_setup()
-        if not already_rotated:
+        # already_rotated = psi.check_if_bmps_setup()
+        # if not already rotated
+        if not psi.check_if_bmps_setup(): 
             psi.setup_bmps_contraction_()
         
+        if add_row_col_tags:
+            psi._add_row_col_tags()
+
         # now fill in all the empty faces with identities
 
         for x,y in psi.gen_face_coos(including_empty=True):    
             
-            #skip the non-empty faces 
+            #skip non-empty faces 
             coo_tag = psi.grid_coo_tag(x, y)
             if coo_tag in psi.tags:
                 continue
@@ -5531,7 +5532,7 @@ class QubitEncodeVector(QubitEncodeNet,
         epeps = self.convert_to_ePEPS(**convert_opts)
         epeps.add_fake_phys_inds(dp=self.phys_dim)
         return epeps.view_as_(ePEPSvector)
-        
+
 ####################################################
 
 class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
@@ -5625,16 +5626,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         # Tag like "ADJ{V},{F}", used for a dummy identity that may
         # be 'reabsorbed' into qubit site "Q{V}"
         return self.__class__._SPECIAL_TAGS['adj_to_vertex_face']
-
-
-    # def qubit_to_coo_map(self, qnum=None):
-    #     '''The coordinate (x,y) of the qubit with 
-    #     integer label ``qnum``.
-    #     '''                    
-    #     if qnum is None:
-    #         return self._qubit_to_coo_map
-        
-    #     return self._qubit_to_coo_map[qnum]
 
     @property
     def site_ind_id(self):
@@ -5803,7 +5794,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
 
         elif contract == 'triangle_absorb' and numsites == 3:
             # absorbs 3-body gate while preserving lattice structure.
-            
             psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
             reindex_map=reindex_map, phys_inds=site_inds,
             gate_tags=gate_tags, **compress_opts)
@@ -5865,7 +5855,8 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             pts = [psi._pop_tensor(tid) for tid in tids]
             new_vertex = qtn.tensor_contract(*pts)
             
-            new_vertex.drop_tags(prev_dummy_info['tags'])
+            # new_vertex.drop_tags(prev_dummy_info['tags'] - )
+            new_vertex.drop_tags(pts[1].tags - pts[0].tags)
             
             psi |= new_vertex # reattach [vertex & identity] 
 
@@ -5987,7 +5978,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
                 (k, 'inds'): pts[1].inds, #dummy indices
             })
             
-            new_vertex.drop_tags(pts[1].tags) # drop dummy tags from vertex site
+            new_vertex.drop_tags(pts[1].tags - pts[0].tags) # drop dummy tags from vertex site
             psi |= new_vertex
 
 
@@ -6113,7 +6104,8 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
                 (k, 'inds'): pts[1].inds, #dummy indices
             })
             
-            new_vertex.drop_tags(pts[1].tags) # drop dummy tags from vertex site
+            # drop dummy tags from vertex site
+            new_vertex.drop_tags(pts[1].tags - pts[0].tags) 
             psi |= new_vertex
 
         vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
@@ -6172,11 +6164,14 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             self[x,y].new_ind(name=ind_xy, size=dp)
                 
             
+
 class ePEPSvector(ePEPS, 
             qtn.tensor_2d.TensorNetwork2DVector,
             qtn.tensor_2d.TensorNetwork2DFlat,
             qtn.TensorNetwork2D, 
             qtn.TensorNetwork):
+
+    
     _EXTRA_PROPS = (
         '_Lx',
         '_Ly',
@@ -6191,12 +6186,121 @@ class ePEPSvector(ePEPS,
         # '_phys_ind_id',
     )
     
+
     _SPECIAL_TAGS = {
         'aux_identity': 'AUX', 
         'adj_to_vertex_face': 'ADJ{},{}' 
     }
 
 
+    def is_qubit_coo(self, x, y):
+        '''Whether (x,y) lattice site is a genuine 
+        qubit site (rather than dummy site).
+
+        Note that 'empty' face sites yield True! i.e.
+        >>> psi.is_qubit_coo(x,y) == ('QUBIT' in psi[x,y].tags)
+
+        will be True except at empty face sites, which are
+        'genuine' but are empty due to DK encoding.
+        '''
+        return all((x % 2 == y % 2, 
+                0 <= x < self.Lx,
+                0 <= y < self.Ly))
+
+
+    def is_vertex_coo(self, x, y):
+        return all((x % 2 == 0, 
+                    y % 2 == 0,
+                    0 <= x < self.Lx,
+                    0 <= y < self.Ly))
+
+
+    def is_face_coo(self, x, y):
+        return all((x % 2 == 1, 
+                    y % 2 == 1,
+                    0 <= x < self.Lx,
+                    0 <= y < self.Ly))
+
+
+    def calc_plaquette_map(self, plaquettes, include_3_body=True):
+        """Generate a dictionary of all the coordinate pairs in ``plaquettes``
+        mapped to the 'best' (smallest) rectangular plaquette that contains them.
+        
+        Will optionally compute for 3-length combinations as well, to
+        capture 3-local qubit interactions like (vertex, vertex, face)
+        interactions.
+
+        Args:
+        -----
+            plaquettes: sequence of tuple[tuple[int]]
+                Sequence of plaquettes like ((x0, y0), (dx, dy))
+
+            include_3_body: bool, optional
+                Whether to include 3-local interactions as well 
+                as 2-local (pairwise).
+
+
+        TODO: if not include_3_body we can just use the super class method. 
+        """
+        if not include_3_body:
+            return super().calc_plaquette_map(plaquettes)
+        
+        # sort in descending total plaquette size
+        plqs = sorted(plaquettes, key=lambda p: (-p[1][0] * p[1][1], p))
+        
+        mapping = dict()
+        for p in plqs:
+            sites = qtn.tensor_2d.plaquette_to_sites(p)
+
+            # pairwise (2-local) interactions
+            for coo_pair in combinations(sites, 2):
+                if all(tuple(starmap(self.is_qubit_coo, coo_pair))):
+                    mapping[coo_pair] = p
+
+            # 3-local interactions
+            for coo_triple in combinations(sites, 3):
+                if all(tuple(starmap(self.is_qubit_coo, coo_triple))):
+                    # make sure face qubit is the third entry
+                    if self.is_face_coo(*coo_triple[0]):
+                        coo_triple = (coo_triple[2], coo_triple[1], coo_triple[0])
+
+                    elif self.is_face_coo(*coo_triple[1]):
+                        coo_triple = (coo_triple[0], coo_triple[2], coo_triple[1])
+                    
+                    mapping[coo_triple] = p
+        
+        return mapping
+
+
+    def calc_plaquette_envs_and_map(self, terms, autogroup=True, **plaquette_env_options):
+        '''Returns the plaquette_envs and plaquette_map needed to
+        compute local expectations, overriding `calc_plaquette_map`
+        to include 3-body interactions.
+        '''
+        norm = self.make_norm(return_all=False)
+
+        # set some sensible defaults
+        plaquette_env_options.setdefault('layer_tags', ('KET', 'BRA'))
+
+        plaquette_envs = dict()
+        for x_bsz, y_bsz in qtn.tensor_2d.calc_plaquette_sizes(terms.keys(), autogroup):
+            plaquette_envs.update(norm.compute_plaquette_environments(
+                x_bsz=x_bsz, y_bsz=y_bsz, **plaquette_env_options))
+
+        # work out which plaquettes to use for which terms
+        plaquette_map = self.calc_plaquette_map(plaquette_envs)
+        
+        # adjust plaqmap to the Hamiltonian term ordering
+        for coos in terms.keys():
+            
+            if coos in plaquette_map: 
+                continue    # good
+
+            for perm in permutations(coos):
+                if perm in plaquette_map: 
+                    plaquette_map.update({coos: plaquette_map[perm]})
+            
+        return plaquette_envs, plaquette_map
 
 
 #************* Hamiltonian Classes ***************#
@@ -7231,9 +7335,11 @@ def test_qev_triangle_absorb():
     psi.apply_gate(G=qu.rand_matrix(8), where=(8,5,10), contract='triangle_absorb')
 
 def test_epeps_3body():
-    epeps = QubitEncodeVector.rand(3, 3).convert_to_ePEPS(dummy_size=2) 
-    where_coos=((0,0), (0,2), (1,1))
-    apeps, dinfo = epeps.absorb_three_body_gate(G=1, coos=where_coos)
+    epeps = QubitEncodeVector.rand(3, 3).\
+        convert_to_ePEPS(dummy_size=2, add_row_col_tags=True)
+    where=((0,0), (0,2), (1,1))
+    apeps = epeps.gate(G=qu.rand_matrix(8), coos=where, contract='triangle_absorb')
+
 
 def test_epeps_2body():
     epeps = QubitEncodeVector.rand(3, 3).convert_to_ePEPS(dummy_size=2) 
@@ -7241,7 +7347,7 @@ def test_epeps_2body():
     apeps = epeps.gate(G=qu.rand_matrix(4), coos=where_coos, contract='reduce_split')
 
 if __name__ == '__main__':
-    test_epeps_2body()
+    test_epeps_3body()
     
     
     # Hstab = HamStab(Lx=3, Ly=3)

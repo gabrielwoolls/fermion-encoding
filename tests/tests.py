@@ -72,7 +72,7 @@ class TestThreeBodyOps:
 
         # use Ham to get (vertex, vertex, face) 'target' qubits
         LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
-            convert_to_coordinate_ham(epeps.qubit_to_coo_map)
+            convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])
         
         for coos, _ in LatticeCooHam.gen_ham_terms():
             
@@ -136,7 +136,7 @@ class TestThreeBodyOps:
             if len(where) == 2:
                 continue
 
-            coos = [psi_2d.qubit_to_coo_map(q) for q in where]
+            coos = [psi_2d.qubit_to_coo_map[q] for q in where]
 
             rand_gate = qu.rand_matrix(8) #use a random 3-body gate
 
@@ -150,7 +150,7 @@ class TestThreeBodyOps:
 
             # now try with vertex qubits swapped
             where = (where[1], where[0], where[2])
-            coos = [psi_2d.qubit_to_coo_map(q) for q in where]
+            coos = [psi_2d.qubit_to_coo_map[q] for q in where]
 
             # do the same test
             G_psi = psi.apply_gate(G=rand_gate, where=where, contract='triangle_absorb', **compress_opts)
@@ -178,7 +178,7 @@ class TestThreeBodyOps:
 
         # compile (vertex, vertex, face) 'target' qubits
         LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
-            convert_to_coordinate_ham(epeps.qubit_to_coo_map)        
+            convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])        
 
         for coos, _ in LatticeCooHam.gen_ham_terms():
             
@@ -218,7 +218,7 @@ class TestThreeBodyOps:
 
         # compile (vertex, vertex) 'target' qubit pairs
         LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
-            convert_to_coordinate_ham(epeps.qubit_to_coo_map)  
+            convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])  
 
         for coos, _ in LatticeCooHam.gen_ham_terms():
             
@@ -234,6 +234,55 @@ class TestThreeBodyOps:
             assert (bra & G_ket_1) ^ all == pytest.approx(
                    (bra & G_ket_0) ^ all, rel=1e-2)
 
+
+class TestEnergyContraction:
+
+    @pytest.mark.parametrize('normalized', [True, False])
+    @pytest.mark.parametrize('Lx,Ly', [(3,3), (4,3), (3,4)])
+    def test_compute_local_expectation(self, Lx, Ly, normalized):
+        
+        # 'qubit' Fermi-Hubbard with default parameters
+        H = my_qns.SpinlessSimHam(Lx, Ly)
+        
+        psi_qev = my_qns.QubitEncodeVector.rand(Lx, Ly)\
+            .setup_bmps_contraction_()
+        norm, bra, ket = psi_qev.make_norm(return_all=True)
+        norm ^= all        
+        
+        Exact = sum((
+            (bra | ket.apply_gate(gate, where))^all
+            for where, gate in H.gen_ham_terms()
+        ))        
+
+        if normalized:
+            Exact /= norm
+
+        
+        # Now compute with `ePEPSvector.compute_local_expectation`
+
+        epeps = psi_qev.convert_to_ePEPS_vector()
+        # norm, bra, ket = epeps.make_norm(return_all=True)
+
+        q2coo = lambda q: epeps.qubit_to_coo_map[q]
+        CooHam = H.convert_to_coordinate_ham(q2coo)
+        terms = CooHam._coo_ham_terms
+
+        envs, plaqmap = epeps.calc_plaquette_envs_and_map(terms)
+        opts = dict(cutoff=2e-3, max_bond=9, 
+            contract_optimize='random-greedy')
+
+        e = epeps.compute_local_expectation(
+            terms, normalized=normalized, autogroup=False, 
+            plaquette_envs=envs, plaquette_map=plaqmap,
+            **opts)
+
+        assert e == pytest.approx(Exact, rel=1e-2)
+
+
+
+        
+
+        
 
 
 class TestStabilizerEval:
