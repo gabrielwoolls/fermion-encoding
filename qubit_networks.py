@@ -5230,7 +5230,7 @@ class QubitEncodeVector(QubitEncodeNet,
         relabel_physical_inds=True,
         insert_vector_inds=False,
         new_index_id='k{},{}',
-        add_row_col_tags=True,
+        # add_row_col_tags=True,
     ):
         '''Given a (Lx, Ly) lattice `self`, returns a ``QubitEncodeVector`` 
         object on a (2Lx-1, 2Ly-1) lattice that's structured like a 
@@ -5267,14 +5267,11 @@ class QubitEncodeVector(QubitEncodeNet,
         #       │ /   \ │        │   │   │ 
         #      ─●───────●─      ─●───●───●──
         #       :       :        :       :
-        # 
-        # already_rotated = psi.check_if_bmps_setup()
-        # if not already rotated
         if not psi.check_if_bmps_setup(): 
             psi.setup_bmps_contraction_()
         
-        if add_row_col_tags:
-            psi._add_row_col_tags()
+        # if add_row_col_tags:
+        psi._add_row_col_tags()
 
         # now fill in all the empty faces with identities
 
@@ -5529,6 +5526,7 @@ class QubitEncodeVector(QubitEncodeNet,
         "identity" tensors.
         '''
         convert_opts.setdefault('insert_vector_inds', True)
+
         epeps = self.convert_to_ePEPS(**convert_opts)
         epeps.add_fake_phys_inds(dp=self.phys_dim)
         return epeps.view_as_(ePEPSvector)
@@ -6674,7 +6672,7 @@ class SpinlessSimHam(SimulatorHam):
     def gen_ham_terms(self):
         '''Generate ``(where, gate)`` pairs for every group 
         of qubits (i.e. every graph edge ``where``) to be acted
-        on with a Ham term.
+        on with a Ham term. Drops any `None` empty qubits.
         '''
         for (i,j,f), gate in self._ham_terms.items():
             where = (i,j) if f is None else (i,j,f)
@@ -7336,7 +7334,7 @@ def test_qev_triangle_absorb():
 
 def test_epeps_3body():
     epeps = QubitEncodeVector.rand(3, 3).\
-        convert_to_ePEPS(dummy_size=2, add_row_col_tags=True)
+        convert_to_ePEPS(dummy_size=2)
     where=((0,0), (0,2), (1,1))
     apeps = epeps.gate(G=qu.rand_matrix(8), coos=where, contract='triangle_absorb')
 

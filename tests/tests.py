@@ -242,7 +242,8 @@ class TestEnergyContraction:
     def test_compute_local_expectation(self, Lx, Ly, normalized):
         
         # 'qubit' Fermi-Hubbard with default parameters
-        H = my_qns.SpinlessSimHam(Lx, Ly)
+        t, V, mu = np.random.rand(3)
+        H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
         
         psi_qev = my_qns.QubitEncodeVector.rand(Lx, Ly)\
             .setup_bmps_contraction_()
@@ -256,12 +257,10 @@ class TestEnergyContraction:
 
         if normalized:
             Exact /= norm
-
         
         # Now compute with `ePEPSvector.compute_local_expectation`
 
         epeps = psi_qev.convert_to_ePEPS_vector()
-        # norm, bra, ket = epeps.make_norm(return_all=True)
 
         q2coo = lambda q: epeps.qubit_to_coo_map[q]
         CooHam = H.convert_to_coordinate_ham(q2coo)
@@ -278,11 +277,46 @@ class TestEnergyContraction:
 
         assert e == pytest.approx(Exact, rel=1e-2)
 
+    # Are there any tests small enough to do with dense vectors?
 
+    # @pytest.mark.parametrize('normalized', [True, False])
+    # def test_compute_local_expectation_vs_dense(self, normalized):
+    #     Lx, Ly = 3, 3
 
+    #     # (2Lx-1) * (2Ly-1) lattice ePEPSvector
+    #     epeps = my_qns.QubitEncodeVector.rand(Lx, Ly)\
+    #         .convert_to_ePEPS_vector()
+
+    #     # n_qubits = len(epeps.select_tensors('QUBIT'))
+
+    #     # 'qubit' Fermi-Hubbard with random parameters
+    #     t, V, mu = np.random.rand(3)
+    #     H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
         
-
+    #     psi_dense = epeps.to_dense()
+    #     if normalized:
+    #         qu.normalize(psi_dense)
         
+    #     dense_terms = [qu.pkron(term, dims=[2]*(2*Lx-1)*(2*Ly-1), inds=where, sparse=True)
+    #         for where, term in H.gen_ham_terms()]
+
+    #     exact = sum((qu.expec(h, psi_dense) for h in dense_terms))
+        
+    #     # now compute energy with `ePEPSvector.compute_local_expectation`
+    #     q2coo = lambda q: epeps.qubit_to_coo_map[q]
+    #     CooHam = H.convert_to_coordinate_ham(q2coo)
+    #     terms = CooHam._coo_ham_terms
+
+    #     envs, plaqmap = epeps.calc_plaquette_envs_and_map(terms)
+    #     opts = dict(cutoff=2e-3, max_bond=9, 
+    #         contract_optimize='random-greedy')
+
+    #     e = epeps.compute_local_expectation(
+    #         terms, normalized=normalized, autogroup=False, 
+    #         plaquette_envs=envs, plaquette_map=plaqmap,
+    #         **opts)
+
+    #     assert e == pytest.approx(exact, rel=1e-2)
 
 
 class TestStabilizerEval:
