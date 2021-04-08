@@ -279,44 +279,53 @@ class TestEnergyContraction:
 
     # Are there any tests small enough to do with dense vectors?
 
-    # @pytest.mark.parametrize('normalized', [True, False])
-    # def test_compute_local_expectation_vs_dense(self, normalized):
-    #     Lx, Ly = 3, 3
+    @pytest.mark.parametrize('Lx,Ly', [(1,3), (3,1)])
+    @pytest.mark.parametrize('normalized', [True, False])
+    def test_compute_local_expectation_vs_dense(self, Lx, Ly, normalized):
 
-    #     # (2Lx-1) * (2Ly-1) lattice ePEPSvector
-    #     epeps = my_qns.QubitEncodeVector.rand(Lx, Ly)\
-    #         .convert_to_ePEPS_vector()
+        # (2Lx-1) * (2Ly-1) lattice ePEPSvector
+        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly)\
+            .convert_to_ePEPS_vector()
 
-    #     # n_qubits = len(epeps.select_tensors('QUBIT'))
+        # qubits + dummies
+        n_sites = (2*Lx-1) * (2*Ly-1)
+        # vertices + occupied faces in 'original' Lx*Ly lattice
+        n_qubits = (Lx * Ly) + int((Lx - 1) * (Ly - 1) / 2) 
 
-    #     # 'qubit' Fermi-Hubbard with random parameters
-    #     t, V, mu = np.random.rand(3)
-    #     H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
+        # 'qubit' Fermi-Hubbard with random parameters
+        t, V, mu = np.random.rand(3)
+        H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
         
-    #     psi_dense = epeps.to_dense()
-    #     if normalized:
-    #         qu.normalize(psi_dense)
+        # separate indices of qubits from 'aux' tensors
+        qubit_inds = tuple(starmap(epeps.site_ind, 
+            (epeps.qubit_to_coo_map[q] for q in range(n_qubits))))
+        non_qubit_inds = set(epeps.site_inds) - set(qubit_inds)
+
+        # 'densify' into vector with qubit dimensions first
+        psi_dense = epeps.to_dense((*qubit_inds, *non_qubit_inds))
+        if normalized:
+            qu.normalize(psi_dense)
         
-    #     dense_terms = [qu.pkron(term, dims=[2]*(2*Lx-1)*(2*Ly-1), inds=where, sparse=True)
-    #         for where, term in H.gen_ham_terms()]
+        dense_terms = [qu.pkron(term, dims=[2]*n_sites, inds=where)
+            for where, term in H.gen_ham_terms()]
 
-    #     exact = sum((qu.expec(h, psi_dense) for h in dense_terms))
+        exact = sum((qu.expec(h, psi_dense) for h in dense_terms))
         
-    #     # now compute energy with `ePEPSvector.compute_local_expectation`
-    #     q2coo = lambda q: epeps.qubit_to_coo_map[q]
-    #     CooHam = H.convert_to_coordinate_ham(q2coo)
-    #     terms = CooHam._coo_ham_terms
+        # now compute energy with `ePEPSvector.compute_local_expectation`
+        q2coo = lambda q: epeps.qubit_to_coo_map[q]
+        CooHam = H.convert_to_coordinate_ham(q2coo)
+        terms = CooHam._coo_ham_terms
 
-    #     envs, plaqmap = epeps.calc_plaquette_envs_and_map(terms)
-    #     opts = dict(cutoff=2e-3, max_bond=9, 
-    #         contract_optimize='random-greedy')
+        envs, plaqmap = epeps.calc_plaquette_envs_and_map(terms)
+        opts = dict(cutoff=2e-3, max_bond=9, 
+            contract_optimize='random-greedy')
 
-    #     e = epeps.compute_local_expectation(
-    #         terms, normalized=normalized, autogroup=False, 
-    #         plaquette_envs=envs, plaquette_map=plaqmap,
-    #         **opts)
+        e = epeps.compute_local_expectation(
+            terms, normalized=normalized, autogroup=False, 
+            plaquette_envs=envs, plaquette_map=plaqmap,
+            **opts)
 
-    #     assert e == pytest.approx(exact, rel=1e-2)
+        assert e == pytest.approx(exact, rel=1e-2)
 
 
 class TestStabilizerEval:
