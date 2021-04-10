@@ -3,6 +3,7 @@ import quimb.tensor as qtn
 import dense_qubits
 import functools
 from collections import defaultdict
+import random
 
 
 def number_op():
@@ -69,6 +70,12 @@ class CoordinateHamiltonian():
         elif order == 'random':
             pairs = list(self.terms)
             random.shuffle(pairs)
+        elif order == 'random-ungrouped':
+            pairs = list(self.terms)
+            random.shuffle(pairs)
+            return pairs
+        # else:
+        #     return self._nx_color_ordering(order, **kwargs)
 
         # x can be length 2 or 3
         pairs = {x: None for x in pairs}
@@ -165,21 +172,18 @@ class HamStab():
         gate_map = dict()
 
         for coo, loop_stab in coo_stab_map.items():
-            #tuple e.g. (1,2,4,5,6)
-            qubits = tuple(loop_stab['inds'])
-
-            #string e.g. 'ZZZZX'
-            opstring = loop_stab['opstring']
+            qubits = tuple(loop_stab['inds']) #tuple e.g. (1,2,4,5,6)
+            opstring = loop_stab['opstring'] #str e.g. 'ZZZZX'
             
             if store == 'gate':            
-                #qarray
+                # store (where, gate1&gate2&...)
                 gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
                 gate *= self.multiplier
                 gate_map[coo] = (qubits, gate)
             
             elif store == 'tuple':
-
-                signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
+                # store (where, (gate1, gate2, ...))
+                signs = [self.multiplier] + [1.0]*(len(opstring) - 1)
                 gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
                 gate_map[coo] = (qubits, gates)
             
@@ -371,11 +375,10 @@ class SimulatorHam():
 
 class SpinlessSimHam(SimulatorHam):
     '''Qubit Hamiltonian: spinless fermion Hubbard Ham,
-    encoded as a qubit simulator Ham.
+    encoded as a qubit simulator Ham under the Derby-
+    Klassen encoding.
 
-    H =   t  * hopping
-        + V  * repulsion
-        - mu * occupation
+        H = t*hopping + V*repulsion - mu*occupation
     '''
 
     def __init__(self, Lx, Ly, t=1.0, V=1.0, mu=0.5):
@@ -392,7 +395,7 @@ class SpinlessSimHam(SimulatorHam):
         self._V = V
         self._mu = mu
 
-        # to handle the fermion-to-qubit encoding & lattice geometry
+        # to handle the DK fermion-to-qubit encoding & lattice geometry
         self.qlattice = dense_qubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
         terms = self._make_ham_terms()
@@ -405,7 +408,7 @@ class SpinlessSimHam(SimulatorHam):
         {coordinates: gate} dict by mapping all the target 
         qubits to their lattice coordinates.
 
-        qubit_to_coo_map: callable, int --> tuple[int]
+        qubit_to_coo_map: callable or dict [int: tuple[int]]
             Map each qubit number to the corresponding
             lattice coordinate (x, y)
 
@@ -413,14 +416,18 @@ class SpinlessSimHam(SimulatorHam):
         -------
         Equivalent `CoordinateHamiltonian` object. 
         '''
+        q2coo = qubit_to_coo_map
+        if isinstance(qubit_to_coo_map, dict):
+            q2coo = lambda q: qubit_to_coo_map[q]
+
         mapped_ham_terms = dict()
         for (i,j,f), gate in self._ham_terms.items():
             qubits = (i,j) if f is None else (i,j,f)
-            qcoos = tuple(map(qubit_to_coo_map, qubits))
+            qcoos = tuple(map(q2coo, qubits))
             mapped_ham_terms.update({qcoos: gate})
     
         return CoordinateHamiltonian(coo_ham_terms=mapped_ham_terms,
-                qubit_to_coo_map = qubit_to_coo_map)
+                qubit_to_coo_map = q2coo)
 
 
     def get_term_at(self, i, j, f=None):
