@@ -29,7 +29,7 @@ def check_valid_lattice_shape(Lx, Ly):
     if (Lx % 2 == 0) and (Ly % 2 == 0):
         raise ValueError(
         f'''The lattice must have an even number of faces,
-        but the ({Lx}, {Ly})-lattice has an odd # faces.''')
+        but the ({Lx}, {Ly})-lattice has an odd # of faces.''')
 
 
 def make_auxcon_net(
@@ -5722,6 +5722,7 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
         '''
         
         graph_opts.setdefault('color', ['QUBIT', 'AUX'])
+        # graph_opts.setdefault('custom_colors', ((0.8, 0.22, 0.78, 0.9),(0.65, 0.94, 0.19, 0.9)))
         graph_opts.setdefault('show_tags', False)
         graph_opts.setdefault('show_inds', True)
 
@@ -5846,7 +5847,6 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
 
 
         elif contract == 'triangle_absorb' and numsites == 3:
-            print("ye!")
             # absorbs 3-body gate while preserving lattice structure.
             psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
             reindex_map=reindex_map, phys_inds=site_inds,
@@ -6653,15 +6653,37 @@ class HamStab():
 
 
 class SimulatorHam():
-    '''Parent class for simulator (i.e. qubit-space) 
-    Hamiltonians. 
+    '''Generic class for simulator 
+    (i.e. qubit-space) Hamiltonians. 
 
     Takes a `qlattice` object to handle lattice geometry/edges, 
     and a mapping `ham_terms` of edges to two/three site gates.
     '''
     
     def __init__(self, Lx, Ly, phys_dim, ham_terms):
+        '''
+        Lx: number of vertex qubit rows
+        Ly: number vertex qubit columns                 
+                 
+                :       :           
+          x+1  ─●───────●─   < vertex row
+                │ \   / │           
+                │   ●   │    < face row
+                │ /   \ │           
+           x   ─●───────●─   < vertex row
+                :       :           
+
+        => Total number of vertices = Lx * Ly        
+
+        phys_dim: int
+            Local site dimension (d=2 for 
+            simple qubits)
         
+        ham_terms: dict{tuple[int]: qarray}
+            Mapping of qubit numbers (integer 
+            labels) to raw operators.
+
+        '''
         self._Lx = Lx
         self._Ly = Ly
         self._phys_dim = phys_dim
@@ -6718,8 +6740,7 @@ class SimulatorHam():
 
     
     def ham_params(self):
-        '''Relevant parameters. Override for
-         each 'daughter' Hamiltonian.
+        '''Relevant Hamiltonian parameters.
         '''
         pass
 
@@ -6727,13 +6748,11 @@ class SimulatorHam():
     def gen_ham_terms(self):
         pass
     
-    
     def gen_horizontal_ham_terms(self):
         pass
     
     def gen_vertical_ham_terms(self):
         pass
-
 
     def gen_trotter_gates(self, tau):
         pass
@@ -6754,9 +6773,9 @@ class SpinlessSimHam(SimulatorHam):
 
     def __init__(self, Lx, Ly, t=1.0, V=1.0, mu=0.5):
         '''
-        Lx: number of (vertex) qubit rows
-        Ly: number of vertex qubit columns
-        
+        Lx: num vertex qubit rows
+        Ly: num vertex qubit columns
+
         t: hopping parameter
         V: nearest-neighbor repulsion
         mu: single-site chemical potential
@@ -7390,7 +7409,7 @@ class SpinhalfSimHam(SimulatorHam):
         return number_op() & number_op()
     
     
-
+#### FINISH `hamiltonians.py`
 
 
 
