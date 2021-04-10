@@ -76,7 +76,7 @@ class TestThreeBodyOps:
         
         for coos, _ in LatticeCooHam.gen_ham_terms():
             
-            # SKIP 2-body interactions
+            # skip 2-body interactions
             if len(coos) == 2:
                 continue
             
@@ -104,7 +104,8 @@ class TestThreeBodyOps:
 
     @pytest.mark.parametrize('Lx,Ly', [(3,3), (3,4), (4,3)])
     @pytest.mark.parametrize('method', ['svd', 'qr', 'lq'])
-    def test_epeps_vs_qev_absorb_gate(self, Lx, Ly, method):
+    @pytest.mark.parametrize('tn_format', ['epeps', 'epeps_vec'])
+    def test_epeps_vs_qev_absorb_gate(self, Lx, Ly, method, tn_format):
         '''Test that we get same result (for 3-body interactions)
         whether we evaluate with a ``QubitEncodeVector`` or the 
         2D-regular-lattice version ``ePEPS``.
@@ -122,7 +123,12 @@ class TestThreeBodyOps:
         bra = psi.H
 
         # make into 'regular' 2D-square-lattice TN    
-        psi_2d = psi.convert_to_ePEPS(dummy_size=1)
+        if tn_format == 'epeps':
+            psi_2d = psi.convert_to_ePEPS(dummy_size=1)
+            
+        elif tn_format == 'epeps_vec':
+            psi_2d = psi.convert_to_ePEPS_vector(dummy_size=1)
+        
         bra_2d = psi_2d.H
          
         Ham = my_qns.SpinlessSimHam(Lx, Ly)
@@ -197,7 +203,6 @@ class TestThreeBodyOps:
             
             assert expec_1 == pytest.approx(expec_0, rel=1e-2)
 
-    
             coos = (coos[1], coos[0], coos[2]) # now try w/ vertex qubits swapped
 
             G_ket_0 = epeps.gate(G=rand_gate, coos=coos, contract=False)
@@ -277,8 +282,8 @@ class TestEnergyContraction:
 
         assert e == pytest.approx(Exact, rel=1e-2)
 
-    # Are there any tests small enough to do with dense vectors?
 
+    # Only tests small enough to do with dense vectors?
     @pytest.mark.parametrize('Lx,Ly', [(1,3), (3,1)])
     @pytest.mark.parametrize('normalized', [True, False])
     def test_compute_local_expectation_vs_dense(self, Lx, Ly, normalized):
