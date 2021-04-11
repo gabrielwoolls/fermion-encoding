@@ -1,5 +1,7 @@
 import quimb as qu
 import quimb.tensor as qtn
+from autoray import do, dag, conj, reshape, to_numpy
+
 import dense_qubits
 import functools
 from collections import defaultdict
@@ -38,6 +40,9 @@ class CoordinateHamiltonian():
         self._qubit_to_coo_map = qubit_to_coo_map
         self._coo_ham_terms = coo_ham_terms
 
+        # caches for not repeating operations / duplicating tensors
+        self._op_cache = defaultdict(dict)
+
     @property
     def terms(self):
         return self._coo_ham_terms
@@ -45,9 +50,30 @@ class CoordinateHamiltonian():
     def gen_ham_terms(self):
         return iter(self._coo_ham_terms.items())
 
-    def get_term_at_sites(self, *coos):
-        return self._coo_ham_terms[tuple(coos)]
+    def get_gate(self, where):
+        """Get the local term for coos ``where``, cached.
+        """
+        return self.terms[tuple(where)]
+
+    def _expm_cached(self, x, y):
+        cache = self._op_cache['expm']
+        key = (id(x), y)
+        if key not in cache:
+            el, ev = do('linalg.eigh', x)
+            cache[key] = ev @ do('diag', do('exp', el * y)) @ dag(ev)
+        return cache[key]
     
+    def get_gate_expm(self, where, x):
+        """Get the local term for pair ``where``, matrix exponentiated by
+        ``x``, and cached.
+        """
+        return self._expm_cached(self.get_gate(where), x)
+
+
+    # def get_term_at_sites(self, *coos):
+    #     return self._coo_ham_terms[tuple(coos)]
+    
+
     def get_auto_ordering(self, order='sort'):
         """Get an ordering of the terms to use with TEBD, for example. The
         default is to sort the coordinates then greedily group them into
@@ -93,6 +119,7 @@ class CoordinateHamiltonian():
 
         return ordering
 
+    # def _get_exp_stab_gate
 
 class MasterHam():
     '''Commodity class to combine a simulator Ham `Hsim`
@@ -176,7 +203,7 @@ class HamStab():
             opstring = loop_stab['opstring'] #str e.g. 'ZZZZX'
             
             if store == 'gate':            
-                # store (where, gate1&gate2&...)
+                # store (where, kron(gate1,gate2,...))
                 gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
                 gate *= self.multiplier
                 gate_map[coo] = (qubits, gate)
@@ -187,7 +214,6 @@ class HamStab():
                 gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
                 gate_map[coo] = (qubits, gates)
             
-        
         return gate_map
 
 
