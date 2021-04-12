@@ -11,6 +11,7 @@ def triangle_gate_absorb(
     vertex_tensors, 
     face_tensor,
     phys_inds,
+    rename_debug=True,
     gate_tags=('GATE',),
     **compress_opts
     ):
@@ -18,6 +19,10 @@ def triangle_gate_absorb(
     Absorbs 3-body operator ``TG`` into a triangle of tensors, 
     like we have in a ``QubitEncodeVector`` TN (i.e. a non-rectangular
     lattice geometry).
+
+    Note that there are two "main" tensor splits that accept **compress_opts.
+    If 'method'='svd' there will be 2 SVDs, each of which will be truncated 
+    according to **compress_opts.
 
     ``TG`` is assumed to act on a 3-tuple (vertex_a, vertex_b, face_c) of
     qubits on the lattice. 
@@ -29,7 +34,7 @@ def triangle_gate_absorb(
     #      \│ ╱ \ │╱      
     #      ─●─────●─      
     #       :     : 
-
+    
     TG: Tensor, shape [2]*6 
         Operator to be applied. Should be factorizable
         into shape (2,2, 2,2, 2,2)
@@ -93,16 +98,15 @@ def triangle_gate_absorb(
     rix = (triangle_bonds['AC'], physical_bonds['A'])
     Q_a, R_a = t_a.split(left_inds=None, right_inds=rix,
                          method='qr', get='tensors')
-    
-    # outer_tensors.append(Q_a)
     inner_tensors.append(R_a.reindex_(reindex_map)) 
+
 
     # split 'C' inward
     lix = (triangle_bonds['AC'], physical_bonds['C'])
     L_c, Q_c = t_c.split(left_inds=lix, method='lq',
                         get='tensors')
-
     inner_tensors.append(L_c.reindex_(reindex_map))
+
 
     # merge gate, R_a and L_c tensors into `blob`
     blob = tensor_contract(*inner_tensors, TG)
@@ -125,15 +129,27 @@ def triangle_gate_absorb(
     
     rix = bonds(new_tensors['C'], t_b)
     rix.add(physical_bonds['B'])
-    Q_c, R_c = new_tensors['C'].split(left_inds=None, right_inds=rix,
-                                method='qr', get='tensors',)
+
+    # Q_c, R_c = new_tensors['C'].split(left_inds=None, right_inds=rix,
+    #                             method='qr', get='tensors',)
+    Q_c, *maybe_svals, R_c = new_tensors['C'].split(left_inds=None, right_inds=rix,
+                                get='tensors', **compress_opts) # add bond_ind?
 
 
     new_tensors['B'] = tensor_contract(t_b, R_c)
     new_tensors['C'] = Q_c
 
+    # rename bond B--C to old index?
+    if rename_debug:
+        # {current_bond: previous_bond}
+        remap = {tuple(bonds(Q_c, new_tensors['B']))[0] : 
+                triangle_bonds['CB']}
+        new_tensors['B'].reindex_(remap)
+        new_tensors['C'].reindex_(remap)
+
+
     for k in 'ABC':
-        # update the Gate|ket> tensors
+        # update the G|ket> tensors
         triangle_tensors[k].modify(
             data=new_tensors[k].data,
             inds=new_tensors[k].inds)           
@@ -141,8 +157,38 @@ def triangle_gate_absorb(
         #add new tags, if any
         for gt in gate_tags: 
             triangle_tensors[k].add_tag(gt)
-                                    
 
+
+
+
+def gate_split_mpo_like(TG:qtn.Tensor, up_inds, down_inds):
+    '''Split a 3-body gate into MPO-like chain.
+
+    -TG: qtn.Tensor
+        Tensor operator to split
+    -up_inds: ia, ib, ic
+        (Ordered) upper indices for sites a,b,c
+    -down_inds: ja, jb, jc
+        (Ordered) lower indices on sites a, b, c
+    
+    Returns:
+    -(T_a, T_b, T_c): sequence of tensors, 1 for each site
+    
+    #   
+    #        ia ib ic       ia    ib   ic
+    #          \│╱           │    │    │  
+    #    G  =   ●     ==>    ●────●────●
+    #          ╱|\           │    │    │     
+    #        ja jb jc       ja   jb    jc  
+    # 
+    '''
+    ia, ib, ic = up_inds
+    ja, jb, jc = down_inds
+
+    T_a, V = TG.split(left_inds=(ia, ja), method='qr', get='tensors')
+    T_b, T_c = V.split(left_inds=(ib, jb), right_inds=(ic, jc), 
+                    method='qr', get='tensors')
+    return T_a, T_b, T_c
 
 
 
