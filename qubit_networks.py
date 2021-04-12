@@ -18,7 +18,7 @@ from collections import defaultdict
 from numbers import Integral
 from itertools import product, chain, starmap, cycle, combinations, permutations
 
-import dense_qubits
+import utils.dk_lattice_geometry as dk_lattice
 import three_body_op
 
 
@@ -522,7 +522,7 @@ class iTimeTEBD:
     
     `contract_opts`: 
         Supplied to 
-        :meth:`~dense_qubits.QubitLattice.apply_trotter_gates_`
+        :meth:`~dk_lattice.QubitLattice.apply_trotter_gates_`
     '''
     def __init__(
         self,
@@ -866,7 +866,7 @@ class QubitEncodeNet(qtn.TensorNetwork):
         '''Internal ``QubitLattice`` object
         '''
         if not hasattr(self, '_qlattice'):
-            self._qlattice = dense_qubits.QubitLattice(
+            self._qlattice = dk_lattice.QubitLattice(
                             Lx=self.Lx,
                             Ly=self.Ly,
                             local_dim=self.phys_dim)
@@ -6519,7 +6519,7 @@ class HamStab():
     def __init__(self, Lx, Ly, multiplier = -1.0):
         
         
-        self.qlattice = dense_qubits.QubitLattice(Lx, Ly, local_dim=0)
+        self.qlattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
 
         self.multiplier = multiplier
         
@@ -6784,7 +6784,7 @@ class SpinlessSimHam(SimulatorHam):
         self._mu = mu
 
         # to handle the fermion-to-qubit encoding & lattice geometry
-        self.qlattice = dense_qubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
+        self.qlattice = dk_lattice.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
         terms = self._make_ham_terms()
 

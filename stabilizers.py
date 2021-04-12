@@ -334,10 +334,6 @@ def three_qubit_U_matrix(qlattice, qstabs=None):
                 assert np.allclose(SC@face_vec, signC*face_vec)
                 
                 eigfaces[indA,indB,indC] = face_vec
-    
-
-    ###For testing!!
-    # return eigfaces
 
 
     Nfermi, Nqubit = qlattice._Nfermi, qlattice._Nsites

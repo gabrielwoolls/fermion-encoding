@@ -3,13 +3,13 @@ from operator import add
 import functools
 import itertools
 import operator
-import dense_qubits as dq
+import utils.dk_lattice_geometry as dq
 import numpy as np
 
 DEBUG=0
 
 """
-Exactly solve the Fermi Hubbard model via the Jordan-Wigner (JW)
+Exactly solve the Fermi-Hubbard model via the Jordan-Wigner (JW)
 transform. Both for spinless and spin-1/2 fermions.
 """
 
