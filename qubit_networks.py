@@ -6108,11 +6108,9 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
             "triangles" in the lattice.
         '''
         gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
-
         # assuming physical dimension = 2
         G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
-
-        #new physical indices "k{x},{y}"
+        # new physical indices "k{x},{y}"
         phys_inds = [self._site_ind_id.format(*c) for c in coos] 
         # old physical indices joined to new gate
         bond_inds = [qtn.rand_uuid() for _ in range(3)] 

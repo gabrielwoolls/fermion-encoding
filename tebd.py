@@ -37,7 +37,8 @@ class qubitTEBD(qtn.TEBD2D):
         
         # important for `ePEPS.gate`, which allows 3-body gates
         gate_opts.setdefault('contract', 'auto_split')
-            
+        gate_opts.setdefault('method', 'svd')
+
         super().__init__(psi0, ham, tau, D, chi, 
             imag=True, # force True, this is i-time EBD
             ordering='random', #passed to ham.get_auto_ordering

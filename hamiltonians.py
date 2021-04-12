@@ -36,11 +36,14 @@ class CoordinateHamiltonian():
     -----------
     '''
     def __init__(self, coo_ham_terms, qubit_to_coo_map):
-
+        
+        # map {integer q: coo (x,y)}
         self._qubit_to_coo_map = qubit_to_coo_map
+
+        # map {(seq of coos): qarray}
         self._coo_ham_terms = coo_ham_terms
 
-        # caches for not repeating operations / duplicating tensors
+        # caches for not repeating operations
         self._op_cache = defaultdict(dict)
 
     @property
@@ -48,6 +51,7 @@ class CoordinateHamiltonian():
         return self._coo_ham_terms
 
     def gen_ham_terms(self):
+        # NOTE: what's wrong with just returning self._coo_ham_terms?
         return iter(self._coo_ham_terms.items())
 
     def get_gate(self, where):
@@ -119,7 +123,6 @@ class CoordinateHamiltonian():
 
         return ordering
 
-    # def _get_exp_stab_gate
 
 class MasterHam():
     '''Commodity class to combine a simulator Ham `Hsim`
@@ -133,7 +136,7 @@ class MasterHam():
     `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
     '''
     def __init__(self, Hsim, Hstab):
-        self.Hsim=Hsim
+        self.Hsim = Hsim
         self.Hstab = Hstab
 
     def gen_ham_terms(self):

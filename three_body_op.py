@@ -39,10 +39,9 @@ def triangle_gate_absorb(
         corresponding to site-to-gate bonds.
     
     vertex_tensors: sequence of 2 Tensors
-        The vertex-site tensors getting acted on,
-        shape [2] + [D]*6 (in the lattice bulk).
+        The vertex-site tensors getting acted on.
 
-    face_tensor: Tensor, shape [2] + [D]*4
+    face_tensor: Tensor
         The face-site tensor.
     
     phys_inds: sequence of str
@@ -51,7 +50,7 @@ def triangle_gate_absorb(
 
     gate_tags: sequence of str, optional
         All 3 site tensors will be tagged with these
-        after being acted on with `TG`.
+        after being acted on with ``TG``.
 
     **compress_opts: will be passed to `tensor_split()`
         for the main `blob` tensor. Some keywords are
@@ -117,7 +116,7 @@ def triangle_gate_absorb(
             **compress_opts)
     
     # Absorb U into Q_a; this is the new tensor at 'A'
-    # Absorb V into Q_c (this 'C'-site tensor will be changed) 
+    # Absorb V into Q_c (this 'C' tensor will be changed) 
     new_tensors = {'A': tensor_contract(Q_a, U, output_inds=t_a.inds),
                    'C': tensor_contract(V, Q_c)} 
 
