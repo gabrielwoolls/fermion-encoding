@@ -5779,9 +5779,9 @@ class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
                     ~ (vertex, vertex, face)!
             [For any n-body:]
                 -auto_split: will automatically choose depending on n.
-                    n=1 --> contract = True
-                    n=2 --> contract = 'reduce_split_lr'
-                    n=3 --> contract = 'triangle_absorb'
+                    n=1 -> contract = True
+                    n=2 -> contract = 'reduce_split_lr'
+                    n=3 -> contract = 'triangle_absorb'
         '''
 
         check_opt("contract", contract, (False, True, 'reduce_split', 

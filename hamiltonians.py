@@ -2,7 +2,7 @@ import quimb as qu
 import quimb.tensor as qtn
 from autoray import do, dag, conj, reshape, to_numpy
 
-import dense_qubits
+import utils.dk_lattice_geometry as dk_lattice
 import functools
 from collections import defaultdict
 import random
@@ -165,7 +165,7 @@ class HamStab():
     def __init__(self, Lx, Ly, multiplier = -1.0):
         
         
-        self.qlattice = dense_qubits.QubitLattice(Lx, Ly, local_dim=0)
+        self.qlattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
 
         self.multiplier = multiplier
         
@@ -425,7 +425,7 @@ class SpinlessSimHam(SimulatorHam):
         self._mu = mu
 
         # to handle the DK fermion-to-qubit encoding & lattice geometry
-        self.qlattice = dense_qubits.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
+        self.qlattice = dk_lattice.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
         terms = self._make_ham_terms()
 
