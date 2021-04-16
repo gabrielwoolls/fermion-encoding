@@ -15,6 +15,7 @@ def number_op():
     return qu.qu([[0, 0], [0, 1]])
 
 
+
 class CoordinateHamiltonian():
     '''Wrapper class for previously-defined Hamiltonians.
     
@@ -104,8 +105,6 @@ class CoordinateHamiltonian():
             pairs = list(self.terms)
             random.shuffle(pairs)
             return pairs
-        # else:
-        #     return self._nx_color_ordering(order, **kwargs)
 
         # x can be length 2 or 3
         pairs = {x: None for x in pairs}
@@ -191,7 +190,7 @@ class HamStab():
         Param:
         ------
         coo_stab_map: dict[tuple : dict]
-            Maps coordinates (x,y) in the face array of the lattice
+            Maps coordinates (x,y) in the FACE array of the lattice
             to `loop_stab` dictionaries of the form
             {'inds' : (indices),   'opstring' : (string)}
         
@@ -213,7 +212,7 @@ class HamStab():
             
             elif store == 'tuple':
                 # store (where, (gate1, gate2, ...))
-                signs = [self.multiplier] + [1.0]*(len(opstring) - 1)
+                signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
                 gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
                 gate_map[coo] = (qubits, gates)
             
@@ -239,6 +238,7 @@ class HamStab():
         for where, gate in self._stab_gates.values():
             yield (where, gate)
 
+
     def gen_ham_stabilizer_lists(self):
         '''Generate ``(where, gates)`` pairs for each stabilizer term.
         where: tuple[int]
@@ -249,6 +249,7 @@ class HamStab():
         for where, gatelist in self._stab_lists.values():
             yield (where, gatelist)
     
+
     def _get_exp_stab_gate(self, coo, tau):
         '''
         Returns 

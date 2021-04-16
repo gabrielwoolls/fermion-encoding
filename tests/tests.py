@@ -3,7 +3,9 @@ currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
 sys.path.append(parentdir)
 
-import qubit_networks as my_qns
+import qubit_networks as qnets
+import hamiltonians as hams
+
 import quimb as qu
 import pytest
 import numpy as np
@@ -24,13 +26,13 @@ class TestThreeBodyOps:
         compress_opts = {'method': method}
 
         # without rotating face tensors!
-        psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        psi = qnets.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         bra = psi.H
         # norm = (bra & psi) ^ all
 
 
         # compile all 3-tuples (vertex, vertex, face) qubits to act on
-        LatticeHam = my_qns.SpinlessSimHam(Lx, Ly)
+        LatticeHam = hams.SpinlessSimHam(Lx, Ly)
         for where, _ in LatticeHam.gen_ham_terms():
             
             # skip 2-body terms
@@ -66,12 +68,12 @@ class TestThreeBodyOps:
         # opts for splitting 'blob' in `triangle_absorb` method
         compress_opts = {'method': method}
         
-        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        epeps = qnets.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
         bra = epeps.H
         # norm = (bra & epeps) ^ all
 
         # use Ham to get (vertex, vertex, face) 'target' qubits
-        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+        LatticeCooHam = hams.SpinlessSimHam(Lx, Ly).\
             convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])
         
         for coos, _ in LatticeCooHam.gen_ham_terms():
@@ -119,7 +121,7 @@ class TestThreeBodyOps:
         compress_opts = {'method': method}
 
         # without rotating face tensors!
-        psi = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        psi = qnets.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         bra = psi.H
 
         # make into 'regular' 2D-square-lattice TN    
@@ -131,7 +133,7 @@ class TestThreeBodyOps:
         
         bra_2d = psi_2d.H
          
-        Ham = my_qns.SpinlessSimHam(Lx, Ly)
+        Ham = hams.SpinlessSimHam(Lx, Ly)
         
         # LatticeCooHam = Ham.convert_to_coordinate_ham().\
         #     convert_to_coordinate_ham(psi_2d.qubit_to_coo_map)
@@ -178,12 +180,12 @@ class TestThreeBodyOps:
         # opts for splitting 'blob' in `triangle_absorb` method
         compress_opts = {'method': method}
         
-        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        epeps = qnets.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
         bra = epeps.H
 
 
         # compile (vertex, vertex, face) 'target' qubits
-        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+        LatticeCooHam = hams.SpinlessSimHam(Lx, Ly).\
             convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])        
 
         for coos, _ in LatticeCooHam.gen_ham_terms():
@@ -218,11 +220,11 @@ class TestThreeBodyOps:
     @pytest.mark.parametrize('contract', ['reduce_split', 'reduce_split_lr'])
     def test_epeps_2body_reduce_split(self, Lx, Ly, contract):
         
-        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
+        epeps = qnets.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=1) 
         bra = epeps.H
 
         # compile (vertex, vertex) 'target' qubit pairs
-        LatticeCooHam = my_qns.SpinlessSimHam(Lx, Ly).\
+        LatticeCooHam = hams.SpinlessSimHam(Lx, Ly).\
             convert_to_coordinate_ham(lambda q: epeps.qubit_to_coo_map[q])  
 
         for coos, _ in LatticeCooHam.gen_ham_terms():
@@ -248,15 +250,15 @@ class TestEnergyContraction:
         
         # 'qubit' Fermi-Hubbard with default parameters
         t, V, mu = np.random.rand(3)
-        H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
+        H = hams.SpinlessSimHam(Lx, Ly, t, V, mu)
         
-        psi_qev = my_qns.QubitEncodeVector.rand(Lx, Ly)\
+        psi_qev = qnets.QubitEncodeVector.rand(Lx, Ly)\
             .setup_bmps_contraction_()
         norm, bra, ket = psi_qev.make_norm(return_all=True)
         norm ^= all        
         
         Exact = sum((
-            (bra | ket.apply_gate(gate, where))^all
+            (bra | ket.apply_gate(gate, where)) ^ all
             for where, gate in H.gen_ham_terms()
         ))        
 
@@ -289,7 +291,7 @@ class TestEnergyContraction:
     def test_compute_local_expectation_vs_dense(self, Lx, Ly, normalized):
 
         # (2Lx-1) * (2Ly-1) lattice ePEPSvector
-        epeps = my_qns.QubitEncodeVector.rand(Lx, Ly)\
+        epeps = qnets.QubitEncodeVector.rand(Lx, Ly)\
             .convert_to_ePEPS_vector()
 
         # qubits + dummies
@@ -299,7 +301,7 @@ class TestEnergyContraction:
 
         # 'qubit' Fermi-Hubbard with random parameters
         t, V, mu = np.random.rand(3)
-        H = my_qns.SpinlessSimHam(Lx, Ly, t, V, mu)
+        H = hams.SpinlessSimHam(Lx, Ly, t, V, mu)
         
         # separate indices of qubits from 'aux' tensors
         qubit_inds = tuple(starmap(epeps.site_ind, 
@@ -342,10 +344,10 @@ class TestStabilizerEval:
         '''Use `compare_stabilizer_expecs` for testing
         '''
         #make the stabilizers
-        Hstab = my_qns.HamStab(Lx=Lx, Ly=Ly)
+        Hstab = hams.HamStab(Lx=Lx, Ly=Ly)
         
         # random trial wavefunction (highly entangled)
-        psi = my_qns.QubitEncodeVector.rand(Lx, Ly)
+        psi = qnets.QubitEncodeVector.rand(Lx, Ly)
 
         # test stabilizer expecs working correctly
         compare_stabilizer_expecs(psi=psi, Hstab=Hstab)
@@ -369,10 +371,10 @@ class TestStabilizerEval:
             str(randint(0,1)) for _ in range(num_sites))
 
         #make the stabilizers
-        Hstab = my_qns.HamStab(Lx=Lx, Ly=Ly)
+        Hstab = hams.HamStab(Lx=Lx, Ly=Ly)
         
         #make the product state wavefunction
-        psi = my_qns.QubitEncodeVector.product_state_from_bitstring(
+        psi = qnets.QubitEncodeVector.product_state_from_bitstring(
             Lx=Lx, Ly=Ly, bitstring=rand_bin_string())
 
         compare_stabilizer_expecs(psi=psi, Hstab=Hstab)
@@ -435,7 +437,7 @@ class TestConversionTo2D():
 
     @pytest.mark.parametrize('Lx,Ly', [(3,2), (2,3), (3,3), (3,4)])
     def test_transpose_tensors(self, Lx, Ly):
-        psi = my_qns.QubitEncodeVector.rand_product_state(Lx, Ly)
+        psi = qnets.QubitEncodeVector.rand_product_state(Lx, Ly)
         psi = psi.convert_to_tensor_network_2d() #relabel_physical_inds=False)
         
         shape = 'urdl'
@@ -478,7 +480,7 @@ class TestConversionTo2D():
     #     geometry, not the ePEPS lattice (which has dimensions
     #     2*Lx-1, 2*Ly-1).
     #     '''
-    #     epeps = my_qns.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=2) 
+    #     epeps = qnets.QubitEncodeVector.rand(Lx, Ly).convert_to_ePEPS(dummy_size=2) 
 
     #     for x, y in product(range(2 * Lx - 1), range(2 * Ly -1)):
     #         # tag_xy = epeps.site_tag_id.format(x,y)
@@ -500,13 +502,13 @@ class TestCoordinateHamiltonians():
         qubit coordinates to specify target sites. 
         Check energies are equal.
         '''
-        psi_trial = my_qns.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
+        psi_trial = qnets.QubitEncodeVector.rand(Lx, Ly, bond_dim=2)
         psi_trial.setup_bmps_contraction_()
         norm, bra, ket = psi_trial.make_norm(return_all=True)
         norm ^= all
 
         # encoded Fermi-Hubbard with default parameters
-        HubbardHam = my_qns.SpinlessSimHam(Lx, Ly)
+        HubbardHam = hams.SpinlessSimHam(Lx, Ly)
         
         # terms specify qubit coos rather than qubit nums
         CooHam = HubbardHam.convert_to_coordinate_ham(

@@ -9,6 +9,11 @@ class qubitTEBD(qtn.TEBD2D):
     '''Overrides `quimb` TEBD2D class to implement
     "encoded" Hamiltonians, which may have 3-body 
     operators in addition to 1- and 2-body.
+
+    stabilizer_ham: ``HamStab``, optional
+
+    check_fermion_stab: bool, optional
+    compute_fermion_stab_every: int, optional
     '''
     def __init__(
         self,
@@ -113,9 +118,22 @@ def compute_fermionic_stability(tebd):
     return stab_expecs
         
         
+# def sweep_and_stabilizers(tebd, tau):
+    
+#     # usual sweep with exponentiated tebd.ham.terms
+#     # i.e. energy trotter gates
+#     tebd.sweep(tau) 
+
+#     # sweep with stabilizer trotter gates
+#     stab_ham = tebd.stabilizer_ham
+#     for qubits, _ in stab_ham.gen_ham_stabilizer_lists():
+#         coos = (tebd.state.qubit_to_coo_map[q] for q in qubits)
+#         U = stab_ham.get_gate_expm(qubits, -tau)
+#         tebd.gate(U, where)
 
 
 
+    
         
 
 

@@ -20,6 +20,7 @@ from itertools import product, chain, starmap, cycle, combinations, permutations
 
 import utils.dk_lattice_geometry as dk_lattice
 import three_body_op
+from tn2d_epeps import ePEPS, ePEPSvector
 
 
 def check_valid_lattice_shape(Lx, Ly):
@@ -105,7 +106,6 @@ def make_auxcon_net(
             k+=1
     
     vertex_net |= added_tensors
-    # return qtn.TensorNetwork(vertex_net.tensors, structure=site_tag_id)
     return vertex_net
 
 
@@ -708,7 +708,7 @@ def compute_encnet_ham_expec(qnet, ham):
 
 
 def compute_encnet_normsquared(qnet):
-    return np.real(qnet.make_norm()^all)
+    return np.real(qnet.make_norm() ^ all)
 
 
 
@@ -5529,1882 +5529,970 @@ class QubitEncodeVector(QubitEncodeNet,
         epeps.add_fake_phys_inds(dp=self.phys_dim)
         return epeps.view_as_(ePEPSvector)
 
+
 ####################################################
-
-class ePEPS(qtn.tensor_2d.TensorNetwork2DFlat,
-            qtn.TensorNetwork2D,
-            qtn.TensorNetwork):
-    
-    '''
-    Notice that we are going from the convention 
-    
-       {site_tag_id='Q{}',
-        grid_tag_id='S{},{}',
-        aux_tag_id='IX{}Y{}',
-        phys_ind_id='q{}'
-        } 
-        
-        to 
-        
-       {site_tag_id='S{},{}',
-        site_ind_id='k{},{}
-        }
-
-        --------------
-        _SPECIAL_TAGS:
-            -'aux_identity' is used for any dummy identity tensors
-            -'adj_to_vertex_face'.format(V,F) is used if a dummy 
-            identity `I` is 'paired with', or adjacent to, vertex and
-            face sites with qubit numbers V, F, resp.
-    '''
-
-    _EXTRA_PROPS = (
-        '_Lx',
-        '_Ly',
-        '_site_tag_id',
-        '_site_ind_id',
-        '_row_tag_id',
-        '_col_tag_id',
-        '_qubit_to_coo_map',
-        # '_phys_dim',
-        # '_grid_tag_id',
-        # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
-        # '_phys_ind_id',
-    )
-    
-    _SPECIAL_TAGS = {
-        'aux_identity': 'AUX', 
-        'adj_to_vertex_face': 'ADJ{},{}' 
-    }
-
-    def __init__(self, tn, *, 
-            Lx=None, Ly=None, 
-            qubit_to_coo_map=None,
-            site_tag_id='S{},{}', 
-            site_ind_id='k{},{}',
-            row_tag_id='ROW{}',
-            col_tag_id='COL{}',
-            **tn_opts):
-        '''
-        -`Lx` and `Ly` are different from the "true"
-        spin lattice, as they count both face and 
-        vertex qubits.
-                    
-                     original            ePEPS
-                     lattice             lattice
-                    :       :           :   :   :          
-              x+1  ─●───────●─         ─●───●───●─  x+2
-                    │ \   / │           │   │   │ 
-                    │   ●   │    ==>   ─●───●───●─  x+1
-                    │ /   \ │           │   │   │ 
-               x   ─●───────●─         ─●───●───●─   x
-                    :       :           :   :   : 
-
-                     Lx * Ly        (2Lx-1) * (2Ly-1)
-
-        -`site_tag_id` and `site_ind_id` should be 
-        of the form "...x,y".
-        '''
-        
-        if isinstance(tn, ePEPS):
-            super().__init__(tn)
-            return
-
-        self._Lx = Lx
-        self._Ly = Ly
-
-        self._site_tag_id = site_tag_id # "S{x},{y}"
-        self._site_ind_id = site_ind_id # "k{x},{y}"
-        self._row_tag_id = row_tag_id # "ROW{x}"
-        self._col_tag_id = col_tag_id # "COL{y}"
-
-        # map {q: (x,y)}
-        self._qubit_to_coo_map = qubit_to_coo_map
-        
-        # inverse map {(x,y): q}
-        self._coo_to_qubit_map = {coo: q for q, coo in 
-                            self._qubit_to_coo_map.items()}
-
-
-        # Pass tn.tensors, i.e. a raw sequence of tensors, to avoid
-        # inheriting any of the Lx, Ly, tag attributes, etc, from `tn`
-        super().__init__(tn.tensors, **tn_opts)
-
-
-    @property
-    def aux_identity_tag(self):
-        # Tags on dummy identity tensors, e.g. "AUX"
-        return self.__class__._SPECIAL_TAGS['aux_identity']
-
-    
-    @property
-    def adjacent_aux_tag(self):
-        # Tag like "ADJ{V},{F}", used for a dummy identity that may
-        # be 'reabsorbed' into qubit site "Q{V}"
-        return self.__class__._SPECIAL_TAGS['adj_to_vertex_face']
-
-    @property
-    def site_ind_id(self):
-        return self._site_ind_id
-
-    @property
-    def qubit_to_coo_map(self):
-        '''Dict mapping coordinates to qubit 
-        integer labels {(x,y): q}
-        '''                            
-        return self._qubit_to_coo_map
-
-
-    def coo_to_qubit_map(self, coo=None):
-        '''The integer label ``q`` of the qubit at
-        (x,y)-coordinate ``coo``.
-        '''       
-        if not hasattr(self, '_coo_to_qubit_map'):
-            self._coo_to_qubit_map = {coo: q 
-                for q, coo in self.qubit_to_coo_map.items()}
-
-        if coo is None:
-            return self._coo_to_qubit_map
-        
-        return self._coo_to_qubit_map[coo]
-
-
-    def find_tensor_coo(self, t, get='coo'):
-        '''Get the coo of the given tensor `t`.
-        Important: assumes coo tag is of the form "...x,y",
-        e.g. "Sx,y". 
-        
-        get: {'coo', 'tag', 'ind'}
-            -'coo': returns tuple[int]
-            -'tag': returns tag string e.g. "Sx,y"
-            -'ind': returns index string e.g. "kx,y"
-        '''
-        check_opt("get", get, ('coo', 'tag', 'ind'))
-
-        p = re.compile(self.site_tag_id.format('\d','\d'))
-        coo_tag, = (s for s in t.tags if p.match(s))
-        coo = int(coo_tag[-3]), int(coo_tag[-1]) # This assumes tag is ~ "...x,y"
-
-        return {'coo': coo,
-            'tag': coo_tag,
-            'ind': self.site_ind_id.format(*coo)
-            }[get]
-         
-
-    def draw(
-        self, 
-        fix_lattice=True, 
-        layer_tags=None, 
-        with_gate=False, 
-        auto_detect_layers=True,
-        **graph_opts):
-        '''
-        TODO: DEBUG ``fix_tags`` PARAM
-              GRAPH GATE LAYERS
-
-        Overload ``TensorNetwork.draw`` for aesthetic lattice-fixing,
-        unless `fix_lattice` is set False. 
-
-        Geometry: coordinate origin at bottom left.
-
-       Lx,0─── ...          ───Lx,Ly                               
-         │                       │  
-         :       :               :   
-         │       │               │  
-       (1,0)───(1,1)─── ... ───(1,Ly)
-         │       │       │       │
-       (0,0)───(0,1)─── ... ───(0,Ly)
-
-
-        `auto_detect_layers` will check if 'BRA', 'KET' are in `self.tags`,
-        and if so will attempt to graph as a two-layer sandwich.
-        Can also specify `layer_tags` specifically for TNs with other layers.
-        '''
-        
-        graph_opts.setdefault('color', ['QUBIT', 'AUX'])
-        # graph_opts.setdefault('custom_colors', ((0.8, 0.22, 0.78, 0.9),(0.65, 0.94, 0.19, 0.9)))
-        graph_opts.setdefault('show_tags', False)
-        graph_opts.setdefault('show_inds', True)
-
-        if all((auto_detect_layers == True,
-                'BRA' in self.tags,
-                'KET' in self.tags)):
-            layer_tags=('BRA', 'KET')
-
-        scale_X, scale_Y = 1, 1.5
-        fix_tags = {self.site_tag_id.format(x,y): (y * scale_Y, x * scale_X) 
-            for (x,y) in product(range(self.Lx), range(self.Ly))}
-        
-        super().draw(fix=fix_tags, **graph_opts)
-        return
-    
-
-    @property
-    def site_tag_id(self):
-        '''Format string for the tag identifiers of local sites,
-        i.e. the coordinates 'S{x},{y}'
-        '''
-        return self._site_tag_id
-    
-
-    def qubit_site_tags(self):
-        '''
-        The site 'Sx,y' tags, only for qubit
-        sites (i.e. non-identity tensors)
-        '''
-        return (t for t in self.site_tags if ('QUBIT' in self[t].tags))
-
-
-    def gate(
-        self, 
-        G,
-        coos,
-        contract='auto_split',
-        tags=('GATE',),
-        inplace=False,
-        info=None,
-        **compress_opts,
-    ):
-        '''
-        contract: {False, 'reduce_split', 'triangle_absorb', 'reduce_split_lr'}
-                -False: leave gate uncontracted at sites
-            [For 2-body ops:]
-                -reduce_split: Absorb dummy, apply gate with `qtn.tensor_2d.reduce_split`, 
-                    then reinsert dummy. (NOTE: this one seems very slow)
-                -reduce_split_lr: leave dummy as-is, treat gate as a LR interaction.
-                    The final bonds are much smaller this way!
-            [For 3-body ops:]
-                -triangle_absorb: use `three_body_op.triangle_gate_absorb` to 
-                    apply the 3-body gate. Assumes `coos` is ordered like 
-                    ~ (vertex, vertex, face)!
-            [For any n-body:]
-                -auto_split: will automatically choose depending on n.
-                    n=1 -> contract = True
-                    n=2 -> contract = 'reduce_split_lr'
-                    n=3 -> contract = 'triangle_absorb'
-        '''
-
-        check_opt("contract", contract, (False, True, 'reduce_split', 
-                            'triangle_absorb', 'reduce_split_lr', 
-                            'auto_split'))
-
-        psi = self if inplace else self.copy()
-
-        if is_lone_coo(coos):
-            coos = (coos,)
-        else:
-            coos = tuple(coos)
-
-        numsites = len(coos) #num qubits acted on
-
-        if contract == 'auto_split': 
-            contract = {1: True, 
-                        2: 'reduce_split_lr', 
-                        3: 'triangle_absorb'}[numsites]
-
-        #inds like 'k{x},{y}'
-        site_inds = [self._site_ind_id.format(*c) for c in coos] 
-        # physical dimension, d=2 for qubits
-        dp = self.ind_size(site_inds[0]) 
-        gate_tags = tags_to_oset(tags)
-
-        G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp, numsites, coos)
-
-        #old physical indices joined to new gate
-        bond_inds = [qtn.rand_uuid() for _ in range(numsites)]
-        reindex_map = dict(zip(site_inds, bond_inds))
-        TG = qtn.Tensor(G, inds=site_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
-
-        if contract is False:
-            #attach gates without contracting any bonds
-            #
-            #     'qA' 'qB' 
-            #       │   │      <- site_inds
-            #       GGGGG
-            #       │╱  │╱     <- bond_inds
-            #     ──●───●──
-            #      ╱   ╱
-            #
-            psi.reindex_(reindex_map)
-            psi |= TG
-            return psi
-        
-
-        elif (contract is True) or (numsites == 1):
-            #
-            #       │╱  │╱
-            #     ──GGGGG──
-            #      ╱   ╱
-            #
-            psi.reindex_(reindex_map)
-
-            # get the sites that used to have the physical indices
-            site_tids = psi._get_tids_from_inds(bond_inds, which='any')
-            # pop the sites, contract, then re-add
-            pts = [psi._pop_tensor(tid) for tid in site_tids]
-            psi |= qtn.tensor_contract(*pts, TG)
-            return psi
-
-
-        elif contract == 'triangle_absorb' and numsites == 3:
-            # absorbs 3-body gate while preserving lattice structure.
-            psi.absorb_three_body_tensor_(TG=TG, coos=coos, 
-            reindex_map=reindex_map, phys_inds=site_inds,
-            gate_tags=gate_tags, **compress_opts)
-            return psi
-        
-        # NOTE: this one seems very inefficient for 
-        # "next-nearest" neighbor interactions.
-        elif contract == 'reduce_split' and numsites == 2:
-            # First absorb identity into a site, then 
-            # restore after gate has been applied.
-            # 
-            # 1. Absorb identity step:
-            # 
-            #       │     │    Absorb     │     │
-            #       GGGGGGG     ident.    GGGGGGG    
-            #       │╱  ╱ │╱     ==>      │╱    │╱╱   
-            #     ──●──I──●──           ──●─────●─  
-            #    a ╱  ╱  ╱ b             ╱     ╱╱    
-            #
-            # 2. Gate 'reduce_split' step: 
-            # 
-            #       │   │             │ │
-            #       GGGGG             GGG               │ │
-            #       │╱  │╱   ==>     ╱│ │  ╱   ==>     ╱│ │  ╱          │╱  │╱
-            #     ──●───●──       ──>─●─●─<──       ──>─GGG─<──  ==>  ──G┄┄┄G──
-            #      ╱   ╱           ╱     ╱           ╱     ╱           ╱   ╱
-            #    <QR> <LQ>                            <SVD>
-            #
-            # 3. Reinsert identity:
-            # 
-            #       │╱    │╱╱           │╱  ╱ │╱
-            #     ──G┄┄┄┄┄G──   ==>   ──G┄┄I┄┄G──      
-            #      ╱     ╱╱            ╱  ╱  ╱         
-            # 
-
-            (x1,y1), (x2,y2) = coos
-            mid_coo = (int((x1+x2)/2), int((y1+y2)/2))
-            dummy_coo_tag = psi.site_tag_id.format(*mid_coo)
-
-            # keep track of dummy identity's tags and neighbors
-            prev_dummy_info = {'tags': psi[dummy_coo_tag].tags, 
-                      'neighbor_tags': tuple(t.tags for t in 
-                        psi.select_neighbors(dummy_coo_tag))} 
-            
-
-            which_bond = int(psi.bond_size(coos[0], mid_coo) >= 
-                             psi.bond_size(coos[1], mid_coo))
-
-
-            if which_bond == 0: # (vertex_0 ── identity) bond is larger
-                vertex_tag = psi.site_tag_id.format(*coos[0])
-
-            else:  # (vertex_1 -- identity) bond larger
-                vertex_tag = psi.site_tag_id.format(*coos[1])
-
-            tids = psi._get_tids_from_tags(
-                        tags=(vertex_tag, dummy_coo_tag), which='any')
-        
-            # pop and reattach the (vertex & identity) tensor
-            pts = [psi._pop_tensor(tid) for tid in tids]
-            new_vertex = qtn.tensor_contract(*pts)
-            
-            # new_vertex.drop_tags(prev_dummy_info['tags'] - )
-            new_vertex.drop_tags(pts[1].tags - pts[0].tags)
-            
-            psi |= new_vertex # reattach [vertex & identity] 
-
-            # insert 2-body gate!
-            qtn.tensor_2d.gate_string_reduce_split_(TG=TG, where=coos,
-                string=coos, original_ts=[psi[c] for c in coos], 
-                bonds_along=(psi.bond(*coos),), reindex_map=reindex_map,
-                site_ix=site_inds, info=info, **compress_opts)
-
-            # now restore the dummy identity between vertices
-            vtensor = psi[coos[which_bond]] # the vertex we absorbed dummy into
-            
-            ts_to_connect = set(psi[tags] for tags in 
-                prev_dummy_info['neighbor_tags']) - set([vtensor])
-
-            for T2 in ts_to_connect: # restore previous dummy bonds
-                psi |= insert_identity_between_tensors(T1=vtensor, T2=T2, add_tags='TEMP')
-
-            # contract new dummies into a single identity
-            psi ^= 'TEMP'
-            for t in prev_dummy_info['tags']:
-                psi['TEMP'].add_tag(t) # restore previous dummy tags
-            psi.drop_tags('TEMP')
-
-            return psi.fuse_multibonds_()
-        
-
-        elif contract == 'reduce_split_lr' and numsites == 2:
-            # There will be a 'dummy' identity tensor between the
-            # sites, so the 2-body operator will look "long-range"
-            # 
-            #       │     │              
-            #       GGGGGGG                 
-            #       │╱  ╱ │╱              │╱  ╱ │╱
-            #     ──●──I──●──    ==>    ──G┄┄I┄┄G── 
-            #      ╱  ╱  ╱               ╱  ╱  ╱
-            #
-            (x1,y1), (x2,y2) = coos
-            mid_coo = (int((x1 + x2)/2), int((y1 + y2)/2))
-            
-            dummy_coo_tag = psi.site_tag_id.format(*mid_coo)
-            string = (coos[0], mid_coo, coos[1])
-            
-            original_ts = [psi[coo] for coo in string]
-            bonds_along = [next(iter(qtn.bonds(t1, t2)))
-                    for t1, t2 in qu.utils.pairwise(original_ts)]
-
-            qtn.tensor_2d.gate_string_reduce_split_(TG=TG, 
-                where=coos, string=string, original_ts=original_ts, 
-                bonds_along=bonds_along, reindex_map=reindex_map,
-                site_ix=site_inds, info=info, **compress_opts)
-            
-            return psi
-
-
-    gate_ = functools.partialmethod(gate, inplace=True)
-
-
-    # def absorb_three_body_gate(
-    #     self, 
-    #     G, 
-    #     coos, 
-    #     DEBUG=False,
-    #     gate_tags=('GATE',),
-    #     inplace=False,
-    #     **compress_opts
-    #     ):
-    #     '''
-    #     G: dense array
-    #         3-body operator to apply.
-
-    #     coos: sequence of tuples (x,y)
-    #         The three coordinate pairs of qubits to
-    #         act on. The 'face' qubit should be last!
-        
-    #     gate_tags: None or sequence of str, optional
-    #         Sites acted on with ``G`` will be tagged 
-    #         with these.
-
-    #     **compress_opts:            
-    #         Passed to `triangle_gate_absorb`, which 
-    #         passes it to `qtn.tensor.split`.
-
-    #     '''
-    #     psi = self if inplace else self.copy()
-
-    #     vertex_a, vertex_b, face_coo = coos
-        
-    #     face_qnum = psi.coo_to_qubit_map(face_coo)
-        
-    #     ## keep dummies' tags, inds, etc to restore them later
-    #     dummy_identities_info = {}
-
-    #     # absorb appropriate identity tensors into vertex sites
-    #     for k, vcoo in enumerate((vertex_a, vertex_b)):
-
-    #         vertex_qnum = psi.coo_to_qubit_map(vcoo)            
-            
-    #         # tag of identity to be absorbed
-    #         adjacent_tag = psi.adjacent_aux_tag.format(
-    #                                 vertex_qnum, 
-    #                                 face_qnum) # "AUX{V},{F}"
-            
-    #         vertex_tag = psi._site_tag_id.format(*vcoo)
-            
-    #         dummy_identities_info.update({
-    #             (k, 'neighbor_tags'): tuple(t.tags for t in 
-    #                 psi.select_neighbors(adjacent_tag))
-    #         })
-
-    #         tids = psi._get_tids_from_tags(
-    #             tags=(vertex_tag, adjacent_tag), which='any')
-            
-    #         # pop and reattach the contracted tensors
-    #         pts = [psi._pop_tensor(tid) for tid in tids]
-    #         new_vertex = qtn.tensor_contract(*pts)
-            
-    #         dummy_identities_info.update({
-    #             (k, 'tags'): pts[1].tags, #dummy tags 
-    #             (k, 'inds'): pts[1].inds, #dummy indices
-    #         })
-            
-    #         new_vertex.drop_tags(pts[1].tags - pts[0].tags) # drop dummy tags from vertex site
-    #         psi |= new_vertex
-
-
-    #     vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
-    #     face_tensor = psi[face_coo] 
-        
-    #     ###vv Here differs from `absorb_three_body_tensor` vv###
-
-    #     gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
-
-    #     # assuming physical dimension = 2
-    #     G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
-
-    #     #new physical indices "k{x},{y}"
-    #     phys_inds = [psi._site_ind_id.format(*c) for c in coos] 
-    #     # old physical indices joined to new gate
-    #     bond_inds = [qtn.rand_uuid() for _ in range(3)] 
-    #     # replace physical inds with gate bonds
-    #     reindex_map = dict(zip(phys_inds, bond_inds)) 
-
-    #     TG = qtn.Tensor(G, inds=phys_inds + bond_inds, left_inds=bond_inds, tags=gate_tags)
-        
-    #     three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
-    #                 vertex_tensors=vertex_tensors, 
-    #                 face_tensor=face_tensor, phys_inds=phys_inds,
-    #                 gate_tags=gate_tags, **compress_opts) # apply gate!
-
-
-    #     if DEBUG:
-    #         return psi
-
-    #     # now insert new dummy identities where they used to be
-    #     for k in range(2):
-    #         vt = vertex_tensors[k]
-            
-    #         ts_to_connect = set(
-    #             psi[tags] for tags in dummy_identities_info[(k, 'neighbor_tags')]
-    #             ) - set([vt])
-
-    #         for T2 in ts_to_connect:
-    #             psi |= insert_identity_between_tensors(T1=vt, T2=T2, add_tags='TEMP')
-
-    #         # contract new dummies into a single identity
-    #         psi ^= 'TEMP'
-    #         # restore previous tags, and drop temporary tag
-    #         for tag in dummy_identities_info[(k, 'tags')]:
-    #             psi['TEMP'].add_tag(tag)
-    #         psi.drop_tags('TEMP')
-
-    #     return psi
-
-    def absorb_three_body_gate(
-        self, 
-        G, 
-        coos,
-        gate_tags=('GATE',),
-        restore_dummies=True,
-        inplace=False,
-        **compress_opts
-    ):
-        '''Converts the raw gate ``G`` into a tensor and passes it
-        to ``self.absorb_three_body_tensor``.
-
-        G: raw qarray
-            The gate to apply
-        coos: sequence of tuple[int]
-            The 3 coos to act on, e.g. ((0,0),(0,2),(1,1))
-        restore_dummies: bool, optional
-            Whether to "restore" dummy identities
-            and keep square lattice structure or 
-            "triangles" in the lattice.
-        '''
-        gate_tags = qtn.tensor_2d.tags_to_oset(gate_tags)
-        # assuming physical dimension = 2
-        G = qtn.tensor_1d.maybe_factor_gate_into_tensor(G, dp=2, ng=3, where=coos)
-        # new physical indices "k{x},{y}"
-        phys_inds = [self._site_ind_id.format(*c) for c in coos] 
-        # old physical indices joined to new gate
-        bond_inds = [qtn.rand_uuid() for _ in range(3)] 
-        # replace physical inds with gate bonds
-        reindex_map = dict(zip(phys_inds, bond_inds)) 
-
-        TG = qtn.Tensor(G, inds=phys_inds+bond_inds, left_inds=bond_inds, tags=gate_tags)
-        
-        return self.absorb_three_body_tensor(TG, coos, reindex_map, phys_inds, 
-            gate_tags, restore_dummies=restore_dummies, inplace=inplace,
-            **compress_opts)
-        
-
-    absorb_three_body_gate_ = functools.partialmethod(absorb_three_body_gate, 
-                                inplace=True)
-
-    def absorb_three_body_tensor(
-        self,
-        TG,
-        coos,
-        reindex_map,
-        phys_inds,
-        gate_tags,
-        restore_dummies=True,
-        inplace=False,
-        **compress_opts
-    ):
-        '''Serves the same purpose as ``self.absorb_three_body_gate``, 
-        but assumes gate has already been shaped into a tensor and
-        appropriate indices have been gathered.
-
-        TG: qtn.Tensor
-            The 3-body gate (shape [2]*8) as a tensor.
-        
-        coos: sequence of tuple[int, int]
-            The (x,y)-coordinates for 3 qubit sites to
-            hit with the gate.
-            
-        phys_inds: sequence of str
-            The target qubits' physical indices "k{x},{y}"
-        
-        reindex_map: dict[str: str]
-            Map `phys_inds` to the bonds between sites and
-            gate acting on those sites.
-        
-        gate_tags: None or sequence of str, optional
-            Sites acted on with ``TG`` will have these
-            tags added to them.
-        
-        inplace: bool
-            If False, will make a copy of ``self`` and
-            act on that instead.
-        '''
-        psi = self if inplace else self.copy()
-
-        vertex_a, vertex_b, face_coo = coos
-        
-        face_qnum = psi.coo_to_qubit_map(face_coo)
-        
-        ## keep track of dummies' tags & neighbor tensors
-        dummy_identities_info = {}
-
-        # absorb appropriate identity tensors into vertex sites
-        for k, vcoo in enumerate((vertex_a, vertex_b)):
-
-            vertex_qnum = psi.coo_to_qubit_map(vcoo)            
-            
-            # tag of identity to be absorbed
-            adjacent_tag = psi.adjacent_aux_tag.format(
-                            vertex_qnum, face_qnum) # "AUX{V},{F}"
-            
-            # tag of vertex to absorb identity _into_
-            vertex_tag = psi._site_tag_id.format(*vcoo)
-            
-            dummy_identities_info.update({
-                (k, 'neighbor_tags'): tuple(t.tags for t in 
-                    psi.select_neighbors(adjacent_tag))
-            })
-
-            tids = psi._get_tids_from_tags(
-                tags=(vertex_tag, adjacent_tag), which='any')
-            
-            # pop and reattach the contracted tensors
-            pts = [psi._pop_tensor(tid) for tid in tids]
-            new_vertex = qtn.tensor_contract(*pts)
-            
-            dummy_identities_info.update({
-                (k, 'tags'): pts[1].tags, #dummy tags 
-                (k, 'coo'): psi.find_tensor_coo(pts[1]), #coo (x,y)
-                # (k, 'inds'): pts[1].inds, #dummy indices
-            })
-            
-            # drop dummy's tags from vertex site
-            new_vertex.drop_tags(pts[1].tags - pts[0].tags) 
-            psi |= new_vertex
-
-        vertex_tensors = [psi[coo] for coo in (vertex_a, vertex_b)]
-        face_tensor = psi[face_coo] 
-        
-        # apply gate!
-        three_body_op.triangle_gate_absorb(TG=TG, reindex_map=reindex_map, 
-                    vertex_tensors=vertex_tensors, 
-                    face_tensor=face_tensor, phys_inds=phys_inds,
-                    gate_tags=gate_tags, **compress_opts)
-
-
-        if not restore_dummies:
-            return psi
-
-        # now insert new dummy identities where they used to be
-
-        # for k in range(2):
-        #     vt = vertex_tensors[k]
-            
-        #     ts_to_connect = set(
-        #         psi[tags] for tags in dummy_identities_info[(k, 'neighbor_tags')]
-        #         ) - set([vt])
-
-        #     for T2 in ts_to_connect:
-        #         psi |= insert_identity_between_tensors(T1=vt, T2=T2, add_tags='TEMP')
-
-        #     # contract new dummies into a single identity
-        #     psi ^= 'TEMP'
-        #     # restore previous tags, and drop temporary tag
-        #     for tag in dummy_identities_info[(k, 'tags')]:
-        #         psi['TEMP'].add_tag(tag)
-        #     psi.drop_tags('TEMP')
-
-
-        for k, vcoo in enumerate((vertex_a, vertex_b)):
-            
-            vtensor = psi[vcoo]
-            vertex_ind = psi.site_ind_id.format(*vcoo) # kx,y
-            
-            ts_to_connect = set(psi[tags] for tags in 
-                dummy_identities_info[(k, 'neighbor_tags')]) - set([vtensor])
-            
-            dummy_coo = dummy_identities_info[(k,'coo')] # (x,y)
-
-            # free_inds = [ix for ix in vtensor.inds if 
-            #     len(psi.ind_map[ix]) == 1]
-            
-            # bonds connecting to dummy's neighbors
-            dummy_bonds = qu.oset.union(
-                *(qtn.bonds(vtensor, t) for t in ts_to_connect))
-
-            # pop the vertex tensor, to split and reattach soon
-            vtensor, = (psi._pop_tensor(x) for x in 
-                psi._get_tids_from_inds(vertex_ind))
-            
-            # the dummy may not have a physical "kx,y" index
-            dummy_phys_ix = psi.site_ind_id.format(*dummy_coo) 
-            if dummy_phys_ix in vtensor.inds:
-                dummy_bonds |= qu.oset([dummy_phys_ix])
-
-            # split into vertex & dummy
-            new_vertex, new_dummy = vtensor.split(
-                left_inds=None, method='qr', get='tensors',
-                right_inds=dummy_bonds)
-
-
-            new_dummy.drop_tags()
-            for t in dummy_identities_info[(k, 'tags')]:
-                new_dummy.add_tag(t)
-
-            psi |= new_vertex
-            psi |= new_dummy
-
-        return psi
-    
-
-    absorb_three_body_tensor_ = functools.partialmethod(absorb_three_body_tensor,
-                                    inplace=True)
-    
-
-    def add_fake_phys_inds(self, dp):
-        '''
-        Add "k{x},{y}" indices to all the tensor sites,
-        including auxiliary sites, so that every site 
-        has a 'physical' index. Inplace operation.
-
-        dp: int, the size of the fake physical indices
-        '''
-
-        for x, y in product(range(self.Lx), range(self.Ly)):
-            ind_xy = self._site_ind_id.format(x,y)
-            
-            # skip the 'kx,y' indices that already exist
-            if ind_xy in self.ind_map.keys(): 
-                continue
-
-            # add the new index
-            self[x,y].new_ind(name=ind_xy, size=dp)
-                
-            
-
-class ePEPSvector(ePEPS, 
-            qtn.tensor_2d.TensorNetwork2DVector,
-            qtn.tensor_2d.TensorNetwork2DFlat,
-            qtn.TensorNetwork2D, 
-            qtn.TensorNetwork):
-
-    
-    _EXTRA_PROPS = (
-        '_Lx',
-        '_Ly',
-        '_site_tag_id',
-        '_site_ind_id',
-        '_row_tag_id',
-        '_col_tag_id',
-        '_qubit_to_coo_map',
-        # '_phys_dim',
-        # '_grid_tag_id',
-        # '_aux_tag_id', ... aux_tag_id='IX{}Y{}',
-        # '_phys_ind_id',
-    )
-    
-
-    _SPECIAL_TAGS = {
-        'aux_identity': 'AUX', 
-        'adj_to_vertex_face': 'ADJ{},{}' 
-    }
-
-
-    def is_qubit_coo(self, x, y):
-        '''Whether (x,y) lattice site is a genuine 
-        qubit site (rather than dummy site).
-
-        Note that 'empty' face sites yield True! i.e.
-        >>> psi.is_qubit_coo(x,y) == ('QUBIT' in psi[x,y].tags)
-
-        will be True except at empty face sites, which are
-        'genuine' but are empty due to DK encoding.
-        '''
-        return all((x % 2 == y % 2, 
-                0 <= x < self.Lx,
-                0 <= y < self.Ly))
-
-
-    def is_vertex_coo(self, x, y):
-        return all((x % 2 == 0, 
-                    y % 2 == 0,
-                    0 <= x < self.Lx,
-                    0 <= y < self.Ly))
-
-
-    def is_face_coo(self, x, y):
-        return all((x % 2 == 1, 
-                    y % 2 == 1,
-                    0 <= x < self.Lx,
-                    0 <= y < self.Ly))
-
-
-    def calc_plaquette_map(self, plaquettes, include_3_body=True):
-        """Generate a dictionary of all the coordinate pairs in ``plaquettes``
-        mapped to the 'best' (smallest) rectangular plaquette that contains them.
-        
-        Will optionally compute for 3-length combinations as well, to
-        capture 3-local qubit interactions like (vertex, vertex, face)
-        interactions.
-
-        Args:
-        -----
-            plaquettes: sequence of tuple[tuple[int]]
-                Sequence of plaquettes like ((x0, y0), (dx, dy))
-
-            include_3_body: bool, optional
-                Whether to include 3-local interactions as well 
-                as 2-local (pairwise).
-
-
-        TODO: if not include_3_body we can just use the super class method. 
-        """
-        if not include_3_body:
-            return super().calc_plaquette_map(plaquettes)
-        
-        # sort in descending total plaquette size
-        plqs = sorted(plaquettes, key=lambda p: (-p[1][0] * p[1][1], p))
-        
-        mapping = dict()
-        for p in plqs:
-            sites = qtn.tensor_2d.plaquette_to_sites(p)
-
-            # pairwise (2-local) interactions
-            for coo_pair in combinations(sites, 2):
-                if all(tuple(starmap(self.is_qubit_coo, coo_pair))):
-                    mapping[coo_pair] = p
-
-            # 3-local interactions
-            for coo_triple in combinations(sites, 3):
-                if all(tuple(starmap(self.is_qubit_coo, coo_triple))):
-                    # make sure face qubit is the third entry
-                    if self.is_face_coo(*coo_triple[0]):
-                        coo_triple = (coo_triple[2], coo_triple[1], coo_triple[0])
-
-                    elif self.is_face_coo(*coo_triple[1]):
-                        coo_triple = (coo_triple[0], coo_triple[2], coo_triple[1])
-                    
-                    mapping[coo_triple] = p
-        
-        return mapping
-
-
-    def calc_plaquette_envs_and_map(self, terms, autogroup=True, **plaquette_env_options):
-        '''Returns the plaquette_envs and plaquette_map needed to
-        compute local expectations, overriding `calc_plaquette_map`
-        to include 3-body interactions.
-        '''
-        norm = self.make_norm(return_all=False)
-
-        # set some sensible defaults
-        plaquette_env_options.setdefault('layer_tags', ('KET', 'BRA'))
-
-        plaquette_envs = dict()
-        for x_bsz, y_bsz in qtn.tensor_2d.calc_plaquette_sizes(terms.keys(), autogroup):
-            plaquette_envs.update(norm.compute_plaquette_environments(
-                x_bsz=x_bsz, y_bsz=y_bsz, **plaquette_env_options))
-
-        # work out which plaquettes to use for which terms
-        plaquette_map = self.calc_plaquette_map(plaquette_envs)
-        
-        # adjust plaqmap to the Hamiltonian term ordering
-        for coos in terms.keys():
-            
-            if coos in plaquette_map: 
-                continue    # good
-
-            for perm in permutations(coos):
-                if perm in plaquette_map: 
-                    plaquette_map.update({coos: plaquette_map[perm]})
-            
-        return plaquette_envs, plaquette_map
 
 
 #************* Hamiltonian Classes ***************#
 
-class CoordinateHamiltonian():
-    '''Wrapper class for previously-defined Hamiltonians.
+# class CoordinateHamiltonian():
+#     '''Wrapper class for previously-defined Hamiltonians.
     
-    If `Ham` previously generated terms like 
+#     If `Ham` previously generated terms like 
         
-        (sequence of qubit numbers, gate),  e.g. ([0, 1, 9] , pauli(XYX))
+#         (sequence of qubit numbers, gate),  e.g. ([0, 1, 9] , pauli(XYX))
     
-    the equivalent `CoordinateHamiltonian` will generate terms like
+#     the equivalent `CoordinateHamiltonian` will generate terms like
 
-        (sequence of qubit coordinates, gate) e.g. 
-        ([(4,0), (4,2), (3,1)], pauli(XYX))
+#         (sequence of qubit coordinates, gate) e.g. 
+#         ([(4,0), (4,2), (3,1)], pauli(XYX))
 
-    Obviously depends on a coordinate-choice! Will need to specify a 
-    mapping from qubit numbers `q = 0, 1, ... M` to lattice coordinates
-    `(x0, y0), (x1, y1), ... (xM, yM)`. 
+#     Obviously depends on a coordinate-choice! Will need to specify a 
+#     mapping from qubit numbers `q = 0, 1, ... M` to lattice coordinates
+#     `(x0, y0), (x1, y1), ... (xM, yM)`. 
 
-    Attributes:
-    -----------
-    '''
-    def __init__(self, coo_ham_terms, qubit_to_coo_map):
+#     Attributes:
+#     -----------
+#     '''
+#     def __init__(self, coo_ham_terms, qubit_to_coo_map):
 
-        self._qubit_to_coo_map = qubit_to_coo_map
-        self._coo_ham_terms = coo_ham_terms
+#         self._qubit_to_coo_map = qubit_to_coo_map
+#         self._coo_ham_terms = coo_ham_terms
 
-    def gen_ham_terms(self):
-        return iter(self._coo_ham_terms.items())
+#     def gen_ham_terms(self):
+#         return iter(self._coo_ham_terms.items())
 
-    def get_term_at_sites(self, *coos):
-        return self._coo_ham_terms[tuple(coos)]
-
-
-class MasterHam():
-    '''Commodity class to combine a simulator Ham `Hsim`
-    and a stabilizer pseudo-Ham `Hstab` to generate each of 
-    their gates in order.
-
-    Attributes:
-    ----------
-    `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
-
-    `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
-    '''
-    def __init__(self, Hsim, Hstab):
-        self.Hsim=Hsim
-        self.Hstab = Hstab
-
-    def gen_ham_terms(self):
-        return chain(self.Hsim.gen_ham_terms(),
-                     self.Hstab.gen_ham_terms())
-
-    def gen_trotter_gates(self, tau):
-        return chain(self.Hsim.gen_trotter_gates(tau),
-                     self.Hstab.gen_trotter_gates(tau))
+#     def get_term_at_sites(self, *coos):
+#         return self._coo_ham_terms[tuple(coos)]
 
 
-### *********************** ###
+# class MasterHam():
+#     '''Commodity class to combine a simulator Ham `Hsim`
+#     and a stabilizer pseudo-Ham `Hstab` to generate each of 
+#     their gates in order.
 
-class HamStab():
-    '''Pseudo-Hamiltonian of stabilizers,
+#     Attributes:
+#     ----------
+#     `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
+
+#     `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
+#     '''
+#     def __init__(self, Hsim, Hstab):
+#         self.Hsim=Hsim
+#         self.Hstab = Hstab
+
+#     def gen_ham_terms(self):
+#         return chain(self.Hsim.gen_ham_terms(),
+#                      self.Hstab.gen_ham_terms())
+
+#     def gen_trotter_gates(self, tau):
+#         return chain(self.Hsim.gen_trotter_gates(tau),
+#                      self.Hstab.gen_trotter_gates(tau))
+
+
+# ### *********************** ###
+
+# class HamStab():
+#     '''Pseudo-Hamiltonian of stabilizers,
         
-            H_stab = multiplier * (S1 + S2 + ... + Sk), 
+#             H_stab = multiplier * (S1 + S2 + ... + Sk), 
         
-        i.e. sum of all the stabilizers multiplied by ``multiplier``.
+#         i.e. sum of all the stabilizers multiplied by ``multiplier``.
 
-        Stores 8-site gates corresponding to the loop
-        stabilizer operators, intending to be added to a simulator
-        Hamiltonian `H_sim` for TEBD.
-        '''
+#         Stores 8-site gates corresponding to the loop
+#         stabilizer operators, intending to be added to a simulator
+#         Hamiltonian `H_sim` for TEBD.
+#         '''
 
-    def __init__(self, Lx, Ly, multiplier = -1.0):
+#     def __init__(self, Lx, Ly, multiplier = -1.0):
         
         
-        self.qlattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
+#         self.qlattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
 
-        self.multiplier = multiplier
+#         self.multiplier = multiplier
         
-        #map coos to `loopStabOperator` objects
-        coo_stab_map = self.qlattice.make_coo_stabilizer_map()
+#         #map coos to `loopStabOperator` objects
+#         coo_stab_map = self.qlattice.make_coo_stabilizer_map()
 
-        self._stab_gates = self.make_stab_gate_map(coo_stab_map, store='gate')
-        self._exp_stab_gates = dict()
-        self._stab_lists = self.make_stab_gate_map(coo_stab_map, store='tuple')
+#         self._stab_gates = self.make_stab_gate_map(coo_stab_map, store='gate')
+#         self._exp_stab_gates = dict()
+#         self._stab_lists = self.make_stab_gate_map(coo_stab_map, store='tuple')
 
 
 
-    def make_stab_gate_map(self, coo_stab_map, store='gate'):
-        '''TODO: NOW MAPS coos to (where, gate) tuples.
+#     def make_stab_gate_map(self, coo_stab_map, store='gate'):
+#         '''TODO: NOW MAPS coos to (where, gate) tuples.
 
-        Return
-        -------
-        `gate_map`: dict[tuple : (tuple, qarray)] 
-            Maps coordinates (x,y) in the *face* array (empty 
-            faces!) to pairs (where, gate) that specify the 
-            stabilizer gate and the sites to be acted on.
+#         Return
+#         -------
+#         `gate_map`: dict[tuple : (tuple, qarray)] 
+#             Maps coordinates (x,y) in the *face* array (empty 
+#             faces!) to pairs (where, gate) that specify the 
+#             stabilizer gate and the sites to be acted on.
 
-        Param:
-        ------
-        coo_stab_map: dict[tuple : dict]
-            Maps coordinates (x,y) in the face array of the lattice
-            to `loop_stab` dictionaries of the form
-            {'inds' : (indices),   'opstring' : (string)}
+#         Param:
+#         ------
+#         coo_stab_map: dict[tuple : dict]
+#             Maps coordinates (x,y) in the face array of the lattice
+#             to `loop_stab` dictionaries of the form
+#             {'inds' : (indices),   'opstring' : (string)}
         
-        store: 'gate' or 'tuple', optional
-            Whether to store a 'dense' 2**8 x 2**8 array or a tuple
-            of 8 (ordered) 2 x 2 arrays
-        '''
-        gate_map = dict()
+#         store: 'gate' or 'tuple', optional
+#             Whether to store a 'dense' 2**8 x 2**8 array or a tuple
+#             of 8 (ordered) 2 x 2 arrays
+#         '''
+#         gate_map = dict()
 
-        for coo, loop_stab in coo_stab_map.items():
-            #tuple e.g. (1,2,4,5,6)
-            qubits = tuple(loop_stab['inds'])
+#         for coo, loop_stab in coo_stab_map.items():
+#             #tuple e.g. (1,2,4,5,6)
+#             qubits = tuple(loop_stab['inds'])
 
-            #string e.g. 'ZZZZX'
-            opstring = loop_stab['opstring']
+#             #string e.g. 'ZZZZX'
+#             opstring = loop_stab['opstring']
             
-            if store == 'gate':            
-                #qarray
-                gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
-                gate *= self.multiplier
-                gate_map[coo] = (qubits, gate)
+#             if store == 'gate':            
+#                 #qarray
+#                 gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
+#                 gate *= self.multiplier
+#                 gate_map[coo] = (qubits, gate)
             
-            elif store == 'tuple':
+#             elif store == 'tuple':
 
-                signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
-                gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
-                gate_map[coo] = (qubits, gates)
+#                 signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
+#                 gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
+#                 gate_map[coo] = (qubits, gates)
             
         
-        return gate_map
+#         return gate_map
 
 
 
-    def reset_multiplier(self, multiplier):
-        '''Reset multiplier, re-compute stabilizer gates 
-        and erase previous expm(gates)
-        '''
-        self.multiplier = multiplier
-        self._stab_gates = self.make_stab_gate_map(coo_stab_map)
-        self._exp_stab_gates = dict()
+#     def reset_multiplier(self, multiplier):
+#         '''Reset multiplier, re-compute stabilizer gates 
+#         and erase previous expm(gates)
+#         '''
+#         self.multiplier = multiplier
+#         self._stab_gates = self.make_stab_gate_map(coo_stab_map)
+#         self._exp_stab_gates = dict()
 
 
-    def gen_ham_terms(self):
-        '''Generate (`where`, `gate`) pairs for acting with 
-        the 8-site stabilizer gates on specified sites.
+#     def gen_ham_terms(self):
+#         '''Generate (`where`, `gate`) pairs for acting with 
+#         the 8-site stabilizer gates on specified sites.
 
-        Note the *keys* in the dictionary are coos and not used!
-        '''
-        for where, gate in self._stab_gates.values():
-            yield (where, gate)
+#         Note the *keys* in the dictionary are coos and not used!
+#         '''
+#         for where, gate in self._stab_gates.values():
+#             yield (where, gate)
 
-    def gen_ham_stabilizer_lists(self):
-        '''Generate ``(where, gates)`` pairs for each stabilizer term.
-        where: tuple[int]
-            The qubits to be acted on
-        gates: tuple[array]
-            The one-site qubit gates (2x2 arrays)
-        '''
-        for where, gatelist in self._stab_lists.values():
-            yield (where, gatelist)
+#     def gen_ham_stabilizer_lists(self):
+#         '''Generate ``(where, gates)`` pairs for each stabilizer term.
+#         where: tuple[int]
+#             The qubits to be acted on
+#         gates: tuple[array]
+#             The one-site qubit gates (2x2 arrays)
+#         '''
+#         for where, gatelist in self._stab_lists.values():
+#             yield (where, gatelist)
     
-    def _get_exp_stab_gate(self, coo, tau):
-        '''
-        Returns 
-        -------
-        `exp(tau * multiplier * stabilizer)`: qarray
+#     def _get_exp_stab_gate(self, coo, tau):
+#         '''
+#         Returns 
+#         -------
+#         `exp(tau * multiplier * stabilizer)`: qarray
         
-                Expm() of stabilizer centered on empty face at `coo`.
+#                 Expm() of stabilizer centered on empty face at `coo`.
 
-        Params
-        -------
-        `coo`: tuple (x,y)
-            (Irrelevant) location of the empty face that 
-            the stabilizer corresponds to. Just a label.
+#         Params
+#         -------
+#         `coo`: tuple (x,y)
+#             (Irrelevant) location of the empty face that 
+#             the stabilizer corresponds to. Just a label.
         
-        `tau`: float
-            Imaginary time for the exp(tau * gate)
-        '''
-        key = (coo, tau)
+#         `tau`: float
+#             Imaginary time for the exp(tau * gate)
+#         '''
+#         key = (coo, tau)
 
-        if key not in self._exp_stab_gates:
-            where, gate = self._stab_gates[coo]
-            el, ev = do('linalg.eigh', gate)
-            expgate = ev @ do('diag', do('exp', el*tau)) @ dag(ev)
-            self._exp_stab_gates[key] = (where, expgate)
+#         if key not in self._exp_stab_gates:
+#             where, gate = self._stab_gates[coo]
+#             el, ev = do('linalg.eigh', gate)
+#             expgate = ev @ do('diag', do('exp', el*tau)) @ dag(ev)
+#             self._exp_stab_gates[key] = (where, expgate)
         
-        return self._exp_stab_gates[key]
+#         return self._exp_stab_gates[key]
 
 
-    def gen_trotter_gates(self, tau):
-        '''Generate (`where`, `exp(tau*gate)`) pairs for acting
-        with exponentiated stabilizers on lattice.
-        '''
-        for coo in self.empty_face_coos():
-            yield self._get_exp_stab_gate(coo, tau)
+#     def gen_trotter_gates(self, tau):
+#         '''Generate (`where`, `exp(tau*gate)`) pairs for acting
+#         with exponentiated stabilizers on lattice.
+#         '''
+#         for coo in self.empty_face_coos():
+#             yield self._get_exp_stab_gate(coo, tau)
 
 
-    def empty_face_coos(self):
-        return self._stab_gates.keys()
+#     def empty_face_coos(self):
+#         return self._stab_gates.keys()
 
 
-###  **********************************  ###
+# ###  **********************************  ###
 
 
-class SimulatorHam():
-    '''Generic class for simulator 
-    (i.e. qubit-space) Hamiltonians. 
+# class SimulatorHam():
+#     '''Generic class for simulator 
+#     (i.e. qubit-space) Hamiltonians. 
 
-    Takes a `qlattice` object to handle lattice geometry/edges, 
-    and a mapping `ham_terms` of edges to two/three site gates.
-    '''
+#     Takes a `qlattice` object to handle lattice geometry/edges, 
+#     and a mapping `ham_terms` of edges to two/three site gates.
+#     '''
     
-    def __init__(self, Lx, Ly, phys_dim, ham_terms):
-        '''
-        Lx: number of vertex qubit rows
-        Ly: number vertex qubit columns                 
+#     def __init__(self, Lx, Ly, phys_dim, ham_terms):
+#         '''
+#         Lx: number of vertex qubit rows
+#         Ly: number vertex qubit columns                 
                  
-                :       :           
-          x+1  ─●───────●─   < vertex row
-                │ \   / │           
-                │   ●   │    < face row
-                │ /   \ │           
-           x   ─●───────●─   < vertex row
-                :       :           
+#                 :       :           
+#           x+1  ─●───────●─   < vertex row
+#                 │ \   / │           
+#                 │   ●   │    < face row
+#                 │ /   \ │           
+#            x   ─●───────●─   < vertex row
+#                 :       :           
 
-        => Total number of vertices = Lx * Ly        
+#         => Total number of vertices = Lx * Ly        
 
-        phys_dim: int
-            Local site dimension (d=2 for 
-            simple qubits)
+#         phys_dim: int
+#             Local site dimension (d=2 for 
+#             simple qubits)
         
-        ham_terms: dict{tuple[int]: qarray}
-            Mapping of qubit numbers (integer 
-            labels) to raw operators.
+#         ham_terms: dict{tuple[int]: qarray}
+#             Mapping of qubit numbers (integer 
+#             labels) to raw operators.
 
-        '''
-        self._Lx = Lx
-        self._Ly = Ly
-        self._phys_dim = phys_dim
+#         '''
+#         self._Lx = Lx
+#         self._Ly = Ly
+#         self._phys_dim = phys_dim
 
-        self._ham_terms = ham_terms
-        self._exp_gates = dict()
+#         self._ham_terms = ham_terms
+#         self._exp_gates = dict()
 
         
-    def get_gate(self, edge):
-        '''Local term corresponding to `edge`
-        '''
-        return self._ham_terms[edge]
+#     def get_gate(self, edge):
+#         '''Local term corresponding to `edge`
+#         '''
+#         return self._ham_terms[edge]
 
 
-    def get_expm_gate(self, edge, t):
-        '''Local term for `edge`, matrix-exponentiated
-        by `t`.
-        '''
-        # return self._expm_cached(self.get_gate(edge), x)
-        key = (edge, t)
-        if key not in self._exp_gates:
-            gate = self.get_gate(edge)
-            el, ev = do('linalg.eigh',gate)
-            self._exp_gates[key] = ev @ do('diag', do('exp', el*t)) @ dag(ev)
-        return self._exp_gates[key]
+#     def get_expm_gate(self, edge, t):
+#         '''Local term for `edge`, matrix-exponentiated
+#         by `t`.
+#         '''
+#         # return self._expm_cached(self.get_gate(edge), x)
+#         key = (edge, t)
+#         if key not in self._exp_gates:
+#             gate = self.get_gate(edge)
+#             el, ev = do('linalg.eigh',gate)
+#             self._exp_gates[key] = ev @ do('diag', do('exp', el*t)) @ dag(ev)
+#         return self._exp_gates[key]
 
     
 
-    def _trotter_gate_group(self, group, x):
-        '''Returns mapping of edges (in ``group``) to
-        the corresponding exponentiated gates.
+#     def _trotter_gate_group(self, group, x):
+#         '''Returns mapping of edges (in ``group``) to
+#         the corresponding exponentiated gates.
         
-        Returns: dict[edge : exp(Ham gate)]
-        '''
-        edges = self.get_edges(group)
-        gate_map = {edge : self.get_expm_gate(edge,x) for edge in edges}
-        return gate_map
+#         Returns: dict[edge : exp(Ham gate)]
+#         '''
+#         edges = self.get_edges(group)
+#         gate_map = {edge : self.get_expm_gate(edge,x) for edge in edges}
+#         return gate_map
     
 
-    #TODO: add _ internal method
-    def get_edges(self, which):
-        '''Retrieves (selected) edges from internal 
-        qlattice object.
-        '''
-        return self.qlattice.get_edges(which)
+#     #TODO: add _ internal method
+#     def get_edges(self, which):
+#         '''Retrieves (selected) edges from internal 
+#         qlattice object.
+#         '''
+#         return self.qlattice.get_edges(which)
 
-    @property
-    def Lx(self):
-        return self._Lx
+#     @property
+#     def Lx(self):
+#         return self._Lx
 
-    @property
-    def Ly(self):
-        return self._Ly
+#     @property
+#     def Ly(self):
+#         return self._Ly
 
     
-    def ham_params(self):
-        '''Relevant Hamiltonian parameters.
-        '''
-        pass
+#     def ham_params(self):
+#         '''Relevant Hamiltonian parameters.
+#         '''
+#         pass
 
 
-    def gen_ham_terms(self):
-        pass
+#     def gen_ham_terms(self):
+#         pass
     
-    def gen_horizontal_ham_terms(self):
-        pass
+#     def gen_horizontal_ham_terms(self):
+#         pass
     
-    def gen_vertical_ham_terms(self):
-        pass
+#     def gen_vertical_ham_terms(self):
+#         pass
 
-    def gen_trotter_gates(self, tau):
-        pass
+#     def gen_trotter_gates(self, tau):
+#         pass
 
 
-## ******************* ##
-# Subclass Hamiltonians
-## ******************* ##
+# ## ******************* ##
+# # Subclass Hamiltonians
+# ## ******************* ##
 
-class SpinlessSimHam(SimulatorHam):
-    '''Qubit Hamiltonian: spinless fermion Hubbard Ham,
-    encoded as a qubit simulator Ham.
+# class SpinlessSimHam(SimulatorHam):
+#     '''Qubit Hamiltonian: spinless fermion Hubbard Ham,
+#     encoded as a qubit simulator Ham.
 
-    H =   t  * hopping
-        + V  * repulsion
-        - mu * occupation
-    '''
+#     H =   t  * hopping
+#         + V  * repulsion
+#         - mu * occupation
+#     '''
 
-    def __init__(self, Lx, Ly, t=1.0, V=1.0, mu=0.5):
-        '''
-        Lx: num vertex qubit rows
-        Ly: num vertex qubit columns
+#     def __init__(self, Lx, Ly, t=1.0, V=1.0, mu=0.5):
+#         '''
+#         Lx: num vertex qubit rows
+#         Ly: num vertex qubit columns
 
-        t: hopping parameter
-        V: nearest-neighbor repulsion
-        mu: single-site chemical potential
-        '''
-        # Hubbard parameters
-        self._t = t
-        self._V = V
-        self._mu = mu
+#         t: hopping parameter
+#         V: nearest-neighbor repulsion
+#         mu: single-site chemical potential
+#         '''
+#         # Hubbard parameters
+#         self._t = t
+#         self._V = V
+#         self._mu = mu
 
-        # to handle the fermion-to-qubit encoding & lattice geometry
-        self.qlattice = dk_lattice.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
+#         # to handle the fermion-to-qubit encoding & lattice geometry
+#         self.qlattice = dk_lattice.QubitLattice(Lx=Lx, Ly=Ly, local_dim=0)
         
-        terms = self._make_ham_terms()
+#         terms = self._make_ham_terms()
 
-        super().__init__(Lx=Lx, Ly=Ly, phys_dim=0, ham_terms=terms)
+#         super().__init__(Lx=Lx, Ly=Ly, phys_dim=0, ham_terms=terms)
 
 
-    def convert_to_coordinate_ham(self, qubit_to_coo_map):
-        '''Switch the {qubits: gate} dict for a 
-        {coordinates: gate} dict by mapping all the target 
-        qubits to their lattice coordinates.
+#     def convert_to_coordinate_ham(self, qubit_to_coo_map):
+#         '''Switch the {qubits: gate} dict for a 
+#         {coordinates: gate} dict by mapping all the target 
+#         qubits to their lattice coordinates.
 
-        qubit_to_coo_map: callable, int --> tuple[int]
-            Map each qubit number to the corresponding
-            lattice coordinate (x, y)
+#         qubit_to_coo_map: callable, int --> tuple[int]
+#             Map each qubit number to the corresponding
+#             lattice coordinate (x, y)
 
-        Returns:
-        -------
-        Equivalent `CoordinateHamiltonian` object. 
-        '''
-        mapped_ham_terms = dict()
-        for (i,j,f), gate in self._ham_terms.items():
-            qubits = (i,j) if f is None else (i,j,f)
-            qcoos = tuple(map(qubit_to_coo_map, qubits))
-            mapped_ham_terms.update({qcoos: gate})
+#         Returns:
+#         -------
+#         Equivalent `CoordinateHamiltonian` object. 
+#         '''
+#         mapped_ham_terms = dict()
+#         for (i,j,f), gate in self._ham_terms.items():
+#             qubits = (i,j) if f is None else (i,j,f)
+#             qcoos = tuple(map(qubit_to_coo_map, qubits))
+#             mapped_ham_terms.update({qcoos: gate})
     
-        return CoordinateHamiltonian(coo_ham_terms=mapped_ham_terms,
-                qubit_to_coo_map = qubit_to_coo_map)
+#         return CoordinateHamiltonian(coo_ham_terms=mapped_ham_terms,
+#                 qubit_to_coo_map = qubit_to_coo_map)
 
 
-    def get_term_at(self, i, j, f=None):
-        '''Array acting on edge `(i,j,f)`.
-        `i,j` are vertex sites, optional `f` is 
-        the face site.
-        '''
-        return self._ham_terms[(i,j,f)]
+#     def get_term_at(self, i, j, f=None):
+#         '''Array acting on edge `(i,j,f)`.
+#         `i,j` are vertex sites, optional `f` is 
+#         the face site.
+#         '''
+#         return self._ham_terms[(i,j,f)]
 
 
-    def ham_params(self):
-        '''Ham coupling constants
+#     def ham_params(self):
+#         '''Ham coupling constants
 
-        t: hopping parameter,
-        V: nearest-neighbor repulsion,
-        mu: chemical potential
-        '''
-        return (self._t, self._V, self._mu)
-
-
-    def gen_ham_terms(self):
-        '''Generate ``(where, gate)`` pairs for every group 
-        of qubits (i.e. every graph edge ``where``) to be acted
-        on with a Ham term. Drops any `None` empty qubits.
-        '''
-        for (i,j,f), gate in self._ham_terms.items():
-            where = (i,j) if f is None else (i,j,f)
-            yield where, gate
+#         t: hopping parameter,
+#         V: nearest-neighbor repulsion,
+#         mu: chemical potential
+#         '''
+#         return (self._t, self._V, self._mu)
 
 
-    def gen_horizontal_ham_terms(self):
-        '''Only those terms in the Hamiltonian acting on horizontal
-        graph edges, i.e. the ``where`` qubit sites must correspond
-        to a *horizontal* (vertex, vertex, face or None).
-        '''
+#     def gen_ham_terms(self):
+#         '''Generate ``(where, gate)`` pairs for every group 
+#         of qubits (i.e. every graph edge ``where``) to be acted
+#         on with a Ham term. Drops any `None` empty qubits.
+#         '''
+#         for (i,j,f), gate in self._ham_terms.items():
+#             where = (i,j) if f is None else (i,j,f)
+#             yield where, gate
 
-        for (i, j, f) in self.get_edges(which='horizontal'):
-            gate = self.get_term_at(i, j, f)
-            where = (i, j) if f is None else (i, j, f)
-            yield where, gate
+
+#     def gen_horizontal_ham_terms(self):
+#         '''Only those terms in the Hamiltonian acting on horizontal
+#         graph edges, i.e. the ``where`` qubit sites must correspond
+#         to a *horizontal* (vertex, vertex, face or None).
+#         '''
+
+#         for (i, j, f) in self.get_edges(which='horizontal'):
+#             gate = self.get_term_at(i, j, f)
+#             where = (i, j) if f is None else (i, j, f)
+#             yield where, gate
     
-    def gen_vertical_ham_terms(self):
+#     def gen_vertical_ham_terms(self):
     
-        for (i, j, f) in self.get_edges(which='vertical'):
-            gate = self.get_term_at(i, j, f)
-            where = (i, j) if f is None else (i, j, f)
-            yield where, gate
+#         for (i, j, f) in self.get_edges(which='vertical'):
+#             gate = self.get_term_at(i, j, f)
+#             where = (i, j) if f is None else (i, j, f)
+#             yield where, gate
     
 
 
-    def gen_trotter_gates(self, tau):
-        '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
-        location (edge) `where` and gate exponentiated by
-        `tau`. 
+#     def gen_trotter_gates(self, tau):
+#         '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
+#         location (edge) `where` and gate exponentiated by
+#         `tau`. 
 
-        Generated in ordered groups of edges:
-        1. Horizontal-even
-        2. Horizontal-odd
-        3. Vertical-even
-        4. Vertical-odd
-        '''
-        for group in ['he', 'ho', 've', 'vo']:
+#         Generated in ordered groups of edges:
+#         1. Horizontal-even
+#         2. Horizontal-odd
+#         3. Vertical-even
+#         4. Vertical-odd
+#         '''
+#         for group in ['he', 'ho', 've', 'vo']:
 
-            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
+#             for edge, exp_gate in self._trotter_gate_group(group, tau).items():
                 
-                i,j,f = edge
-                where = (i,j) if f is None else (i,j,f)
-                yield where, exp_gate
+#                 i,j,f = edge
+#                 where = (i,j) if f is None else (i,j,f)
+#                 yield where, exp_gate
 
 
-    def _make_ham_terms(self):
-        '''Get all terms in Ham as two/three-site gates, 
-        in a dict mapping edges to qarrays.
+#     def _make_ham_terms(self):
+#         '''Get all terms in Ham as two/three-site gates, 
+#         in a dict mapping edges to qarrays.
         
-        Returns:  dict{edge (i,j,f): gate (qarray)}
+#         Returns:  dict{edge (i,j,f): gate (qarray)}
 
-        If `f` is None, the corresponding gate will be two-site 
-        (vertices only). Otherwise, gate acts on three sites.
-        '''
-        t, V, mu = self.ham_params()
-        qlattice = self.qlattice
+#         If `f` is None, the corresponding gate will be two-site 
+#         (vertices only). Otherwise, gate acts on three sites.
+#         '''
+#         t, V, mu = self.ham_params()
+#         qlattice = self.qlattice
 
-        terms = dict()
+#         terms = dict()
 
-        #vertical edges
-        for direction, sign in (('down', 1), ('up', -1)):
+#         #vertical edges
+#         for direction, sign in (('down', 1), ('up', -1)):
 
-            for (i,j,f) in qlattice.get_edges(direction):
+#             for (i,j,f) in qlattice.get_edges(direction):
                 
-                #two-site
-                if f is None:
-                    terms[(i,j,f)] = sign * t * self._two_site_hop_gate()
-                    terms[(i,j,f)] += V * (number_op()&number_op())
+#                 #two-site
+#                 if f is None:
+#                     terms[(i,j,f)] = sign * t * self._two_site_hop_gate()
+#                     terms[(i,j,f)] += V * (number_op()&number_op())
                 
-                #three-site
-                else:
-                    terms[(i,j,f)] = sign * t * self._three_site_hop_gate(edge_dir='vertical')
-                    terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
+#                 #three-site
+#                 else:
+#                     terms[(i,j,f)] = sign * t * self._three_site_hop_gate(edge_dir='vertical')
+#                     terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
 
 
-        #horizontal edges
-        for (i,j,f) in qlattice.get_edges('horizontal'):
+#         #horizontal edges
+#         for (i,j,f) in qlattice.get_edges('horizontal'):
 
-            #two-site 
-            if f is None:
-                    terms[(i,j,f)] =  t * self._two_site_hop_gate()
-                    terms[(i,j,f)] += V * (number_op()&number_op())
+#             #two-site 
+#             if f is None:
+#                     terms[(i,j,f)] =  t * self._two_site_hop_gate()
+#                     terms[(i,j,f)] += V * (number_op()&number_op())
 
-            #three-site    
-            else:
-                terms[(i,j,f)] =  t * self._three_site_hop_gate(edge_dir='horizontal')
-                terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
+#             #three-site    
+#             else:
+#                 terms[(i,j,f)] =  t * self._three_site_hop_gate(edge_dir='horizontal')
+#                 terms[(i,j,f)] += V * (number_op()&number_op()&qu.eye(2))
 
         
-        if mu == 0.0:
-            return terms
+#         if mu == 0.0:
+#             return terms
 
 
-        n_op = number_op() #one-site number operator 
+#         n_op = number_op() #one-site number operator 
 
-        # map each vertex to the list of edges where it appears
-        self._vertices_to_covering_terms = defaultdict(list)
-        for edge in terms:
-            (i,j,f) = edge
-            self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
-            self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+#         # map each vertex to the list of edges where it appears
+#         self._vertices_to_covering_terms = defaultdict(list)
+#         for edge in terms:
+#             (i,j,f) = edge
+#             self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
+#             self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
 
 
-        #for each vertex in lattice, absorb chemical potential term
-        #uniformly into the edge terms that include it
-        for vertex in qlattice.vertex_sites():
+#         #for each vertex in lattice, absorb chemical potential term
+#         #uniformly into the edge terms that include it
+#         for vertex in qlattice.vertex_sites():
             
-            #get edges that include this vertex
-            edges = self._vertices_to_covering_terms[vertex]
-            num_edges = len(edges)
+#             #get edges that include this vertex
+#             edges = self._vertices_to_covering_terms[vertex]
+#             num_edges = len(edges)
 
-            #should appear in at least two edge terms!
-            if not (num_edges > 1 or qlattice.num_faces == 0):
-                raise ValueError("Something's wrong")
-
-
-            for (i,j,f) in edges:
-
-                v_place = (i,j,f).index(vertex) #vertex is either i or j
-
-                if f is None: #ham_term should act on two sites
-                    terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*2, inds=v_place)
-
-                else: #act on three sites
-                    terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*3, inds=v_place)
-
-        return terms
+#             #should appear in at least two edge terms!
+#             if not (num_edges > 1 or qlattice.num_faces == 0):
+#                 raise ValueError("Something's wrong")
 
 
-    def _two_site_hop_gate(self):
-        '''Hopping between two vertices, with no face site.
-        '''
-        X, Y = (qu.pauli(mu) for mu in ['x','y'])
-        return 0.5* ((X & X) + (Y & Y))
+#             for (i,j,f) in edges:
+
+#                 v_place = (i,j,f).index(vertex) #vertex is either i or j
+
+#                 if f is None: #ham_term should act on two sites
+#                     terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*2, inds=v_place)
+
+#                 else: #act on three sites
+#                     terms[(i,j,f)] -= mu * (1/num_edges) * qu.ikron(n_op, dims=[2]*3, inds=v_place)
+
+#         return terms
 
 
-    def _three_site_hop_gate(self, edge_dir):
-        '''Hop gate acting on two vertices and a face site.
-        '''
-        X, Y = (qu.pauli(mu) for mu in ['x','y'])
-        O_face = {'vertical': X, 'horizontal':Y} [edge_dir]
+#     def _two_site_hop_gate(self):
+#         '''Hopping between two vertices, with no face site.
+#         '''
+#         X, Y = (qu.pauli(mu) for mu in ['x','y'])
+#         return 0.5* ((X & X) + (Y & Y))
 
-        return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
+
+#     def _three_site_hop_gate(self, edge_dir):
+#         '''Hop gate acting on two vertices and a face site.
+#         '''
+#         X, Y = (qu.pauli(mu) for mu in ['x','y'])
+#         O_face = {'vertical': X, 'horizontal':Y} [edge_dir]
+
+#         return 0.5 * ((X & X & O_face) + (Y & Y & O_face))
         
 
 
-################################
+# ################################
 
-class MPOSpinlessHam():
+# class MPOSpinlessHam():
 
-    def __init__(self, qlattice, t, V, mu):
+#     def __init__(self, qlattice, t, V, mu):
 
-        self._t = t
-        self._V = V
-        self._mu = mu
+#         self._t = t
+#         self._V = V
+#         self._mu = mu
 
-        self._site_tag_id = 'Q{}'
-        self._ham_terms = self._make_ham_terms(qlattice)
+#         self._site_tag_id = 'Q{}'
+#         self._ham_terms = self._make_ham_terms(qlattice)
 
 
-    def ham_params(self):
-        return (self._t, self._V, self._mu)
+#     def ham_params(self):
+#         return (self._t, self._V, self._mu)
     
 
-    def get_term_at(self, i, j, f=None):
-        '''MPO acting on edge `(i,j,f)`.
-        `i,j` are vertex sites, optional `f` is 
-        the face site.
-        '''
-        return self._ham_terms[(i,j,f)]
+#     def get_term_at(self, i, j, f=None):
+#         '''MPO acting on edge `(i,j,f)`.
+#         `i,j` are vertex sites, optional `f` is 
+#         the face site.
+#         '''
+#         return self._ham_terms[(i,j,f)]
     
 
-    def gen_ham_terms(self):
-        '''Generate (`where`, `gate`) pairs for every location
-        (i.e. edge) to be acted on with a Ham term
-        '''
-        for (i,j,f), mpo in self._ham_terms.items():
-            where = (i,j) if f is None else (i,j,f)
-            yield where, mpo
+#     def gen_ham_terms(self):
+#         '''Generate (`where`, `gate`) pairs for every location
+#         (i.e. edge) to be acted on with a Ham term
+#         '''
+#         for (i,j,f), mpo in self._ham_terms.items():
+#             where = (i,j) if f is None else (i,j,f)
+#             yield where, mpo
 
 
-    def _make_ham_terms(self, qlattice):
+#     def _make_ham_terms(self, qlattice):
         
-        site_tag = self._site_tag_id
-        t, V, mu = self.ham_params()
+#         site_tag = self._site_tag_id
+#         t, V, mu = self.ham_params()
 
-        terms = dict()
+#         terms = dict()
         
-        #vertical edges
-        for direction, sign in [('down', 1), ('up', -1)]:
+#         #vertical edges
+#         for direction, sign in [('down', 1), ('up', -1)]:
 
-            for (i,j,f) in qlattice.get_edges(direction):
+#             for (i,j,f) in qlattice.get_edges(direction):
                 
-                #two-site
-                if f is None:
-                    mpo = sign * t * self._two_site_hop_mpo()
-                    mpo += V * self._two_site_nnint_mpo()
-                    terms[(i,j,f)] = mpo
+#                 #two-site
+#                 if f is None:
+#                     mpo = sign * t * self._two_site_hop_mpo()
+#                     mpo += V * self._two_site_nnint_mpo()
+#                     terms[(i,j,f)] = mpo
                 
-                #three-site
-                else:
-                    mpo = sign * t * self._three_site_hop_mpo(edge_dir='vertical')
-                    mpo += V * self._three_site_nnint_mpo()
-                    terms[(i,j,f)] = mpo
+#                 #three-site
+#                 else:
+#                     mpo = sign * t * self._three_site_hop_mpo(edge_dir='vertical')
+#                     mpo += V * self._three_site_nnint_mpo()
+#                     terms[(i,j,f)] = mpo
 
         
-        #horizontal edges
-        for (i,j,f) in qlattice.get_edges('horizontal'):
+#         #horizontal edges
+#         for (i,j,f) in qlattice.get_edges('horizontal'):
 
-            #two-site 
-            if f is None:
-                    terms[(i,j,f)] =  t * self._two_site_hop_mpo()
-                    terms[(i,j,f)] += V * self._two_site_nnint_mpo()
+#             #two-site 
+#             if f is None:
+#                     terms[(i,j,f)] =  t * self._two_site_hop_mpo()
+#                     terms[(i,j,f)] += V * self._two_site_nnint_mpo()
 
-            #three-site    
-            else:
-                terms[(i,j,f)] =  t * self._three_site_hop_mpo(edge_dir='horizontal')
-                terms[(i,j,f)] += V * self._three_site_nnint_mpo()
-
-        
-
-        if mu == 0.0:
-            return terms
-
-
-        n_op = number_op() #one-site number operator 
-        Ident = qu.eye(2)
-
-        #map each vertex to the list of edges where it appears
-        self._vertices_to_covering_terms = defaultdict(list)
-        
-        for edge in terms:
-            (i,j,f) = edge
-            self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
-            self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+#             #three-site    
+#             else:
+#                 terms[(i,j,f)] =  t * self._three_site_hop_mpo(edge_dir='horizontal')
+#                 terms[(i,j,f)] += V * self._three_site_nnint_mpo()
 
         
-        mpo_NI = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
-                                                  Ident.reshape(1,2,2)],
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
 
-        mpo_IN = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
-                                                   n_op.reshape(1,2,2)],
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
+#         if mu == 0.0:
+#             return terms
 
 
-        mpo_NII = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
-                                                    Ident.reshape(1,2,2,1),
-                                                    Ident.reshape(1,2,2)],
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
+#         n_op = number_op() #one-site number operator 
+#         Ident = qu.eye(2)
+
+#         #map each vertex to the list of edges where it appears
+#         self._vertices_to_covering_terms = defaultdict(list)
+        
+#         for edge in terms:
+#             (i,j,f) = edge
+#             self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
+#             self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+
+        
+#         mpo_NI = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
+#                                                   Ident.reshape(1,2,2)],
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
+
+#         mpo_IN = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
+#                                                    n_op.reshape(1,2,2)],
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
 
 
-        mpo_INI = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
-                                                   n_op.reshape(1,2,2,1),
-                                                   Ident.reshape(1,2,2)],
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
+#         mpo_NII = qtn.MatrixProductOperator(arrays=[n_op.reshape(2,2,1),
+#                                                     Ident.reshape(1,2,2,1),
+#                                                     Ident.reshape(1,2,2)],
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
 
 
-        two_site_mpos = (mpo_NI, mpo_IN)
-        three_site_mpos = (mpo_NII, mpo_INI)
+#         mpo_INI = qtn.MatrixProductOperator(arrays=[Ident.reshape(2,2,1),
+#                                                    n_op.reshape(1,2,2,1),
+#                                                    Ident.reshape(1,2,2)],
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
 
-        #for each vertex in lattice, absorb occupation term
-        #evenly into the edge terms that include it
-        for vertex in qlattice.vertex_sites():
+
+#         two_site_mpos = (mpo_NI, mpo_IN)
+#         three_site_mpos = (mpo_NII, mpo_INI)
+
+#         #for each vertex in lattice, absorb occupation term
+#         #evenly into the edge terms that include it
+#         for vertex in qlattice.vertex_sites():
             
-            #get edges that include this vertex
-            cover_edges = self._vertices_to_covering_terms[vertex]
-            num_edges = len(cover_edges)
+#             #get edges that include this vertex
+#             cover_edges = self._vertices_to_covering_terms[vertex]
+#             num_edges = len(cover_edges)
 
-            assert num_edges>1 or qlattice.num_faces()==0 #should appear in at least two edge terms!
+#             assert num_edges>1 or qlattice.num_faces()==0 #should appear in at least two edge terms!
 
 
-            for (i,j,f) in cover_edges:
+#             for (i,j,f) in cover_edges:
                 
-                #Number op acts on either the i or j vertex (first or second site)
-                which_vertex = (i,j,f).index(vertex) #`which` can be 0 or 1
+#                 #Number op acts on either the i or j vertex (first or second site)
+#                 which_vertex = (i,j,f).index(vertex) #`which` can be 0 or 1
 
 
-                #no face, so use 2-site MPO
-                if f is None: 
-                    #choose either NI or IN
-                    terms[(i,j,f)] -= mu * (1/num_edges) * two_site_mpos[which_vertex]
+#                 #no face, so use 2-site MPO
+#                 if f is None: 
+#                     #choose either NI or IN
+#                     terms[(i,j,f)] -= mu * (1/num_edges) * two_site_mpos[which_vertex]
                                 
-                else: #include face, use 3-site MPO
-                    #choose either NII or INI
-                    terms[(i,j,f)] -= mu * (1/num_edges) * three_site_mpos[which_vertex]
+#                 else: #include face, use 3-site MPO
+#                     #choose either NII or INI
+#                     terms[(i,j,f)] -= mu * (1/num_edges) * three_site_mpos[which_vertex]
 
-        return terms
+#         return terms
 
 
-    def _two_site_hop_mpo(self):
-        ''' 0.5 * (XX + YY)
-        '''
-        X, Y = (qu.pauli(q) for q in ['x','y'])
-        site_tag = self._site_tag_id
+#     def _two_site_hop_mpo(self):
+#         ''' 0.5 * (XX + YY)
+#         '''
+#         X, Y = (qu.pauli(q) for q in ['x','y'])
+#         site_tag = self._site_tag_id
     
-        mpoXX = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
-                                                  X.reshape(1,2,2)], 
-                                        shape='ludr',
-                                        site_tag_id=site_tag)
+#         mpoXX = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
+#                                                   X.reshape(1,2,2)], 
+#                                         shape='ludr',
+#                                         site_tag_id=site_tag)
         
-        mpoYY = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
-                                                  Y.reshape(1,2,2)], 
-                                        shape='ludr',
-                                        site_tag_id=site_tag)
+#         mpoYY = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
+#                                                   Y.reshape(1,2,2)], 
+#                                         shape='ludr',
+#                                         site_tag_id=site_tag)
         
-        return (mpoXX + mpoYY) / 2
+#         return (mpoXX + mpoYY) / 2
 
 
-    def _three_site_hop_mpo(self, edge_dir):
-        '''(XXO + YYO)/2
-        '''
-        X, Y = (qu.pauli(q) for q in ['x','y'])
-        O = {'vertical': X, 'horizontal':Y} [edge_dir]
-        site_tag = self._site_tag_id
+#     def _three_site_hop_mpo(self, edge_dir):
+#         '''(XXO + YYO)/2
+#         '''
+#         X, Y = (qu.pauli(q) for q in ['x','y'])
+#         O = {'vertical': X, 'horizontal':Y} [edge_dir]
+#         site_tag = self._site_tag_id
 
-        mpo_XXO = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
-                                                    X.reshape(1,2,2,1),
-                                                    O.reshape(1,2,2)], 
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
+#         mpo_XXO = qtn.MatrixProductOperator(arrays=[X.reshape(2,2,1), 
+#                                                     X.reshape(1,2,2,1),
+#                                                     O.reshape(1,2,2)], 
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
 
-        mpo_YYO = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
-                                                    Y.reshape(1,2,2,1),
-                                                    O.reshape(1,2,2)], 
-                                            shape='ludr',
-                                            site_tag_id=site_tag)
+#         mpo_YYO = qtn.MatrixProductOperator(arrays=[Y.reshape(2,2,1), 
+#                                                     Y.reshape(1,2,2,1),
+#                                                     O.reshape(1,2,2)], 
+#                                             shape='ludr',
+#                                             site_tag_id=site_tag)
 
-        return (mpo_XXO + mpo_YYO) / 2                                                    
+#         return (mpo_XXO + mpo_YYO) / 2                                                    
 
 
-    def _two_site_nnint_mpo(self, third_site_identity=False):
-        '''Two-site nearest-neighbor interaction, optionally padded
-        with an identity to act on a third site.
-        '''
-        Nop = number_op()
-        site_tag = self._site_tag_id
+#     def _two_site_nnint_mpo(self, third_site_identity=False):
+#         '''Two-site nearest-neighbor interaction, optionally padded
+#         with an identity to act on a third site.
+#         '''
+#         Nop = number_op()
+#         site_tag = self._site_tag_id
 
-        if third_site_identity:
-            oplist = [Nop.reshape(2,2,1), 
-                      Nop.reshape(1,2,2,1), 
-                      qu.eye(2).reshape(1,2,2)]
+#         if third_site_identity:
+#             oplist = [Nop.reshape(2,2,1), 
+#                       Nop.reshape(1,2,2,1), 
+#                       qu.eye(2).reshape(1,2,2)]
         
-        else:
-            oplist = [Nop.reshape(2,2,1), 
-                      Nop.reshape(1,2,2)]
+#         else:
+#             oplist = [Nop.reshape(2,2,1), 
+#                       Nop.reshape(1,2,2)]
 
 
-        return qtn.MatrixProductOperator(arrays=oplist,
-                                        shape='ludr',
-                                        site_tag_id=site_tag)
-    
-
-    _three_site_nnint_mpo = functools.partialmethod(_two_site_nnint_mpo,
-                                third_site_identity=True)
-
-
+#         return qtn.MatrixProductOperator(arrays=oplist,
+#                                         shape='ludr',
+#                                         site_tag_id=site_tag)
     
 
-        
+#     _three_site_nnint_mpo = functools.partialmethod(_two_site_nnint_mpo,
+#                                 third_site_identity=True)
 
-################################
 
-class SpinhalfSimHam(SimulatorHam):
-    '''Simulator Hamiltonian, acting on qubit space,
-    that encodes the Fermi-Hubbard model Ham for 
-    spin-1/2 fermions. Each local site is 4-dimensional.
-
-    Gates act on 2 or 3 sites (2 vertices + 1 possible face)
-    '''
-
-    def __init__(self, qlattice, t, U):
-        
-        self._t = t
-        self._U = U
-
-        terms = self._make_ham_terms(qlattice)
-
-        super().__init__(qlattice, terms)
     
 
-    def gen_ham_terms(self):
-        '''Generate (`where`, `gate`) pairs for every location
-        (edge) to be acted on with a Ham term
-        '''
-        for (i,j,f), gate in self._ham_terms.items():
-            where = (i,j) if f is None else (i,j,f)
-            yield where, gate
+        
+
+# ################################
+
+# class SpinhalfSimHam(SimulatorHam):
+#     '''Simulator Hamiltonian, acting on qubit space,
+#     that encodes the Fermi-Hubbard model Ham for 
+#     spin-1/2 fermions. Each local site is 4-dimensional.
+
+#     Gates act on 2 or 3 sites (2 vertices + 1 possible face)
+#     '''
+
+#     def __init__(self, qlattice, t, U):
+        
+#         self._t = t
+#         self._U = U
+
+#         terms = self._make_ham_terms(qlattice)
+
+#         super().__init__(qlattice, terms)
+    
+
+#     def gen_ham_terms(self):
+#         '''Generate (`where`, `gate`) pairs for every location
+#         (edge) to be acted on with a Ham term
+#         '''
+#         for (i,j,f), gate in self._ham_terms.items():
+#             where = (i,j) if f is None else (i,j,f)
+#             yield where, gate
 
 
-    def gen_trotter_gates(self, tau):
-        '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
-        location (edge) `where` and gate exponentiated by
-        `tau`. 
+#     def gen_trotter_gates(self, tau):
+#         '''Generate (`where`, `exp(tau * gate)`) pairs, for each 
+#         location (edge) `where` and gate exponentiated by
+#         `tau`. 
 
-        Generated in ordered groups of edges:
-        1. Horizontal-even
-        2. Horizontal-odd
-        3. Vertical-even
-        4. Vertical-odd
-        '''
-        for group in ['he', 'ho', 've', 'vo']:
+#         Generated in ordered groups of edges:
+#         1. Horizontal-even
+#         2. Horizontal-odd
+#         3. Vertical-even
+#         4. Vertical-odd
+#         '''
+#         for group in ['he', 'ho', 've', 'vo']:
 
-            for edge, exp_gate in self._trotter_gate_group(group, tau).items():
+#             for edge, exp_gate in self._trotter_gate_group(group, tau).items():
                 
-                i,j,f = edge
-                where = (i,j) if f is None else (i,j,f)
-                yield where, exp_gate
+#                 i,j,f = edge
+#                 where = (i,j) if f is None else (i,j,f)
+#                 yield where, exp_gate
 
 
-    def _make_ham_terms(self, qlattice):
-        '''Get all Hamiltonian terms, as two/three-site gates, 
-        in a dict() mapping edges to arrays.
+#     def _make_ham_terms(self, qlattice):
+#         '''Get all Hamiltonian terms, as two/three-site gates, 
+#         in a dict() mapping edges to arrays.
         
-        `terms`:  dict[edge (i,j,f) : gate [qarray] ]
+#         `terms`:  dict[edge (i,j,f) : gate [qarray] ]
 
-        If `f` is None, the corresponding gate will be two-site 
-        (vertices only). Otherwise, gate acts on three sites.
-        '''
-        t, U = self.ham_params()
+#         If `f` is None, the corresponding gate will be two-site 
+#         (vertices only). Otherwise, gate acts on three sites.
+#         '''
+#         t, U = self.ham_params()
 
-        terms = dict()
+#         terms = dict()
 
-        #vertical edges
-        for direction, sign in [('down', 1), ('up', -1)]:
+#         #vertical edges
+#         for direction, sign in [('down', 1), ('up', -1)]:
             
-            spin_up_hop = self._two_site_hop_gate(spin=0)
-            spin_down_hop = self._two_site_hop_gate(spin=1)
+#             spin_up_hop = self._two_site_hop_gate(spin=0)
+#             spin_down_hop = self._two_site_hop_gate(spin=1)
 
-            for (i,j,f) in qlattice.get_edges(direction):
+#             for (i,j,f) in qlattice.get_edges(direction):
                 
-                #two-site
-                if f is None:
-                    terms[(i,j,f)] =  sign * t * spin_up_hop
-                    terms[(i,j,f)] += sign * t * spin_down_hop
-                    # terms[(i,j,f)] += U * self.onsite_gate()
+#                 #two-site
+#                 if f is None:
+#                     terms[(i,j,f)] =  sign * t * spin_up_hop
+#                     terms[(i,j,f)] += sign * t * spin_down_hop
+#                     # terms[(i,j,f)] += U * self.onsite_gate()
                 
-                #three-site
-                else:
-                    terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='vertical')
-                    terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='vertical')
-                    # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
+#                 #three-site
+#                 else:
+#                     terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='vertical')
+#                     terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='vertical')
+#                     # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
 
 
-        #horizontal edges
-        for (i,j,f) in qlattice.get_edges('right+left'):
+#         #horizontal edges
+#         for (i,j,f) in qlattice.get_edges('right+left'):
             
-            #two-site 
-            if f is None:
-                    terms[(i,j,f)] =  t * self._two_site_hop_gate(spin=0)
-                    terms[(i,j,f)] += t * self._two_site_hop_gate(spin=1)
-                    # terms[(i,j,f)] += U * self.onsite_gate()
+#             #two-site 
+#             if f is None:
+#                     terms[(i,j,f)] =  t * self._two_site_hop_gate(spin=0)
+#                     terms[(i,j,f)] += t * self._two_site_hop_gate(spin=1)
+#                     # terms[(i,j,f)] += U * self.onsite_gate()
                 
-            #three-site    
-            else:
-                terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='horizontal')
-                terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='horizontal')
-                # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
+#             #three-site    
+#             else:
+#                 terms[(i,j,f)] =  sign * t * self._three_site_hop_gate(spin=0, edge_dir='horizontal')
+#                 terms[(i,j,f)] += sign * t * self._three_site_hop_gate(spin=1, edge_dir='horizontal')
+#                 # terms[(i,j,f)] += U * self.onsite_gate() & qu.eye(4)
         
         
-        if U == 0.0:
-            return terms
+#         if U == 0.0:
+#             return terms
 
 
-        G_onsite = self._onsite_int_gate() #on-site spin-spin interaction
+#         G_onsite = self._onsite_int_gate() #on-site spin-spin interaction
 
-        #map each vertex to the list of edges where it appears
-        self._vertices_to_covering_terms = defaultdict(list)
-        for edge in terms:
-            (i,j,f) = edge
-            self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
-            self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
+#         #map each vertex to the list of edges where it appears
+#         self._vertices_to_covering_terms = defaultdict(list)
+#         for edge in terms:
+#             (i,j,f) = edge
+#             self._vertices_to_covering_terms[i].append(tuple([i,j,f]))
+#             self._vertices_to_covering_terms[j].append(tuple([i,j,f]))
 
 
-        #for each vertex in lattice, absorb onsite repulsion term
-        #uniformly into the edge terms that include it
-        for vertex in qlattice.vertex_sites():
+#         #for each vertex in lattice, absorb onsite repulsion term
+#         #uniformly into the edge terms that include it
+#         for vertex in qlattice.vertex_sites():
             
-            #get edges that include this vertex
-            edges = self._vertices_to_covering_terms[vertex]
-            num_edges = len(edges)
+#             #get edges that include this vertex
+#             edges = self._vertices_to_covering_terms[vertex]
+#             num_edges = len(edges)
 
-            assert num_edges>1 or qlattice.num_faces()==0  #should appear in at least two edge terms!
+#             assert num_edges>1 or qlattice.num_faces()==0  #should appear in at least two edge terms!
 
-            for (i,j,f) in edges:
+#             for (i,j,f) in edges:
                 
-                # ham_term = terms[(i,j,f)]
+#                 # ham_term = terms[(i,j,f)]
 
-                v_place = (i,j,f).index(vertex) #vertex is either i or j
+#                 v_place = (i,j,f).index(vertex) #vertex is either i or j
 
-                if f is None: #term should act on two sites
-                    terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*2, inds=v_place)
+#                 if f is None: #term should act on two sites
+#                     terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*2, inds=v_place)
 
-                else: #act on three sites
-                    terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*3, inds=v_place)
+#                 else: #act on three sites
+#                     terms[(i,j,f)] += U * (1/num_edges) * qu.ikron(G_onsite, dims=[4]*3, inds=v_place)
 
-        return terms
-
-
-    def ham_params(self):
-        '''t (hopping), U (repulsion)
-        '''
-        return (self._t, self._U)
+#         return terms
 
 
-    def _two_site_hop_gate(self, spin):
-        '''(Encoded) hopping between two vertex sites, for 
-        fermions in the `spin` sector.
-        '''
-        spin = {0: 'u',
-                1: 'd',
-                'up': 'u',
-                'down': 'd',
-                'u': 'u',
-                'd': 'd'
-                }[spin]
+#     def ham_params(self):
+#         '''t (hopping), U (repulsion)
+#         '''
+#         return (self._t, self._U)
+
+
+#     def _two_site_hop_gate(self, spin):
+#         '''(Encoded) hopping between two vertex sites, for 
+#         fermions in the `spin` sector.
+#         '''
+#         spin = {0: 'u',
+#                 1: 'd',
+#                 'up': 'u',
+#                 'down': 'd',
+#                 'u': 'u',
+#                 'd': 'd'
+#                 }[spin]
             
-        X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
+#         X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
 
-        #`spin` says which spin sector to act on
+#         #`spin` says which spin sector to act on
 
-        X_s = { 'u': X & I, 
-                'd': I & X}[spin]
+#         X_s = { 'u': X & I, 
+#                 'd': I & X}[spin]
 
-        Y_s = { 'u': Y & I,
-                'd': I & Y}[spin]
+#         Y_s = { 'u': Y & I,
+#                 'd': I & Y}[spin]
 
-        return 0.5* ((X_s & X_s) + (Y_s & Y_s))
+#         return 0.5* ((X_s & X_s) + (Y_s & Y_s))
     
 
-    def _three_site_hop_gate(self, spin, edge_dir):
-        '''Hop gate acting on two vertices and a face site,
-        in `spin` sector. Action on the face site depends
-        on `edge_dir`: {'vertical', 'horizontal'}
-        '''
-        spin = {0: 'up',
-                1: 'down',
-                'up': 'up',
-                'down': 'down',
-                'u': 'up',
-                'd': 'down'
-                }[spin]
+#     def _three_site_hop_gate(self, spin, edge_dir):
+#         '''Hop gate acting on two vertices and a face site,
+#         in `spin` sector. Action on the face site depends
+#         on `edge_dir`: {'vertical', 'horizontal'}
+#         '''
+#         spin = {0: 'up',
+#                 1: 'down',
+#                 'up': 'up',
+#                 'down': 'down',
+#                 'u': 'up',
+#                 'd': 'down'
+#                 }[spin]
 
-        X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
+#         X, Y, I = (qu.pauli(mu) for mu in ['x','y','i'])
         
-        #operators acting on the correct spin sector
-        if spin == 'up':
-            X_s = X & I
-            Y_s = Y & I
+#         #operators acting on the correct spin sector
+#         if spin == 'up':
+#             X_s = X & I
+#             Y_s = Y & I
         
-        elif spin == 'down':
-            X_s = I & X
-            Y_s = I & Y
+#         elif spin == 'down':
+#             X_s = I & X
+#             Y_s = I & Y
 
-        #operator on face qubit (in `spin` sector)
-        Of_s = {'vertical': X_s, 'horizontal':Y_s} [edge_dir]
+#         #operator on face qubit (in `spin` sector)
+#         Of_s = {'vertical': X_s, 'horizontal':Y_s} [edge_dir]
 
-        return 0.5 * ((X_s & X_s & Of_s) + (Y_s & Y_s & Of_s))
+#         return 0.5 * ((X_s & X_s & Of_s) + (Y_s & Y_s & Of_s))
 
 
-    def _onsite_int_gate(self):
-        '''Spin-spin interaction at a single vertex.
-        '''
-        return number_op() & number_op()
+#     def _onsite_int_gate(self):
+#         '''Spin-spin interaction at a single vertex.
+#         '''
+#         return number_op() & number_op()
     
     
 #### FINISH `hamiltonians.py`
