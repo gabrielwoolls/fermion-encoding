@@ -41,11 +41,12 @@ class CoordinateHamiltonian():
         # map {integer q: coo (x,y)}
         self._qubit_to_coo_map = qubit_to_coo_map
 
-        # map {(seq of coos): qarray}
+        # map {(sequence of coos): qarray}
         self._coo_ham_terms = coo_ham_terms
 
         # caches for not repeating operations
         self._op_cache = defaultdict(dict)
+
 
     @property
     def terms(self):
@@ -149,7 +150,7 @@ class CoordinateHamiltonian():
 
 ### *********************** ###
 
-class HamStab():
+class StabilizerHam():
     '''Pseudo-Hamiltonian of stabilizers,
         
             H_stab = multiplier * (S1 + S2 + ... + Sk), 

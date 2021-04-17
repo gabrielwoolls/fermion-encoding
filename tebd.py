@@ -10,7 +10,7 @@ class qubitTEBD(qtn.TEBD2D):
     "encoded" Hamiltonians, which may have 3-body 
     operators in addition to 1- and 2-body.
 
-    stabilizer_ham: ``HamStab``, optional
+    stabilizer_ham: ``StabilizerHam``, optional
 
     check_fermion_stab: bool, optional
     compute_fermion_stab_every: int, optional

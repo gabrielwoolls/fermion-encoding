@@ -5,21 +5,12 @@ from quimb.tensor.tensor_core import tags_to_oset
 from quimb.utils import check_opt
 
 from autoray import do, dag
-# import tqdm
 import functools
-# import opt_einsum as oe
-# from operator import add
-
-import numpy as np
 import re
-from random import randint
-from collections import defaultdict
-from numbers import Integral
-from itertools import product, chain, starmap, cycle, combinations, permutations
+from itertools import product, starmap, combinations, permutations
 
 import utils.dk_lattice_geometry as dk_lattice
 import three_body_op
-
 import qubit_networks
 # from qubit_networks import insert_identity_between_tensors
 

@@ -2,7 +2,7 @@ import quimb as qu
 import quimb.tensor as qtn
 from quimb.tensor.tensor_core import bonds, tensor_contract
 
-import qubit_networks as beeky
+import qubit_networks as qnets
 
 
 def triangle_gate_absorb(
@@ -193,7 +193,7 @@ def gate_split_mpo_like(TG:qtn.Tensor, up_inds, down_inds):
 
 
 def main_test():
-    psi = beeky.QubitEncodeVector.rand(3, 3)
+    psi = qnets.QubitEncodeVector.rand(3, 3)
     X, Y, Z = (qu.pauli(i) for i in 'xyz')
     where = (3, 4, 9) #which qubits to act on
     numsites = len(where) 
