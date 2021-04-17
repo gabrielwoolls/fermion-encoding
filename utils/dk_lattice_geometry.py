@@ -10,14 +10,14 @@ import stabilizers
 class QubitLattice():
     def __init__(self, Lx, Ly, local_dim=2):
 
-        if (Lx-1)*(Ly-1) % 2 == 1:
+        if (Lx-1) * (Ly-1) % 2 == 1:
             raise NotImplementedError('Need even number of faces!')
 
         self._Lx = Lx
         self._Ly = Ly
         self._lat_shape = (Lx, Ly)
 
-        #generate ordering for qbit lattice
+        #generate ordering for qubit lattice
         verts, faces = gen_lattice_sites(Lx,Ly)
 
         #vertex/face indices in np.ndarrays
@@ -30,18 +30,17 @@ class QubitLattice():
         #map face coos to `loopStabOperator` objects
         # self._coo_stab_map = self.make_coo_stabilizer_map()
 
-        #number lattice sites (IGNORES faces w/out qubits)
+        #number lattice sites (ignores faces without qubits)
         self._Nsites = verts.size + faces[faces!=None].size
         self._sim_dims = [local_dim]*(self._Nsites)
-        # self._local_dim = local_dim
 
         #number of vertex qubits, i.e. fermionic sites
         self._Nfermi = verts.size
 
 
         #TODO: not true for odd num. faces
-        #codespace dimensions = dim(Fock)
-        self._encoded_dims = [local_dim]*(self._Nfermi)
+        # codespace dimensions = dim(Fock)
+        self._encoded_dims = [local_dim] * (self._Nfermi)
 
         self._local_dim = local_dim
 
@@ -63,10 +62,8 @@ class QubitLattice():
 
 
 
-
     def get_edges(self, which):
-        '''TODO IMPLEMENT
-        '''
+
         if which in ['horizontal', 'right+left']:
             return self._edge_map['r'] + self._edge_map['l']
 
@@ -211,21 +208,22 @@ class QubitLattice():
     def loop_stabilizer_data(self, i, j, show_stab=False):
         '''
         Returns:
+        -------
         loop_op_data: dict[str: tuple or str]
-            Contains data of the stabilizer corresponding to
-            face at location (i,j) in face lattice.
+            Data of stabilizer corresponding to the face
+            at location (i,j) in FACE lattice.
             {'inds' : (indices),
             'opstring' : (string)}
 
         Example: for the face at (i,j) below,
               u
            1-----2
-         l |(i,j)| r   ==>  S = Z1*Z2*Z3*Z4*Yu*Xr*Yd*Xl
+         l |(i,j)| r   ==>  S = Z1 * Z2 * Z3 * Z4 * Yu * Xr * Yd * Xl
            4-----3
               d
         
-        loop_op_data = {'inds': (1, 2, 3, 4, u, r, d, l),
-                        'opstring': 'ZZZZYXYX'}
+        ==> loop_op_data = {'inds': (1, 2, 3, 4, u, r, d, l),
+                            'opstring': 'ZZZZYXYX'}
 
 
         Note clockwise = ccwise, i.e.
@@ -235,10 +233,7 @@ class QubitLattice():
         verts = self.vert_array
         faces = self.face_array
         
-        # assert faces[i,j] is None
-
-
-        #corner vertex sites, 1=upper-left, 2=u-r, 3=d-r, 4=l-r
+        #corner vertex sites (upper-left, u-r, dr, lr)
         v1 = verts[i, j]
         v2 = verts[i, j+1]
         v3 = verts[i+1, j+1]
@@ -307,10 +302,10 @@ class SpinlessHub(QubitLattice):
 
             arXiv:2003.06939 [quant-ph]
         '''
-        #Simulator Hamiltonian in full qubit space
+        # Simulator Hamiltonian (acts on full qubit space)
         self._HamSim = None
 
-        #Codespace Hamiltonian
+        # Codespace Hamiltonian
         self._HamCode = None
         self._eigens, self._eigstates = None, None
         
@@ -565,11 +560,12 @@ class SpinlessHub(QubitLattice):
         _, Ux = qu.eigh(qu.pauli('x')) 
         
         stab_data = self.loop_stabilizer_data(0,1)
-        oplist = [qu.pauli(Q) for Q in stab_data['opstring']]
+        oplist = [qu.pauli(q) for q in stab_data['opstring']]
         
         stabilizer = qu.ikron(  ops=oplist,
                                 dims=self._sim_dims,
                                 inds=stab_data['inds'] )
+        
         #TODO: change to general rather than inds=6, Ux
         U = qu.ikron(Ux.copy(), dims=self._sim_dims, inds=[6])
         
@@ -583,8 +579,9 @@ class SpinlessHub(QubitLattice):
         HamCode = U_plus.H @ self.ham_sim() @ U_plus
 
         self._stabilizer = stabilizer
-        self._Uplus = U_plus #+1 eigenstates written in full qubit basis
+        self._Uplus = U_plus # +1 eigenstates written in full qubit basis
         self._HamCode = HamCode # in +1 stabilizer eigenbasis
+
 
     def stabilizer_at_face(self, fi, fj):
         stab_data = self.loop_stabilizer_data(fi,fj)
@@ -593,6 +590,7 @@ class SpinlessHub(QubitLattice):
         return qu.ikron(ops=oplist,
                         dims=self._sim_dims,
                         inds=stab_data['inds'] )
+        
         
     def operator_to_codespace(self, operator):
         '''
@@ -622,25 +620,6 @@ class SpinlessHub(QubitLattice):
         +1 stabilizer eigenspace.
         '''       
         return self._HamCode.copy()
-
-
-    # def t_make_stabilizers(self):
-    #     '''
-    #     TODO: test! Could be completely wrong
-
-    #     To be used in general case when lattice has 
-    #     multiple stabilizer operators.
-    #     '''
-        
-    #     self._stabilizers = {}
-        
-    #     for (i,j) in np.argwhere(self._F_ind==None):
-
-    #         loop_op_ij = self.loop_stabilizer(i,j)
-            
-    #         self._stabilizers[(i,j)] = loop_op_ij
-
-
 
 
     # # TODO: delete?

@@ -18,11 +18,11 @@ class qubitTEBD(qtn.TEBD2D):
     def __init__(
         self,
         psi0,
-        ham,
+        simulator_ham,
+        stabilizer_ham=None,
         tau=0.01,
         D=None,
         chi=None,
-        stabilizer_ham=None,
         # imag=True,
         gate_opts=None,
         # ordering=None,
@@ -49,9 +49,13 @@ class qubitTEBD(qtn.TEBD2D):
         gate_opts.setdefault('contract', 'auto_split')
         gate_opts.setdefault('method', 'svd')
 
-        super().__init__(psi0, ham, tau, D, chi, 
-            imag=True, # force True, this is i-time EBD
-            ordering='random', #passed to ham.get_auto_ordering
+        super().__init__(psi0, 
+            ham=simulator_ham, 
+            tau=tau, 
+            D=D, 
+            chi=chi, 
+            imag=True, 
+            ordering='random', # supplied to ham.get_auto_ordering
             gate_opts=gate_opts,
             # force False, since 'num sites' is ambiguous for us?
             compute_energy_per_site=False,
@@ -64,16 +68,67 @@ class qubitTEBD(qtn.TEBD2D):
             keep_best=keep_best,
             progbar=progbar,
             **kwargs)
+
+
+    def qubit_to_coo(self, q):
+        '''Map qubit numbers to coordinates, e.g. 0 --> (0,0)
+        '''
+        return self.state.qubit_to_coo_map[q]
+
+
+    def sweep(self, tau):
+        '''Override ``TEBD2D.sweep`` to include Trotter
+        gates of 'stabilizer' terms as well as energy terms.
+        '''
+        
+        # apply energy trotter gates as usual
+        super().sweep(tau) 
+
+        if self.stabilizer_ham is None:
+            return
+        
+        # apply exp[stabilizer] gates
+        stab_ham = self.stabilizer_ham
+        
+        for qubits, _ in stab_ham.gen_ham_stabilizer_lists():
+            # coos = (self.state.qubit_to_coo_map[q] for q in qubits)
+            coos = map(self.qubit_to_coo, qubits)
+            U = stab_ham.get_gate_expm(qubits, -tau)
+            self.gate(U, where)
+
+
+
         
     
 def compute_energy_func_epeps(tebd):
-    '''Supplied as ``qubitTEBD.compute_energy_fn``
+    '''Supplied as ``qubitTEBD.compute_energy_fn``.
+    Compute the energy of ``tebd.state``, assuming it's
+    an ``ePEPS``-type TN (i.e. inherits from quimb's
+    TensorNetwork2D class). 
     '''
     psi, ham_terms = tebd.state, tebd.ham.terms
     envs, plaqmap = psi.calc_plaquette_envs_and_map(
         terms=ham_terms)
     
     return psi.compute_local_expectation(terms=ham_terms, 
+        plaquette_envs=envs, plaquette_map=plaqmap, 
+        **tebd.compute_energy_opts)
+
+
+def compute_energy_func_qev(tebd):
+    '''Compute the energy of ``tebd.state``, assuming it's
+    a ``QubitEncodeVector``-type TN. Converts the TN to
+    an ePEPS, to use quimb's native boundary contraction
+    method.
+    '''
+    psi_qev, ham_terms = tebd.state, tebd.ham.terms
+    epeps = psi_qev.convert_to_ePEPS()
+
+    # proceed with epeps energy contraction
+    envs, plaqmap = epeps.calc_plaquette_envs_and_map(
+        terms=ham_terms)
+    
+    return epeps.compute_local_expectation(terms=ham_terms, 
         plaquette_envs=envs, plaquette_map=plaqmap, 
         **tebd.compute_energy_opts)
 

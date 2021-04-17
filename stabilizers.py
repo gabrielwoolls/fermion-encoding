@@ -4,18 +4,21 @@ import quimb as qu
 class loopStabOperator():
     def __init__(self, vert_inds, face_op_str, face_inds):
         '''
-        Params:
-
-        vert_inds [list/tuple of ints]: vertex qubit indices
+        Param:
+        ------
+        vert_inds: sequence of ints
+            vertex qubit indices
         
-        vert_op [string]: 'ZZZZ'
+        # vert_op [string]: 'ZZZZ'
 
-        face_inds: face qubit indices
+        face_inds: 
+            Face-qubit indices
 
-        face_op_str [string]: action on face qubits, e.g. 'YXIX'
+        face_op_str: str
+            Action on face qubits, e.g. 'YXIX'
         '''
-        assert len(face_inds)==len(face_op_str)
-        assert len(vert_inds)==4
+        assert len(face_inds) == len(face_op_str)
+        assert len(vert_inds) == 4
 
         self.vert_inds = vert_inds 
         # self.vert_op_str = 'ZZZZ'
@@ -114,23 +117,6 @@ def one_qubit_U_matrices(qlattice, empt_face_coo):
     # code_inds = [f'c{i}' for i in range(Nfermi)]
 
     # Uplus = qtn.Tensor(Uplus, inds=)    
-
-
-
-
-# def parity_check(i, Nfermi, vert_inds):
-#     '''Check ZZZZ parity at 4 corners `vert_inds`.
-#     '''
-#     ops = [qu.pauli('z') for _ in range(4)]
-#     dims = [2] * Nfermi
-#     state = qu.basis_vec(i, dim=2**Nfermi)
-#     return qu.expec()
-
-
-
-        
-        
-
 
 
 

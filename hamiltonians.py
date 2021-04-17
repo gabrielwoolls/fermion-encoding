@@ -123,28 +123,28 @@ class CoordinateHamiltonian():
         return ordering
 
 
-class MasterHam():
-    '''Commodity class to combine a simulator Ham `Hsim`
-    and a stabilizer pseudo-Ham `Hstab` to generate each of 
-    their gates in order.
+# class MasterHam():
+#     '''Commodity class to combine a simulator Ham `Hsim`
+#     and a stabilizer pseudo-Ham `Hstab` to generate each of 
+#     their gates in order.
 
-    Attributes:
-    ----------
-    `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
+#     Attributes:
+#     ----------
+#     `gen_ham_terms()`: generate Hsim terms followed by Hstab terms
 
-    `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
-    '''
-    def __init__(self, Hsim, Hstab):
-        self.Hsim = Hsim
-        self.Hstab = Hstab
+#     `gen_trotter_gates(tau)`: trotter gates for Hsim followed by Hstab
+#     '''
+#     def __init__(self, Hsim, Hstab):
+#         self.Hsim = Hsim
+#         self.Hstab = Hstab
 
-    def gen_ham_terms(self):
-        return chain(self.Hsim.gen_ham_terms(),
-                     self.Hstab.gen_ham_terms())
+#     def gen_ham_terms(self):
+#         return chain(self.Hsim.gen_ham_terms(),
+#                      self.Hstab.gen_ham_terms())
 
-    def gen_trotter_gates(self, tau):
-        return chain(self.Hsim.gen_trotter_gates(tau),
-                     self.Hstab.gen_trotter_gates(tau))
+#     def gen_trotter_gates(self, tau):
+#         return chain(self.Hsim.gen_trotter_gates(tau),
+#                      self.Hstab.gen_trotter_gates(tau))
 
 
 ### *********************** ###
@@ -163,21 +163,23 @@ class HamStab():
 
     def __init__(self, Lx, Ly, multiplier = -1.0):
         
-        
-        self.qlattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
+        self.multiplier = multiplier # sign to multiply stabilizer ops by
 
-        self.multiplier = multiplier
-        
-        #map coos to `loopStabOperator` objects
-        coo_stab_map = self.qlattice.make_coo_stabilizer_map()
-
-        self._stab_gates = self.make_stab_gate_map(coo_stab_map, store='gate')
-        self._exp_stab_gates = dict()
-        self._stab_lists = self.make_stab_gate_map(coo_stab_map, store='tuple')
+        lattice = dk_lattice.QubitLattice(Lx, Ly, local_dim=0)
+        #map face-coos to `loopStabOperator` objects
+        face_stab_map = lattice.make_coo_stabilizer_map()
 
 
+        self._stab_gates = self.make_stab_gate_map(face_stab_map, store='gate')
+        # self._exp_stab_gates = dict()
+        self._stab_lists = self.make_stab_gate_map(face_stab_map, store='tuple')
 
-    def make_stab_gate_map(self, coo_stab_map, store='gate'):
+        # caches for not repeating operations
+        self._op_cache = defaultdict(dict)
+
+
+
+    def make_stab_gate_map(self, face_stab_map, store='gate'):
         '''TODO: NOW MAPS coos to (where, gate) tuples.
 
         Return
@@ -189,7 +191,7 @@ class HamStab():
 
         Param:
         ------
-        coo_stab_map: dict[tuple : dict]
+        face_stab_map: dict[tuple : dict]
             Maps coordinates (x,y) in the FACE array of the lattice
             to `loop_stab` dictionaries of the form
             {'inds' : (indices),   'opstring' : (string)}
@@ -200,18 +202,16 @@ class HamStab():
         '''
         gate_map = dict()
 
-        for coo, loop_stab in coo_stab_map.items():
+        for coo, loop_stab in face_stab_map.items():
             qubits = tuple(loop_stab['inds']) #tuple e.g. (1,2,4,5,6)
             opstring = loop_stab['opstring'] #str e.g. 'ZZZZX'
             
-            if store == 'gate':            
-                # store (where, kron(gate1,gate2,...))
+            if store == 'gate': # store (where, kron(gate1, gate2,...))        
                 gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
                 gate *= self.multiplier
                 gate_map[coo] = (qubits, gate)
             
-            elif store == 'tuple':
-                # store (where, (gate1, gate2, ...))
+            elif store == 'tuple': # store (where, (gate1, gate2,...))
                 signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
                 gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
                 gate_map[coo] = (qubits, gates)
@@ -225,8 +225,8 @@ class HamStab():
         and erase previous expm(gates)
         '''
         self.multiplier = multiplier
-        self._stab_gates = self.make_stab_gate_map(coo_stab_map)
-        self._exp_stab_gates = dict()
+        self._stab_gates = self.make_stab_gate_map(face_stab_map)
+        # self._exp_stab_gates = dict()
 
 
     def gen_ham_terms(self):
@@ -239,51 +239,74 @@ class HamStab():
             yield (where, gate)
 
 
+    def get_gate(self, where):
+        """Get the local term for coos ``where``, cached.
+        """
+        # return self.terms[tuple(where)]
+        self._stab_gates
+
+
     def gen_ham_stabilizer_lists(self):
-        '''Generate ``(where, gates)`` pairs for each stabilizer term.
+        '''Generate ``(where, tuple(gates))`` pairs for each stabilizer term.
         where: tuple[int]
             The qubits to be acted on
-        gates: tuple[array]
-            The one-site qubit gates (2x2 arrays)
+        tuple(gates): tuple(array)
+            Sequence of one-site gates (2x2 arrays)
         '''
         for where, gatelist in self._stab_lists.values():
             yield (where, gatelist)
     
 
-    def _get_exp_stab_gate(self, coo, tau):
-        '''
-        Returns 
-        -------
-        `exp(tau * multiplier * stabilizer)`: qarray
+    def _expm_cached(self, x, y):
+        cache = self._op_cache['expm']
+        key = (id(x), y)
+        if key not in cache:
+            el, ev = do('linalg.eigh', x)
+            cache[key] = ev @ do('diag', do('exp', el * y)) @ dag(ev)
+        return cache[key]
+    
+    
+    def get_gate_expm(self, where, t):
+        """Get the local term for pair ``where``, matrix exponentiated by
+        ``t``, and cached.
+        """
+        return self._expm_cached(self.get_gate(where), t)
+
+
+    # def _get_exp_stab_gate(self, coo, tau):
+    #     '''
+    #     Returns 
+    #     -------
+    #     `exp(tau * multiplier * stabilizer)`: qarray
         
-                Expm() of stabilizer centered on empty face at `coo`.
+    #             Expm() of stabilizer centered on empty face at `coo`.
 
-        Params
-        -------
-        `coo`: tuple (x,y)
-            (Irrelevant) location of the empty face that 
-            the stabilizer corresponds to. Just a label.
+    #     Params
+    #     -------
+    #     `coo`: tuple (x,y)
+    #         (Irrelevant) location of the empty face that 
+    #         the stabilizer corresponds to. Just a label.
         
-        `tau`: float
-            Imaginary time for the exp(tau * gate)
-        '''
-        key = (coo, tau)
+    #     `tau`: float
+    #         Imaginary time for the exp(tau * gate)
+    #     '''
+    #     key = (coo, tau)
 
-        if key not in self._exp_stab_gates:
-            where, gate = self._stab_gates[coo]
-            el, ev = do('linalg.eigh', gate)
-            expgate = ev @ do('diag', do('exp', el*tau)) @ dag(ev)
-            self._exp_stab_gates[key] = (where, expgate)
+    #     if key not in self._exp_stab_gates:
+    #         where, gate = self._stab_gates[coo]
+    #         el, ev = do('linalg.eigh', gate)
+    #         expgate = ev @ do('diag', do('exp', el*tau)) @ dag(ev)
+    #         self._exp_stab_gates[key] = (where, expgate)
         
-        return self._exp_stab_gates[key]
+    #     return self._exp_stab_gates[key]
 
 
-    def gen_trotter_gates(self, tau):
-        '''Generate (`where`, `exp(tau*gate)`) pairs for acting
-        with exponentiated stabilizers on lattice.
-        '''
-        for coo in self.empty_face_coos():
-            yield self._get_exp_stab_gate(coo, tau)
+    # def gen_trotter_gates(self, tau):
+    #     '''Generate (`where`, `exp(tau*gate)`) pairs for acting
+    #     with exponentiated stabilizers on lattice.
+    #     '''
+    #     for coo in self.empty_face_coos():
+    #         yield self._get_exp_stab_gate(coo, tau)
 
 
     def empty_face_coos(self):

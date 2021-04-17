@@ -109,8 +109,6 @@ def make_auxcon_net(
     return vertex_net
 
 
-
-
     
 def insert_split_tensor(T1, T2, face_ind, Tf, add_tags=None):
     '''Assuming `T1---T2` are connected by one bond, insert a 
