@@ -212,8 +212,8 @@ class QubitLattice():
         loop_op_data: dict[str: tuple or str]
             Data of stabilizer corresponding to the face
             at location (i,j) in FACE lattice.
-            {'inds' : (indices),
-            'opstring' : (string)}
+            {'qubits' : seq of integers labeling target qubits),
+            'opstring' : string representing the Pauli gates}
 
         Example: for the face at (i,j) below,
               u
@@ -285,7 +285,7 @@ class QubitLattice():
         #                                     face_inds=face_inds,
         #                                     face_op_str=face_ops)
         
-        loop_op_data = { 'inds':  tuple(vert_inds + face_inds),
+        loop_op_data = { 'qubits':  tuple(vert_inds + face_inds),
                          'opstring': 'ZZZZ' + face_ops}
         
         return loop_op_data

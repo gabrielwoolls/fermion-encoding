@@ -1,6 +1,6 @@
 '''Do TEBD on `ePEPS` and `ePEPSvector` -type TNs. The code
-is based on Johnnie Gray's quimb TEBD code for 2D TNs, but 
-needs to be modified to allow 3-body interactions. 
+is based on quimb's TEBD2D code for 2D TNs, but modified to
+allow 3-body interactions. 
 '''
 import quimb as qu
 import quimb.tensor as qtn
@@ -10,10 +10,16 @@ class qubitTEBD(qtn.TEBD2D):
     "encoded" Hamiltonians, which may have 3-body 
     operators in addition to 1- and 2-body.
 
+    simulator_ham: ``CoordinateHamiltonian``
+        Hamiltonian acting on qubit space
+    
     stabilizer_ham: ``StabilizerHam``, optional
 
     check_fermion_stab: bool, optional
-    compute_fermion_stab_every: int, optional
+        Whether to compute <psi|stabilizers|psi>
+        as we run TEBD.
+
+    # compute_fermion_stab_every: int, optional
     '''
     def __init__(
         self,
@@ -79,26 +85,31 @@ class qubitTEBD(qtn.TEBD2D):
     def sweep(self, tau):
         '''Override ``TEBD2D.sweep`` to include Trotter
         gates of 'stabilizer' terms as well as energy terms.
+
+        If applying exp(tau * stabilizer) gates: to make sure we target
+        the "codespace" i.e. eigenvalue +1 space, Trotterize with 
+            
+            tau -> tau * stab_ham.multiplier, 
+        
+        multiplier +1 (stabilizers unchanged) ==> supress -1 eigenspace
         '''
         
         # apply energy trotter gates as usual
         super().sweep(tau) 
 
         if self.stabilizer_ham is None:
-            return
+            return # exit if there's no stabilizers to apply
         
-        # apply exp[stabilizer] gates
+        # otherwise, apply the exp[stabilizer] gates
+
         stab_ham = self.stabilizer_ham
         
         for qubits, _ in stab_ham.gen_ham_stabilizer_lists():
-            # coos = (self.state.qubit_to_coo_map[q] for q in qubits)
             coos = map(self.qubit_to_coo, qubits)
-            U = stab_ham.get_gate_expm(qubits, -tau)
-            self.gate(U, where)
+            U = stab_ham.get_gate_expm(qubits, stab_ham.multiplier * tau)
+            self.gate(U, coos)
 
 
-
-        
     
 def compute_energy_func_epeps(tebd):
     '''Supplied as ``qubitTEBD.compute_energy_fn``.
@@ -171,24 +182,6 @@ def compute_fermionic_stability(tebd):
         stab_expecs.append(expec / norm)
     
     return stab_expecs
-        
-        
-# def sweep_and_stabilizers(tebd, tau):
-    
-#     # usual sweep with exponentiated tebd.ham.terms
-#     # i.e. energy trotter gates
-#     tebd.sweep(tau) 
-
-#     # sweep with stabilizer trotter gates
-#     stab_ham = tebd.stabilizer_ham
-#     for qubits, _ in stab_ham.gen_ham_stabilizer_lists():
-#         coos = (tebd.state.qubit_to_coo_map[q] for q in qubits)
-#         U = stab_ham.get_gate_expm(qubits, -tau)
-#         tebd.gate(U, where)
-
-
-
-    
         
 
 

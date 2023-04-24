@@ -173,7 +173,7 @@ class StabilizerHam():
 
         self._stab_gates = self.make_stab_gate_map(face_stab_map, store='gate')
         # self._exp_stab_gates = dict()
-        self._stab_lists = self.make_stab_gate_map(face_stab_map, store='tuple')
+        self._stab_lists = self.make_stab_gate_map(face_stab_map, store='list')
 
         # caches for not repeating operations
         self._op_cache = defaultdict(dict)
@@ -197,37 +197,29 @@ class StabilizerHam():
             to `loop_stab` dictionaries of the form
             {'inds' : (indices),   'opstring' : (string)}
         
-        store: 'gate' or 'tuple', optional
+        store: 'gate' or 'list', optional
             Whether to store a 'dense' 2**8 x 2**8 array or a tuple
             of 8 (ordered) 2 x 2 arrays
         '''
         gate_map = dict()
 
         for coo, loop_stab in face_stab_map.items():
-            qubits = tuple(loop_stab['inds']) #tuple e.g. (1,2,4,5,6)
+            qubits = tuple(loop_stab['qubits']) #tuple e.g. (1,2,4,5,6)
             opstring = loop_stab['opstring'] #str e.g. 'ZZZZX'
             
             if store == 'gate': # store (where, kron(gate1, gate2,...))        
                 gate = qu.kron(*(qu.pauli(Q) for Q in opstring))
                 gate *= self.multiplier
-                gate_map[coo] = (qubits, gate)
+                # gate_map[coo] = (qubits, gate)
+                gate_map[qubits] = gate
             
-            elif store == 'tuple': # store (where, (gate1, gate2,...))
+            elif store == 'list': # store (where, (gate1, gate2,...))
                 signs = [self.multiplier] + [1.0] * (len(opstring) - 1)
-                gates = tuple(signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring))
-                gate_map[coo] = (qubits, gates)
+                gates = [signs[k] * qu.pauli(Q) for k, Q in enumerate(opstring)]
+                # gate_map[coo] = (qubits, gates)
+                gate_map[qubits] = gates
             
         return gate_map
-
-
-
-    def reset_multiplier(self, multiplier):
-        '''Reset multiplier, re-compute stabilizer gates 
-        and erase previous expm(gates)
-        '''
-        self.multiplier = multiplier
-        self._stab_gates = self.make_stab_gate_map(face_stab_map)
-        # self._exp_stab_gates = dict()
 
 
     def gen_ham_terms(self):
@@ -236,25 +228,26 @@ class StabilizerHam():
 
         Note the *keys* in the dictionary are coos and not used!
         '''
-        for where, gate in self._stab_gates.values():
+        for where, gate in self._stab_gates.items():
             yield (where, gate)
 
 
+
     def get_gate(self, where):
-        """Get the local term for coos ``where``, cached.
+        """Get the raw gate (i.e. kron(g1,g2,...g8)) for 
+        qubits `where=(q1,...q8)`, cached.
         """
-        # return self.terms[tuple(where)]
-        self._stab_gates
+        return self._stab_gates[where]
 
 
     def gen_ham_stabilizer_lists(self):
-        '''Generate ``(where, tuple(gates))`` pairs for each stabilizer term.
+        '''Generate ``(where, gate_list)`` pairs for each stabilizer term.
         where: tuple[int]
             The qubits to be acted on
-        tuple(gates): tuple(array)
+        gate_list: list(array)
             Sequence of one-site gates (2x2 arrays)
         '''
-        for where, gatelist in self._stab_lists.values():
+        for where, gatelist in self._stab_lists.items():
             yield (where, gatelist)
     
 
@@ -310,8 +303,8 @@ class StabilizerHam():
     #         yield self._get_exp_stab_gate(coo, tau)
 
 
-    def empty_face_coos(self):
-        return self._stab_gates.keys()
+    # def empty_face_coos(self):
+    #     return self._stab_gates.keys()
 
 
 ###  **********************************  ###
